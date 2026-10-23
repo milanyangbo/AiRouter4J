@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.airouter</groupId>
+    <artifactId>airouter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>airouter-gateway</artifactId>
+
+  <name>AiRouter :: gateway</name>
+  <description>入站 Face、出站 Provider、transport、routing、governance（ADR-0003 第 2 节）。</description>
+
+  <dependencies>
+    <!-- gateway 只允许依赖 core。HTTP 运行时（WebFlux 等）在做到入站路径的那一票引入，
+         本票不预先放进来：先放进来的依赖，后面没有人会去检查它还该不该在。 -->
+    <dependency>
+      <groupId>io.github.airouter</groupId>
+      <artifactId>airouter-core</artifactId>
+    </dependency>
+  </dependencies>
+
+</project>

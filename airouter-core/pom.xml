@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.airouter</groupId>
+    <artifactId>airouter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>airouter-core</artifactId>
+
+  <name>AiRouter :: core</name>
+  <description>领域模型与端口。这里出现任何框架都是设计倒退（ADR-0003 第 1 节）。</description>
+
+  <build>
+    <plugins>
+      <!-- R1 —— 保护「core 是被边界保护着的，而不是靠自觉」（spec 故事 12、13）。
+           依赖树里出现 Spring / Jackson / Reactor 即失败，且查传递依赖：
+           一个框架哪怕是别人顺手带进来的，也算污染。 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>core-stays-framework-free</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <message>
+                    airouter-core 的依赖树里出现了框架。core 是离框架最远的模块：
+                    领域模型要能在没有任何容器的情况下被单测（ADR-0003 第 1 节）。
+                    需要的能力请抽成端口放在 core，实现放到 gateway。
+                  </message>
+                  <searchTransitive>true</searchTransitive>
+                  <excludes>
+                    <exclude>org.springframework*</exclude>
+                    <exclude>com.fasterxml.jackson*</exclude>
+                    <exclude>io.projectreactor*</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

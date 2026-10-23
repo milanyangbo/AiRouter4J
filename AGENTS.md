@@ -25,27 +25,27 @@
 Maven 多模块，**按端口与适配器（六边形）组织，不按技术角色分包**。
 
 | 模块 | 职责 | 状态 |
+以 **ADR-0003 为准：四个模块**。早先这里写过一份十几个模块的清单，它已被 ADR-0003 第 1 节否决
+（模块数量与项目规模不匹配，隔离度用包 + 包间规则同样拿得到），不要按那份清单开模块。
+
 |---|---|---|
-| `airouter-core` | 领域模型 + 端口接口（**无框架依赖**，纯 Java） | ⧗ 待建 |
-| `airouter-transport` | 唯一出站口：连接池 + codecs + SSRF 守卫 + 流式管道 | ⧗ 待建 |
-| `airouter-face-openai` | 入站 Face：OpenAI 兼容协议 encode/decode | ⧗ 待建 |
-| `airouter-face-anthropic` | 入站 Face：Anthropic Messages 协议 | ⧗ 待建 |
-| `airouter-provider-openai` | 出站 Provider：OpenAI 兼容（含 DeepSeek / vLLM / Ollama） | ⧗ 待建 |
-| `airouter-provider-anthropic` | 出站 Provider：Anthropic Messages API | ⧗ 待建 |
-| `airouter-routing` | 实例选择 / 负载均衡 / 熔断 / 限流（零 IO，100% 可单测） | ⧗ 待建 |
-| `airouter-security` | API Key 鉴权 / RBAC / 脱敏 / 配额 | ⧗ 待建 |
-| `airouter-observability` | traceId / 结构化日志 / 指标 / 异常事件 | ⧗ 待建 |
-| `airouter-persistence` | JPA + Flyway + Repository | ⧗ 待建 |
-| `airouter-agent` | Spring AI 2.0.1：ChatClient 装配 + Advisor 链 + Subagent | ⧗ 待建 |
-| `airouter-ops-tools` | Ops Agent 的工具集（数据源 = 本网关自己的可观测数据） | ⧗ 待建 |
-| `airouter-admin-api` | WebFlux REST + SSE | ⧗ 待建 |
-| `airouter-app` | 启动装配 | ⧗ 待建 |
+| `airouter-core` | 领域模型 + 端口接口（**依赖树里不许出现任何框架**） | ✔ 已建（无源码） |
+| `airouter-gateway` | faces / providers / transport / routing / governance / config | ✔ 已建（仅包结构） |
+| `airouter-agent` | Spring AI 2.0.1：ChatClient 装配 + Advisor 链 + Subagent | ✔ 已建（壳） |
+| `airouter-app` | 启动装配 + **跨模块结构规则的唯一住所** | ✔ 已建 |
 
-依赖方向的核心约束（会被 CI 用 ArchUnit 钉死）：
+`gateway` 内部按端口与适配器分包，包职责写在各自的 `package-info.java` 里。
 
-- `core` **不依赖任何模块**，也不依赖 Spring / Reactor 之外的东西
-- `routing` 的决策逻辑是纯函数，**不做 IO**
-- 依赖倒置：实现模块依赖端口，端口不知道实现（由 CI 的 ArchUnit 规则校验）
+依赖方向的核心约束（由 `airouter-app` 的测试用 ArchUnit 判红，**跑在默认 `verify` 路径上**）：
+
+- `core` **不依赖任何模块**；它的依赖树里出现 Spring / Jackson / Reactor 即构建失败（Maven enforcer，见 `airouter-core/pom.xml`）
+- 没有模块可以依赖 `app`
+- `faces` 与 `providers` 互不感知；`routing` / `governance` 不做 IO；`transport` 不认识业务包
+- 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
+
+规则一共八条，定义在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`。
+**新增规则前先读那里的表格**：规则越多，越容易走到「加个例外算了」那条路上。
+规则旁边必须写清它保护什么；「规则真的会红」由 `GuardsActuallyFireTest` 断言，不靠人记得试一次。
 
 ## 不可违反的工程纪律
 
@@ -61,8 +61,8 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 ## 构建与验证
 
 - JDK 21（当前 `java -version` = 21.0.12.1）；Maven 3.9.16 在 `~/soft/apache-maven-3.9.16`
-- Maven Wrapper：骨架阶段的 `mvnw` 尚未生成，暂用 `mvn`。生成后统一用 `./mvnw`
-- 编译 + 测试：`mvn -T1C verify`
+- Maven Wrapper 已入库，**统一用 `./mvnw`**，不要用系统里的 `mvn`（版本可能与门禁要求不符）
+- 编译 + 测试：`./mvnw verify`
 - CI 四道 gate 必须 fail-fast：checkstyle（error 级）/ spotbugs / test / jacoco
 
 **新增模块时记得同步 CI，否则它不会被纳入构建与扫描。**

@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.2</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>io.github.airouter</groupId>
+  <artifactId>airouter</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>AiRouter</name>
+  <description>AI 模型网关，附带一层 Agentic 运维能力。</description>
+
+  <!-- 全部版本号的唯一来源：Boot / Spring AI / Java 三者的版本号在各构建文件中只出现一次。
+       没有 profile —— 因此也不存在「临时把某个插件关掉」这种事后很难恢复的操作。
+
+       已知边界：子模块在自己的 <properties> 里覆盖上述版本，Maven 内置规则无法判红
+       （requireManagedVersions 来自 extra-enforcer-rules，其规则类缺少无参构造器，
+        与 enforcer 3.x 各版本均无法实例化）。该情形由票 02 的模块结构约束承担。 -->
+  <properties>
+    <java.version>21</java.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!-- 刻意钉住而非跟随最新：承载 Agentic 能力的社区包以其编译目标为准发版，
+         没有针对更晚的版本重新发过。详见 ADR-0002。 -->
+    <spring-ai.version>2.0.1</spring-ai.version>
+
+    <maven-enforcer-plugin.version>3.6.1</maven-enforcer-plugin.version>
+    <maven-site-plugin.version>3.21.0</maven-site-plugin.version>
+    <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+    <spotbugs-maven-plugin.version>4.8.6.6</spotbugs-maven-plugin.version>
+    <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <!-- 后续模块引用插件时不再写版本号，版本号只有上面这一处。 -->
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-checkstyle-plugin</artifactId>
+          <version>${maven-checkstyle-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>com.github.spotbugs</groupId>
+          <artifactId>spotbugs-maven-plugin</artifactId>
+          <version>${spotbugs-maven-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-site-plugin</artifactId>
+          <version>${maven-site-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>${jacoco-maven-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${maven-enforcer-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>enforce-baseline</id>
+            <!-- 绑定在最早期：JDK 版本不对时不必等到编译阶段才知道。 -->
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireMavenVersion>
+                  <message>需要 Maven 3.9.0 或更高版本。请改用仓库自带的 ./mvnw，它会取正确的版本。</message>
+                  <version>[3.9.0,)</version>
+                </requireMavenVersion>
+                <requireJavaVersion>
+                  <message>需要 JDK 21 或更高版本。</message>
+                  <version>[21,)</version>
+                </requireJavaVersion>
+
+                <!-- 当某个依赖在其传递路径上要求的版本高于本次实际解析到的结果时即为失败。
+                     这条让「两个模块各自引入同一库的不同版本」在构建期暴露，而不是等到运行期。 -->
+                <requireUpperBoundDeps/>
+
+                <!-- 浮动版本是「同一次构建今天和明天得到不同结果」的头号来源。
+                     LATEST / RELEASE 与快照版的 RELEASE 形态一律禁止。 -->
+                <banDynamicVersions/>
+
+                <!-- 每个插件都必须显式有版本号（含由父 POM 的 pluginManagement 提供的情形）。
+                     这与「版本号只在一处」是同一件事的另一面：插件版本散落在模块的 <plugins> 里，
+                     和不被统一管理的依赖版本是一样的坏审计属性。 -->
+                <requirePluginVersions>
+                  <message>插件版本缺失。请在根 POM 的 pluginManagement 里统一给出版本。</message>
+                  <banLatest>true</banLatest>
+                  <banRelease>true</banRelease>
+                  <banSnapshots>false</banSnapshots>
+                </requirePluginVersions>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

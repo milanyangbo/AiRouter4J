@@ -1,4 +1,7 @@
 target/
+.flattened-pom.xml
+
+# Maven Wrapper 必须入库：它是「只有 JDK 的机器也能构建」唯一成立的前提
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

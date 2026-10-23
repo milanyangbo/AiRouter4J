@@ -1,0 +1,661 @@
+<template>
+  <div class="chat-container">
+    <!-- 顶部工具栏 -->
+    <div class="chat-toolbar">
+      <div class="toolbar-left">
+        <el-select
+          v-model="selectedModel"
+          :placeholder="t('playgroundChat.toolbar.selectModel')"
+          :loading="instancesLoading"
+          filterable
+          class="model-select"
+        >
+          <template #prefix>
+            <el-icon><Cpu /></el-icon>
+          </template>
+          <el-option
+            v-for="inst in availableInstances"
+            :key="inst.instanceId"
+            :label="inst.name"
+            :value="inst.name"
+            :disabled="inst.healthStatus === 'UNHEALTHY'"
+          >
+            <div class="instance-option">
+              <span
+                class="health-indicator"
+                :class="{
+                  'health-healthy': inst.healthStatus === 'HEALTHY',
+                  'health-unhealthy': inst.healthStatus === 'UNHEALTHY',
+                  'health-unknown': inst.healthStatus === 'UNKNOWN' || !inst.healthStatus
+                }"
+              >
+                ●
+              </span>
+              <span class="instance-name">{{ inst.name }}</span>
+              <span
+                v-if="inst.healthStatus === 'UNHEALTHY'"
+                class="health-status-text"
+              >
+                {{ t('playgroundChat.instance.offline') }}
+              </span>
+              <span
+                v-else-if="inst.healthStatus === 'UNKNOWN' || !inst.healthStatus"
+                class="health-status-text unknown"
+              >
+                {{ t('playgroundChat.instance.unknown') }}
+              </span>
+            </div>
+          </el-option>
+        </el-select>
+        <el-button
+          text
+          @click="showConfig = !showConfig"
+        >
+          <el-icon><Setting /></el-icon>
+          {{ showConfig ? t('playgroundChat.toolbar.hideConfig') : t('playgroundChat.toolbar.showConfig') }}
+        </el-button>
+      </div>
+      <div class="toolbar-right">
+        <el-button
+          text
+          @click="handleNewChat"
+        >
+          <el-icon><Plus /></el-icon>
+          {{ t('playgroundChat.toolbar.newChat') }}
+        </el-button>
+        <el-button
+          text
+          @click="handleClear"
+        >
+          <el-icon><Delete /></el-icon>
+          {{ t('playgroundChat.toolbar.clearChat') }}
+        </el-button>
+      </div>
+    </div>
+
+    <!-- 配置面板 -->
+    <Transition name="slide-down">
+      <div
+        v-if="showConfig"
+        class="config-panel"
+      >
+        <ChatConfigPanel
+          v-model="chatConfig"
+          :disabled="isLoading"
+        />
+      </div>
+    </Transition>
+
+    <!-- 消息列表 -->
+    <div
+      ref="messageListRef"
+      class="message-list"
+    >
+      <!-- 空状态 -->
+      <div
+        v-if="messages.length === 0 && !isLoading"
+        class="empty-state"
+      >
+        <el-icon
+          :size="64"
+          :color="'var(--ja-ink-3)'"
+        >
+          <ChatDotRound />
+        </el-icon>
+        <div class="empty-title">{{ t('playgroundChat.empty.title') }}</div>
+        <div class="empty-subtitle">{{ t('playgroundChat.empty.subtitle') }}</div>
+        <div class="suggestions">
+          <el-button
+            v-for="suggestion in suggestions"
+            :key="suggestion"
+            round
+            size="small"
+            @click="handleSuggestionClick(suggestion)"
+          >
+            {{ suggestion }}
+          </el-button>
+        </div>
+      </div>
+
+      <!-- 消息列表 -->
+      <MessageList
+        :messages="messages"
+        :loading="isLoading"
+        :streaming-content="streamingDisplay"
+        @copy="handleCopyMessage"
+        @regenerate="handleRegenerateMessage"
+      />
+    </div>
+
+    <!-- 输入区域 -->
+    <div class="input-area">
+      <MessageInput
+        ref="inputRef"
+        :disabled="!selectedModel"
+        :loading="isLoading"
+        :placeholder="inputPlaceholder"
+        @submit="handleSendMessage"
+        @cancel="handleCancelRequest"
+      />
+      <div class="input-tips">
+        <span>{{ t('playgroundChat.input.tipEnter') }}</span>
+        <span
+          v-if="!selectedModel"
+          class="tip-warning"
+        >{{ t('playgroundChat.input.tipSelectModel') }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { Setting, Plus, Delete, ChatDotRound, Cpu } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import MessageList from './MessageList.vue'
+import MessageInput from './MessageInput.vue'
+import ChatConfigPanel from './ChatConfigPanel.vue'
+import { useChatSession } from '../../composables/useChatSession'
+import { useStreaming } from '../../composables/useStreaming'
+import { usePlaygroundData } from '@/composables/usePlaygroundData'
+import { useRoutePreselect, preselectInstanceName } from '@/composables/useRoutePreselect'
+import { sendServiceRequest } from '@/api/playground'
+import type { ChatMessage, ChatRequestConfig } from '../../types/playground'
+import { parseErrorMessage, getErrorSuggestion } from '../../utils/errorHandler'
+import { throttle } from '@/utils/throttle'
+
+const { t } = useI18n()
+
+// Refs
+const messageListRef = ref<HTMLElement>()
+const inputRef = ref<InstanceType<typeof MessageInput>>()
+
+// 状态
+const showConfig = ref(false)
+const selectedModel = ref('')
+const isLoading = ref(false)
+const streamingContent = ref('')
+// 流式期间喂给 MarkdownRenderer 的节流快照，避免每个 token 全量重解析
+const streamingDisplay = ref('')
+const scheduleStreamingDisplay = throttle(() => {
+  streamingDisplay.value = streamingContent.value
+}, 150)
+const resetStreamingState = () => {
+  scheduleStreamingDisplay.cancel()
+  streamingContent.value = ''
+  streamingDisplay.value = ''
+}
+
+// 配置
+const chatConfig = ref<Partial<ChatRequestConfig>>({
+  stream: true,
+  temperature: 0.7,
+  maxTokens: 4096,
+  topP: 1,
+  frequencyPenalty: 0,
+  presencePenalty: 0
+})
+
+// 会话管理
+const {
+  messages,
+  initialize,
+  createNewSession,
+  addMessage,
+  updateLastMessage,
+  clearMessages,
+} = useChatSession()
+
+// 数据获取
+const { availableInstances, instancesLoading, initializeData, refreshData } =
+  usePlaygroundData('chat')
+
+// Route preselect: auto-select instance from onboarding ?serviceType=chat
+const { requestedServiceType } = useRoutePreselect()
+watch(
+  availableInstances,
+  (instances) => {
+    if (
+      requestedServiceType() === 'chat' &&
+      !selectedModel.value &&
+      instances.length > 0
+    ) {
+      const name = preselectInstanceName(instances)
+      if (name) selectedModel.value = name
+    }
+  },
+  { once: true }
+)
+
+// 流式处理
+const { isStreaming, cancelStream, createStreamRequest, handleStreamResponse } =
+  useStreaming()
+
+// 输入提示
+const inputPlaceholder = computed(() => {
+  if (!selectedModel.value) return t('playgroundChat.input.placeholderNoModel')
+  if (isLoading.value) return t('playgroundChat.input.placeholderGenerating')
+  return t('playgroundChat.input.placeholderMessage')
+})
+
+// 快捷建议
+const suggestions = computed(() => [
+  t('playgroundChat.suggestions.introduce'),
+  t('playgroundChat.suggestions.writeCode'),
+  t('playgroundChat.suggestions.machineLearning')
+])
+
+// 初始化
+onMounted(() => {
+  initialize()
+  initializeData()
+})
+
+// 卸载时中止进行中的流，避免 reader 循环在组件销毁后继续消费
+onBeforeUnmount(() => {
+  cancelStream()
+})
+
+// 滚动到底部
+const scrollToBottom = () => {
+  if (messageListRef.value) {
+    messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+  }
+}
+const scheduleScrollToBottom = throttle(scrollToBottom, 100)
+
+// 监听消息变化，自动滚动到底部（scrollToBottom 本身已节流，避免流式期间每 token 触发）
+watch(
+  messages,
+  () => {
+    nextTick(() => {
+      scheduleScrollToBottom()
+    })
+  },
+  { deep: true }
+)
+
+watch(streamingDisplay, () => {
+  nextTick(() => {
+    scheduleScrollToBottom()
+  })
+})
+
+// 处理建议点击
+const handleSuggestionClick = (suggestion: string) => {
+  inputRef.value?.setContent(suggestion)
+}
+
+// 发送消息
+const handleSendMessage = async (content: string) => {
+  if (!content.trim() || !selectedModel.value || isLoading.value) return
+
+  // 添加用户消息
+  const userMessage: ChatMessage = {
+    role: 'user',
+    content: content.trim()
+  }
+  addMessage(userMessage)
+
+  // 清空输入
+  inputRef.value?.clear()
+
+  // 准备请求
+  isLoading.value = true
+  resetStreamingState()
+
+  // 添加空的助手消息（用于流式更新）
+  const assistantMessage: ChatMessage = {
+    role: 'assistant',
+    content: ''
+  }
+  addMessage(assistantMessage)
+
+  try {
+    const config: ChatRequestConfig = {
+      model: selectedModel.value,
+      messages: messages.value.slice(0, -1).map((m) => ({
+        role: m.role,
+        content: m.content
+      })),
+      stream: chatConfig.value.stream ?? true,
+      temperature: chatConfig.value.temperature ?? 0.7,
+      maxTokens: chatConfig.value.maxTokens ?? 4096,
+      topP: chatConfig.value.topP ?? 1,
+      frequencyPenalty: chatConfig.value.frequencyPenalty ?? 0,
+      presencePenalty: chatConfig.value.presencePenalty ?? 0
+    }
+
+    const headers: Record<string, string> = {}
+    const token = localStorage.getItem('admin_token')
+    if (token) {
+      headers['Jairouter_Token'] = token
+    }
+
+    if (config.stream) {
+      // 流式请求
+      const baseURL = import.meta.env.VITE_API_BASE_URL || ''
+      const url = `${baseURL}/v1/chat/completions`
+
+      const response = await createStreamRequest(url, config, headers)
+
+      await handleStreamResponse(response, {
+        onChunk: (chunk) => {
+          streamingContent.value += chunk
+          // 不在此处 updateLastMessage：流式期间会话对象每 token 深层变更会触发
+          // 全量 JSON 落盘与 deep watch；最终内容由 onComplete / catch 统一写入。
+          scheduleStreamingDisplay()
+        },
+        onComplete: (content) => {
+          updateLastMessage(content)
+          resetStreamingState()
+        }
+      })
+    } else {
+      // 非流式请求
+      const response = await sendServiceRequest('chat', config, headers)
+      const assistantContent =
+        (response.data as { choices?: Array<{ message?: { content?: string } }> } | null)?.choices?.[0]?.message?.content || ''
+
+      updateLastMessage(assistantContent)
+    }
+  } catch (error) {
+    const errorMessage = parseErrorMessage(error, t('playgroundChat.messages.errorContext'))
+    const suggestion = getErrorSuggestion(error)
+
+    updateLastMessage(`❌ ${t('playgroundChat.messages.errorTitle')}: ${errorMessage}`)
+    resetStreamingState()
+
+    if (suggestion) {
+      ElMessage({
+        type: 'error',
+        message: `${errorMessage}\n\n💡 ${t('playgroundChat.messages.suggestion')}: ${suggestion}`,
+        duration: 6000,
+        showClose: true
+      })
+    } else {
+      ElMessage.error(errorMessage)
+    }
+  } finally {
+    isLoading.value = false
+    isStreaming.value = false
+  }
+}
+
+// 取消请求
+const handleCancelRequest = () => {
+  if (isStreaming.value) {
+    cancelStream()
+    isLoading.value = false
+    ElMessage.info(t('playgroundChat.messages.requestCancelled'))
+  }
+}
+
+// 新对话
+const handleNewChat = () => {
+  createNewSession(selectedModel.value)
+  ElMessage.success(t('playgroundChat.messages.newChatCreated'))
+}
+
+// 清空当前对话
+const handleClear = () => {
+  clearMessages()
+  ElMessage.success(t('playgroundChat.messages.chatCleared'))
+}
+
+// 复制消息（模板在用；参数有意不用 —— MessageBubble 已自行处理复制）
+const handleCopyMessage = (_content: string) => {
+  // MessageBubble 已经处理了复制，这里可以添加额外的逻辑（如果需要）
+}
+
+// 重新生成 - 重新发送最后一个用户消息
+const handleRegenerateMessage = async () => {
+  if (isLoading.value) return
+
+  // 找到最后一个用户消息
+  const lastUserMessage = [...messages.value].reverse().find(m => m.role === 'user')
+  if (!lastUserMessage) {
+    ElMessage.warning(t('playgroundChat.messages.nothingToRegenerate'))
+    return
+  }
+
+  // 移除最后的助手消息
+  if (messages.value.length > 0 && messages.value[messages.value.length - 1].role === 'assistant') {
+    messages.value.pop()
+  }
+
+  // 准备请求
+  isLoading.value = true
+  resetStreamingState()
+
+  // 添加空的助手消息（用于流式更新）
+  const assistantMessage: ChatMessage = {
+    role: 'assistant',
+    content: ''
+  }
+  addMessage(assistantMessage)
+
+  try {
+    const config: ChatRequestConfig = {
+      model: selectedModel.value,
+      messages: messages.value.slice(0, -1).map((m) => ({
+        role: m.role,
+        content: m.content
+      })),
+      stream: chatConfig.value.stream ?? true,
+      temperature: chatConfig.value.temperature ?? 0.7,
+      maxTokens: chatConfig.value.maxTokens ?? 4096,
+      topP: chatConfig.value.topP ?? 1,
+      frequencyPenalty: chatConfig.value.frequencyPenalty ?? 0,
+      presencePenalty: chatConfig.value.presencePenalty ?? 0
+    }
+
+    const headers: Record<string, string> = {}
+    const token = localStorage.getItem('admin_token')
+    if (token) {
+      headers['Jairouter_Token'] = token
+    }
+
+    if (config.stream) {
+      // 流式请求
+      const baseURL = import.meta.env.VITE_API_BASE_URL || ''
+      const url = `${baseURL}/v1/chat/completions`
+
+      const response = await createStreamRequest(url, config, headers)
+
+      await handleStreamResponse(response, {
+        onChunk: (chunk) => {
+          streamingContent.value += chunk
+          // 同 handleSendMessage：最终内容由 onComplete / catch 落盘
+          scheduleStreamingDisplay()
+        },
+        onComplete: (content) => {
+          updateLastMessage(content)
+          resetStreamingState()
+        }
+      })
+    } else {
+      // 鞞流式请求
+      const response = await sendServiceRequest('chat', config, headers)
+      const assistantContent =
+        (response.data as { choices?: Array<{ message?: { content?: string } }> } | null)?.choices?.[0]?.message?.content || ''
+
+      updateLastMessage(assistantContent)
+    }
+  } catch (error) {
+    const errorMessage = parseErrorMessage(error, t('playgroundChat.messages.errorContext'))
+    const suggestion = getErrorSuggestion(error)
+
+    updateLastMessage(`❌ ${t('playgroundChat.messages.errorTitle')}: ${errorMessage}`)
+    resetStreamingState()
+
+    if (suggestion) {
+      ElMessage({
+        type: 'error',
+        message: `${errorMessage}\n\n💡 ${t('playgroundChat.messages.suggestion')}: ${suggestion}`,
+        duration: 6000,
+        showClose: true
+      })
+    } else {
+      ElMessage.error(errorMessage)
+    }
+  } finally {
+    isLoading.value = false
+    isStreaming.value = false
+  }
+}
+
+// 暴露方法
+defineExpose({
+  refreshData,
+  handleNewChat,
+  handleClear
+})
+</script>
+
+<style scoped>
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px);
+  background-color: var(--ja-surface);
+  border-radius: var(--ja-radius-sm);
+}
+
+.chat-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--ja-space-3) var(--ja-space-4);
+  background-color: var(--ja-paper);
+  border-bottom: 1px solid var(--ja-border);
+  border-radius: var(--ja-radius-sm) var(--ja-radius-sm) 0 0;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-3);
+}
+
+.model-select {
+  width: 240px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-1);
+}
+
+.config-panel {
+  padding: var(--ja-space-3) var(--ja-space-4);
+  background-color: var(--ja-paper);
+  border-bottom: 1px solid var(--ja-border);
+}
+
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  transform: translateY(-10px);
+  opacity: 0;
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--ja-space-4);
+  min-height: 0;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ja-space-8) var(--ja-space-5);
+  text-align: center;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ja-ink);
+  margin-top: var(--ja-space-4);
+  margin-bottom: var(--ja-space-2);
+}
+
+.empty-subtitle {
+  font-size: 14px;
+  color: var(--ja-ink-3);
+  margin-bottom: var(--ja-space-6);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ja-space-2);
+  max-width: 600px;
+}
+
+.input-area {
+  padding: var(--ja-space-3) var(--ja-space-4);
+  background-color: var(--ja-paper);
+  border-top: 1px solid var(--ja-border);
+  border-radius: 0 0 var(--ja-radius-sm) var(--ja-radius-sm);
+}
+
+.input-tips {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--ja-space-2);
+  font-size: 12px;
+  color: var(--ja-ink-3);
+}
+
+.tip-warning {
+  color: var(--ja-warning);
+}
+
+/* 健康状态指示器样式 */
+.instance-option {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-2);
+}
+
+.health-indicator {
+  font-size: 12px;
+}
+
+.health-healthy {
+  color: var(--ja-success);
+}
+
+.health-unhealthy {
+  color: var(--ja-danger);
+}
+
+.health-unknown {
+  color: var(--ja-ink-3);
+}
+
+.instance-name {
+  flex: 1;
+}
+
+.health-status-text {
+  font-size: 12px;
+  color: var(--ja-danger);
+}
+
+.health-status-text.unknown {
+  color: var(--ja-ink-3);
+}
+</style>

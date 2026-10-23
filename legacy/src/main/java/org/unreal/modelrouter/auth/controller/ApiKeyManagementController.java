@@ -1,0 +1,416 @@
+package org.unreal.modelrouter.auth.controller;
+
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.unreal.modelrouter.common.constants.ErrorCode;
+import org.unreal.modelrouter.common.controller.response.RouterResponse;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyBatchExportVO;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyBatchImportRequest;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyBatchImportResult;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyCreationVO;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyCreateRequest;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyListVO;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyUpdateRequest;
+import org.unreal.modelrouter.auth.security.dto.ApiKeyVO;
+import org.unreal.modelrouter.auth.security.service.ApiKeyService;
+import org.unreal.modelrouter.auth.security.service.ApiKeyQuotaService;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.unreal.modelrouter.common.exception.ApiException;
+import org.unreal.modelrouter.common.exception.ApiExceptions;
+
+/**
+ * API 密钥管理控制器
+ * 提供 API 密钥的增删改查等管理功能的 REST API
+ *
+ * 安全改进：
+ * 1. 使用强类型 DTO/VO，不使用 Map
+ * 2. keyValue 使用 SHA-256 哈希存储
+ * 3. 仅在创建时返回原始 keyValue
+ * 4. 支持 IP 白名单和每日请求限制
+ * 5. 支持密钥轮换机制和创建者信息记录
+ */
+@Slf4j
+@RestController
+@RequestMapping("api/auth/api-keys")
+@RequiredArgsConstructor
+@Tag(name = "API Key Management", description = "API密钥管理接口")
+public class ApiKeyManagementController {
+
+    private final ApiKeyService apiKeyService;
+    private final ApiKeyQuotaService apiKeyQuotaService;
+
+    /**
+     * 获取所有 API 密钥列表
+     * 返回不包含 keyValue 的安全副本
+     */
+    @GetMapping
+    @Operation(summary = "获取所有API密钥", description = "获取系统中所有API密钥的信息（不包含实际密钥值）")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyListVO>> getAllApiKeys() {
+        return apiKeyService.getAllApiKeysVO()
+                .map(list -> RouterResponse.success(list, "获取API密钥列表成功"))
+                .onErrorResume(e -> {
+                    log.error("获取API密钥列表失败", e);
+                    return Mono.error(ApiException.of(ErrorCode.INTERNAL_ERROR.code(), "获取API密钥列表失败"));
+                });
+    }
+
+    /**
+     * 根据ID获取 API 密钥详情
+     * 返回不包含 keyValue 的安全副本
+     */
+    @GetMapping("/{keyId}")
+    @Operation(summary = "获取指定API密钥信息", description = "根据API密钥ID获取详细信息（不包含实际的密钥值）")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyVO>> getApiKeyById(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return apiKeyService.getApiKeyByIdVO(keyId)
+                .map(vo -> RouterResponse.success(vo, "获取API密钥信息成功"))
+                .onErrorResume(e -> {
+                    log.error("获取API密钥信息失败: {}", keyId, e);
+                    return Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"));
+                });
+    }
+
+    /**
+     * 创建新的 API 密钥
+     * 仅在创建时返回原始 keyValue，请前端弹窗提示用户保存
+     */
+    @PostMapping
+    @Operation(summary = "创建新的API密钥",
+               description = "创建一个新的API密钥，返回的密钥值仅此一次显示，请妥善保存")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyCreationVO>> createApiKey(
+            @Parameter(description = "API密钥创建请求")
+            @Valid @RequestBody final ApiKeyCreateRequest request) {
+        return apiKeyService.createApiKey(request)
+                .map(vo -> RouterResponse.success(vo,
+                        "创建API密钥成功，请妥善保存密钥值，此密钥值仅此一次显示"))
+                .onErrorResume(e -> {
+                    log.error("创建API密钥失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "创建API密钥失败"));
+                });
+    }
+
+    /**
+     * 更新 API 密钥信息
+     * 注意：keyValue 不可更新
+     */
+    @PutMapping("/{keyId}")
+    @Operation(summary = "更新API密钥",
+               description = "更新指定API密钥的信息（不包含密钥值，密钥值不可更新）")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyVO>> updateApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId,
+            @Parameter(description = "API密钥更新请求")
+            @Valid @RequestBody final ApiKeyUpdateRequest request) {
+        return apiKeyService.updateApiKey(keyId, request)
+                .map(vo -> RouterResponse.success(vo, "更新API密钥成功"))
+                .onErrorResume(e -> {
+                    log.error("更新API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"));
+                });
+    }
+
+    /**
+     * 删除 API 密钥
+     */
+    @DeleteMapping("/{keyId}")
+    @Operation(summary = "删除API密钥", description = "删除指定的API密钥")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<Void>> deleteApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return apiKeyService.deleteApiKey(keyId)
+                .then(Mono.just(RouterResponse.<Void>success(null, "删除API密钥成功")))
+                .onErrorResume(e -> {
+                    log.error("删除API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"));
+                });
+    }
+
+    /**
+     * 禁用 API 密钥
+     */
+    @PatchMapping("/{keyId}/disable")
+    @Operation(summary = "禁用API密钥", description = "禁用指定的API密钥")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyVO>> disableApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return apiKeyService.disableApiKey(keyId)
+                .map(vo -> RouterResponse.success(vo, "禁用API密钥成功"))
+                .onErrorResume(e -> {
+                    log.error("禁用API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"));
+                });
+    }
+
+    /**
+     * 启用 API 密钥
+     */
+    @PatchMapping("/{keyId}/enable")
+    @Operation(summary = "启用API密钥", description = "启用指定的API密钥")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyVO>> enableApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return apiKeyService.enableApiKey(keyId)
+                .map(vo -> RouterResponse.success(vo, "启用API密钥成功"))
+                .onErrorResume(e -> {
+                    log.error("启用API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"));
+                });
+    }
+
+    /**
+     * 重置 API 密钥（生成新的 keyValue）
+     * 旧的密钥值将失效，新的密钥值仅显示一次
+     */
+    @PostMapping("/{keyId}/reset")
+    @Operation(summary = "重置API密钥",
+               description = "重置API密钥值，旧的密钥值将失效，新的密钥值仅此一次显示")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyCreationVO>> resetApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        // 先删除旧的密钥，然后创建新的
+        return apiKeyService.getApiKeyByIdVO(keyId)
+                .flatMap(oldKey -> {
+                    // 创建新的密钥请求，保留原有属性
+                    ApiKeyCreateRequest newRequest = ApiKeyCreateRequest.builder()
+                            .keyId(keyId)  // 保持相同的 keyId
+                            .description(oldKey.getDescription())
+                            .permissions(oldKey.getPermissions())
+                            .enabled(oldKey.isEnabled())
+                            .expiresAt(oldKey.getExpiresAt())
+                            .rotationPeriodDays(oldKey.getRotationPeriodDays())
+                            .build();
+
+                    // 先删除旧密钥
+                    return apiKeyService.deleteApiKey(keyId)
+                            .then(apiKeyService.createApiKey(newRequest));
+                })
+                .map(vo -> RouterResponse.success(vo,
+                        "重置API密钥成功，请妥善保存新的密钥值，此密钥值仅此一次显示"))
+                .onErrorResume(e -> {
+                    log.error("重置API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiExceptions.wrap(e, "重置API密钥失败"));
+                });
+    }
+
+    /**
+     * 强制轮换 API 密钥
+     * 生成新的 keyValue 并更新 lastRotatedAt 时间戳
+     * 旧的密钥值将失效，新的密钥值仅显示一次
+     * 与 reset 不同，rotate 保留原有 keyId 和所有属性，仅更新 keyValue 和 lastRotatedAt
+     */
+    @PostMapping("/{keyId}/rotate")
+    @Operation(summary = "强制轮换API密钥",
+               description = "强制轮换API密钥值，旧的密钥值将失效，新的密钥值仅此一次显示")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyCreationVO>> forceRotateApiKey(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return apiKeyService.forceRotateKey(keyId, "admin")
+                .map(vo -> RouterResponse.success(vo,
+                        "密钥轮换成功，请妥善保存新的密钥值，此密钥值仅此一次显示"))
+                .onErrorResume(e -> {
+                    log.error("强制轮换API密钥失败: {}", keyId, e);
+                    return Mono.error(ApiExceptions.wrap(e, "密钥轮换失败"));
+                });
+    }
+
+    /**
+     * 批量导出 API 密钥配置
+     * 导出的数据不包含 keyValue 和 keyHash，仅包含可恢复的配置信息
+     * 可用于备份或迁移到其他系统
+     */
+    @GetMapping("/export")
+    @Operation(summary = "批量导出API密钥",
+               description = "导出所有API密钥的配置信息（不包含密钥值），可用于备份或迁移")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyBatchExportVO>> exportApiKeys() {
+        return apiKeyService.exportApiKeys()
+                .map(vo -> RouterResponse.success(vo, "导出API密钥配置成功"))
+                .onErrorResume(e -> {
+                    log.error("导出API密钥失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "导出API密钥失败"));
+                });
+    }
+
+    /**
+     * 批量导入 API 密钥
+     * 导入时会为每个密钥生成新的 keyValue
+     * MERGE 模式：保留现有密钥，仅添加新密钥
+     * REPLACE 模式：删除所有现有密钥，导入新密钥
+     */
+    @PostMapping("/import")
+    @Operation(summary = "批量导入API密钥",
+               description = "批量导入API密钥配置，导入时会为每个密钥生成新的密钥值")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyBatchImportResult>> importApiKeys(
+            @Parameter(description = "API密钥批量导入请求")
+            @Valid @RequestBody final ApiKeyBatchImportRequest request) {
+        return apiKeyService.importApiKeys(request, "admin", null)
+                .map(result -> {
+                    String message = String.format("批量导入完成：成功 %d，失败 %d",
+                            result.getSuccessCount(), result.getFailureCount());
+                    return RouterResponse.success(result, message);
+                })
+                .onErrorResume(e -> {
+                    log.error("批量导入API密钥失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "批量导入API密钥失败"));
+                });
+    }
+
+    // ===== 配额管理端点 =====
+
+    /**
+     * 获取指定 API Key 的配额使用详情
+     */
+    @GetMapping("/{keyId}/quota")
+    @Operation(summary = "获取API密钥配额详情",
+               description = "获取指定API密钥的配额使用情况，包括请求/Token使用量和速率")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyQuotaService.QuotaUsageDetail>> getApiKeyQuota(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        return Mono.fromCallable(() -> apiKeyQuotaService.getQuotaUsage(keyId))
+                .flatMap(opt -> opt.map(detail -> Mono.just(RouterResponse.success(detail, "获取配额详情成功")))
+                        .orElseGet(() -> Mono.error(ApiException.of(ErrorCode.NOT_FOUND.code(), "API密钥不存在"))))
+                .onErrorResume(e -> {
+                    log.error("获取API密钥配额详情失败: {}", keyId, e);
+                    return Mono.error(ApiExceptions.wrap(e, "获取配额详情失败"));
+                });
+    }
+
+    /**
+     * 重置指定 API Key 的每日配额计数器
+     */
+    @PostMapping("/{keyId}/quota/reset")
+    @Operation(summary = "重置API密钥每日配额",
+               description = "重置指定API密钥的每日请求和Token使用计数器")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<Void>> resetApiKeyQuota(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId) {
+        // 配额服务内部会 block()（管理面同步语义），必须把执行切到 boundedElastic：
+        // Mono.fromRunnable 默认在订阅线程上执行，而订阅线程是 Reactor 非阻塞线程
+        // （实测为 parallel-*），在那里 block 会抛 IllegalStateException。
+        return Mono.fromRunnable(() -> apiKeyQuotaService.resetDailyQuota(keyId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then(Mono.just(RouterResponse.<Void>success(null, "重置每日配额成功")))
+                .onErrorResume(e -> {
+                    log.error("重置API密钥每日配额失败: {}", keyId, e);
+                    return Mono.error(ApiExceptions.wrap(e, "重置配额失败"));
+                });
+    }
+
+    /**
+     * 仅更新 API Key 配额字段（v3.2.1）
+     */
+    @PutMapping("/{keyId}/quota")
+    @Operation(summary = "更新API密钥配额",
+               description = "仅更新每日请求/Token上限、每分钟速率与告警阈值；0 表示不限制")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<ApiKeyQuotaService.QuotaUsageDetail>> updateApiKeyQuota(
+            @Parameter(description = "API密钥ID") @PathVariable("keyId") final String keyId,
+            @RequestBody final org.unreal.modelrouter.auth.security.dto.ApiKeyUpdateRequest request) {
+        // 同上：updateQuotaLimits 内部会 block()，必须离开订阅线程（非阻塞线程无法 block）
+        return Mono.fromCallable(() -> apiKeyQuotaService.updateQuotaLimits(keyId, request))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(detail -> RouterResponse.success(detail, "配额已更新"))
+                .onErrorResume(IllegalArgumentException.class, e ->
+                        Mono.error(ApiException.of(ErrorCode.INVALID_REQUEST.code(), e.getMessage())))
+                .onErrorResume(e -> {
+                    log.error("更新API密钥配额失败: {}", keyId, e);
+                    return Mono.error(ApiExceptions.wrap(e, "更新配额失败"));
+                });
+    }
+
+    /**
+     * 批量重置指定 API Key 的每日配额（v3.2.1）
+     */
+    @PostMapping("/quota/batch-reset")
+    @Operation(summary = "批量重置API密钥配额",
+               description = "按 keyIds 批量重置每日配额与速率计数；不存在的 Key 会被跳过")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<Map<String, Object>>> batchResetQuota(
+            @RequestBody final Map<String, List<String>> body) {
+        final List<String> keyIds = body == null ? null : body.get("keyIds");
+        // 同上：批量重置内部逐个 block()，必须离开订阅线程
+        return Mono.fromCallable(() -> {
+            final int reset = apiKeyQuotaService.resetDailyQuotas(keyIds);
+            final Map<String, Object> data = new LinkedHashMap<>();
+            data.put("requested", keyIds == null ? 0 : keyIds.size());
+            data.put("reset", reset);
+            return RouterResponse.success(data, "批量重置配额完成");
+        }).subscribeOn(Schedulers.boundedElastic()).onErrorResume(e -> {
+            log.error("批量重置API密钥配额失败", e);
+            return Mono.error(ApiExceptions.wrap(e, "批量重置失败"));
+        });
+    }
+
+    /**
+     * 重置全部 API Key 每日配额（v3.2.1）
+     */
+    @PostMapping("/quota/reset-all")
+    @Operation(summary = "重置全部API密钥配额",
+               description = "重置所有 API Key 的每日请求/Token 计数与速率限制")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<Void>> resetAllQuota() {
+        // 同上：resetAllDailyQuotas 内部逐 key block()，必须离开订阅线程
+        return Mono.fromRunnable(() -> apiKeyQuotaService.resetAllDailyQuotas())
+                .subscribeOn(Schedulers.boundedElastic())
+                .then(Mono.just(RouterResponse.<Void>success(null, "已重置全部配额")))
+                .onErrorResume(e -> {
+                    log.error("重置全部API密钥配额失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "重置全部配额失败"));
+                });
+    }
+
+    /**
+     * 获取所有触发配额告警的 API Key 列表
+     */
+    @GetMapping("/quota/alerts")
+    @Operation(summary = "获取配额告警列表",
+               description = "获取所有触发了配额告警阈值的API密钥")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<List<ApiKeyQuotaService.QuotaAlertInfo>>> getQuotaAlerts() {
+        return Mono.fromCallable(apiKeyQuotaService::getAlerts)
+                .map(alerts -> RouterResponse.success(alerts, "获取配额告警列表成功"))
+                .onErrorResume(e -> {
+                    log.error("获取配额告警列表失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "获取告警列表失败"));
+                });
+    }
+
+    /**
+     * 获取所有 API Key 的配额使用概览
+     */
+    @GetMapping("/quota/overview")
+    @Operation(summary = "获取配额使用概览",
+               description = "获取所有API密钥的配额使用情况概览")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Mono<RouterResponse<List<ApiKeyQuotaService.QuotaUsageDetail>>> getQuotaOverview() {
+        return Mono.fromCallable(apiKeyQuotaService::getAllQuotaUsage)
+                .map(overview -> RouterResponse.success(overview, "获取配额概览成功"))
+                .onErrorResume(e -> {
+                    log.error("获取配额概览失败", e);
+                    return Mono.error(ApiExceptions.wrap(e, "获取配额概览失败"));
+                });
+    }
+}

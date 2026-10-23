@@ -1,0 +1,1423 @@
+<template>
+  <PageSkeleton :title="t('instance.title')">
+    <template #actions>
+      <el-button
+        type="primary"
+        link
+        size="small"
+        class="header-cross-link"
+        @click="router.push({ name: 'service-management', query: route.query.serviceType ? { serviceType: route.query.serviceType as string } : {} })"
+      >
+        {{ t('instance.openServiceConfig') }}
+      </el-button>
+      <el-button type="primary" v-permission="'config:instances:write'" @click="handleAddInstance" size="medium">
+        <el-icon><Plus /></el-icon>
+        {{ t('instance.addInstance') }}
+      </el-button>
+    </template>
+
+    <template #stats>
+      <OnboardingSteps :current-step="3" :service-type="(route.query.serviceType as string) || undefined" />
+    </template>
+
+    <template #toolbar>
+      <el-input v-model="searchQuery" :placeholder="t('instance.searchPlaceholder')" clearable size="medium"
+        class="search-input" @clear="handleSearchClear" @keyup.enter="applySearch">
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
+
+      <el-select v-model="statusFilter" :placeholder="t('instance.status')" clearable size="medium" class="filter-select">
+        <el-option :label="t('instance.all')" value=""></el-option>
+        <el-option :label="t('instance.enabled')" value="active"></el-option>
+        <el-option :label="t('instance.disabled')" value="inactive"></el-option>
+      </el-select>
+
+      <el-button type="text" class="refresh-button" @click="refreshCurrent">
+        <el-icon><Refresh /></el-icon>
+      </el-button>
+    </template>
+
+    <div class="tabs-wrap">
+      <!-- 服务类型切换：真正的 tab（下划线指示器 + 每项计数），键盘可达 -->
+      <el-tabs v-model="activeServiceType" class="service-tabs">
+        <el-tab-pane v-for="serviceType in serviceTypes" :key="serviceType" :name="serviceType">
+          <template #label>
+            <span class="tab-label">
+              {{ serviceTypeLabel(serviceType) }}
+              <span v-if="tabCounts[serviceType] !== undefined" class="tab-count">{{ tabCounts[serviceType] }}</span>
+            </span>
+          </template>
+          <div class="table-area">
+            <el-skeleton :loading="loading && !hasInstances" :rows="6" animated>
+              <template #default>
+                <el-table :data="paginated" style="width: 100%" class="instance-table" row-key="id" border fit>
+                  <el-table-column prop="name" :label="t('instance.name')" min-width="170" />
+                  <el-table-column prop="baseUrl" :label="t('instance.baseUrl')" min-width="230">
+                    <template #default="scope">
+                      <div class="url-cell">
+                        <el-tooltip :content="scope.row.baseUrl" placement="top">
+                          <span class="ellipsis">{{ scope.row.baseUrl }}</span>
+                        </el-tooltip>
+                        <el-button link class="copy-btn" :title="t('instance.copyUrl')"
+                          :aria-label="t('instance.copyUrl')" @click.stop="copyUrl(scope.row.baseUrl)">
+                          <el-icon><CopyDocument /></el-icon>
+                        </el-button>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="path" :label="t('instance.path')" min-width="140">
+                    <template #default="scope">
+                      <div class="ellipsis">{{ scope.row.path || '—' }}</div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="weight" :label="t('instance.weight')" width="80" align="center" />
+                  <el-table-column prop="adapter" :label="t('instance.adapter')" width="110" align="center">
+                    <template #default="scope">
+                      <span class="cell-text">{{ scope.row.adapter || globalAdapter || t('instance.notConfigured') }}</span>
+                      <div v-if="!scope.row.adapter && globalAdapter" class="adapter-note">
+                        {{ t('instance.globalNote') }}
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="headers" :label="t('instance.headers')" width="100" align="center">
+                    <template #default="scope">
+                      <el-tooltip v-if="scope.row.headers && Object.keys(scope.row.headers).length > 0"
+                        :content="Object.entries(scope.row.headers).map(([k, v]) => `${k}: ${v}`).join('\n')"
+                        placement="top">
+                        <span class="cell-text">
+                          {{ t('instance.headersCount', { count: Object.keys(scope.row.headers).length }) }}
+                        </span>
+                      </el-tooltip>
+                      <span v-else class="cell-muted">{{ t('instance.none') }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="tags" :label="t('instance.tags')" width="100" align="center">
+                    <template #default="scope">
+                      <el-tooltip v-if="scope.row.tags && Object.keys(scope.row.tags).length > 0"
+                        :content="Object.entries(scope.row.tags).map(([k, v]) => `${k}=${v}`).join('\n')"
+                        placement="top">
+                        <span class="cell-text">
+                          {{ t('instance.tagsCount', { count: Object.keys(scope.row.tags).length }) }}
+                        </span>
+                      </el-tooltip>
+                      <span v-else class="cell-muted">{{ t('instance.none') }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="status" :label="t('instance.status')" width="90" align="center">
+                    <template #default="scope">
+                      <el-tag :type="scope.row.status === 'active' ? 'success' : 'info'" size="small">
+                        {{ scope.row.status === 'active' ? t('instance.enabled') : t('instance.disabled') }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+
+                  <el-table-column :label="t('instance.actions')" width="250" align="center" fixed="right">
+                    <template #default="scope">
+                      <el-button link type="primary" size="small" v-permission="'config:instances:write'" @click="handleEdit(scope.row)">
+                        {{ t('common.edit') }}
+                      </el-button>
+
+                      <el-button link size="small" v-permission="'config:instances:write'" @click="openRateLimitConfig(scope.row)">
+                        {{ t('instance.rateLimitAction') }}
+                      </el-button>
+
+                      <el-button link size="small" v-permission="'config:instances:write'" @click="openCircuitBreakerConfig(scope.row)">
+                        {{ t('instance.circuitBreakerAction') }}
+                      </el-button>
+
+                      <el-button link size="small" v-permission="'config:instances:write'" @click="handleDelete(scope.row)">
+                        {{ t('common.delete') }}
+                      </el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+
+                <div v-if="filtered.length === 0" class="empty-wrap">
+                  <el-empty :description="t('instance.emptyText')"></el-empty>
+                </div>
+
+                <div class="table-footer" v-if="filtered.length > 0">
+                  <div class="footer-info">
+                    {{ t('instance.tableSummary', { count: filtered.length, current: currentPage, total: totalPages }) }}
+                  </div>
+                  <div class="footer-actions">
+                    <el-pagination v-model:current-page="currentPage" :page-size="pageSize" :total="filtered.length"
+                      layout="prev, pager, next, sizes, jumper" :page-sizes="[5, 10, 20, 50]"
+                      @size-change="handleSizeChange" @current-change="handlePageChange" />
+                  </div>
+                </div>
+              </template>
+            </el-skeleton>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+  </PageSkeleton>
+
+  <!-- 限流器配置弹窗 -->
+  <RateLimitConfig
+    v-model="rateLimitDialogVisible"
+    :title="rateLimitDialogTitle"
+    :initial-data="rateLimitFormData"
+    @save="handleRateLimitSave"
+  />
+
+  <!-- 熔断器配置弹窗 -->
+  <CircuitBreakerConfig
+    v-model="circuitBreakerDialogVisible"
+    :title="circuitBreakerDialogTitle"
+    :initial-data="circuitBreakerFormData"
+    @save="handleCircuitBreakerSave"
+  />
+
+  <!-- 添加/编辑实例对话框 -->
+  <el-dialog v-model="dialogVisible" :title="dialogTitle" width="820px" :before-close="handleDialogClose"
+    class="instance-dialog">
+      <el-form :model="form" label-width="120px" ref="formRef">
+        <el-divider content-position="left">{{ t('instance.basicInfo') }}</el-divider>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item :label="t('instance.serviceType')" prop="serviceType">
+              <el-select v-model="form.serviceType" :placeholder="t('instance.selectServiceType')" :disabled="isEdit">
+                <el-option v-for="st in serviceTypes" :key="st" :label="serviceTypeLabel(st)" :value="st" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+
+          <el-col :span="12">
+            <el-form-item :label="t('instance.name')" prop="name">
+              <el-input v-model="form.name" :placeholder="t('instance.inputName')" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item :label="t('instance.baseUrl')" prop="baseUrl">
+              <el-input v-model="form.baseUrl" :placeholder="t('instance.inputBaseUrl')" />
+            </el-form-item>
+          </el-col>
+
+          <el-col :span="12">
+            <el-form-item :label="t('instance.path')" prop="path">
+              <el-input v-model="form.path" :placeholder="t('instance.inputPath')" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item :label="t('instance.weight')" prop="weight">
+              <el-input-number v-model="form.weight" :min="1" :max="100" />
+            </el-form-item>
+          </el-col>
+
+          <el-col :span="12">
+            <el-form-item :label="t('instance.status')" prop="status">
+              <el-switch v-model="form.status" active-value="active" inactive-value="inactive" :active-text="t('instance.enabled')"
+                :inactive-text="t('instance.disabled')" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item :label="t('instance.adapter')" prop="adapter">
+              <el-select v-model="form.adapter" :placeholder="t('instance.selectAdapterPlaceholder')" clearable>
+                <el-option v-for="adapter in adapters" :key="adapter.name || adapter" :label="adapter.name || adapter"
+                  :value="adapter.name || adapter" />
+              </el-select>
+              <div v-if="!form.adapter && globalAdapter" class="form-note">
+                {{ t('instance.usingGlobalAdapter', { adapter: globalAdapter }) }}
+              </div>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">{{ t('instance.headersConfig') }}</el-divider>
+
+        <div class="headers-section">
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item :label="t('instance.headersManage')">
+                <div class="headers-actions">
+                  <el-button type="primary" size="small" @click="addCustomHeader">
+                    <el-icon>
+                      <Plus />
+                    </el-icon>
+                    {{ t('instance.addHeader') }}
+                  </el-button>
+                  <el-button type="success" size="small" @click="addAuthorizationHeader">
+                    <el-icon>
+                      <Key />
+                    </el-icon>
+                    {{ t('instance.addAuthorization') }}
+                  </el-button>
+                  <el-button type="warning" size="small" @click="clearAllHeaders" v-if="customHeadersList.length > 0">
+                    <el-icon>
+                      <Delete />
+                    </el-icon>
+                    {{ t('instance.clearAll') }}
+                  </el-button>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <div v-if="customHeadersList.length > 0" class="headers-list">
+            <el-row v-for="(header, index) in customHeadersList" :key="index" :gutter="20" class="header-row">
+              <el-col :span="10">
+                <el-form-item :label="t('instance.headerName', { index: index + 1 })">
+                  <el-input v-model="header.key" :placeholder="t('instance.headerKeyPlaceholder')" @input="onCustomHeaderChange" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item :label="t('instance.headerValue', { index: index + 1 })">
+                  <el-input v-model="header.value" :placeholder="t('instance.headerValuePlaceholder')" @input="onCustomHeaderChange"
+                    :type="header.key.toLowerCase() === 'authorization' ? 'password' : 'text'"
+                    :show-password="header.key.toLowerCase() === 'authorization'" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="2">
+                <div class="header-delete-wrapper">
+                  <el-button type="danger" size="small" @click="removeCustomHeader(index)" circle
+                    class="remove-header-btn" :title="t('instance.removeHeader')">
+                    <el-icon>
+                      <Close />
+                    </el-icon>
+                  </el-button>
+                </div>
+              </el-col>
+            </el-row>
+          </div>
+
+          <el-row v-else :gutter="20">
+            <el-col :span="24">
+              <el-form-item>
+                <el-empty :description="t('instance.emptyHeaders')" :image-size="60" class="empty-headers" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </div>
+
+        <el-divider content-position="left">{{ t('instance.tagsConfig') }}</el-divider>
+
+        <div class="headers-section">
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item :label="t('instance.tagsManage')">
+                <div class="headers-actions">
+                  <el-button type="primary" size="small" @click="addTag">
+                    <el-icon>
+                      <Plus />
+                    </el-icon>
+                    {{ t('instance.addTag') }}
+                  </el-button>
+                  <el-button type="warning" size="small" @click="clearAllTags" v-if="tagsList.length > 0">
+                    <el-icon>
+                      <Delete />
+                    </el-icon>
+                    {{ t('instance.clearAll') }}
+                  </el-button>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <div v-if="tagsList.length > 0" class="headers-list">
+            <el-row v-for="(tag, index) in tagsList" :key="index" :gutter="20" class="header-row">
+              <el-col :span="10">
+                <el-form-item :label="t('instance.tagName', { index: index + 1 })">
+                  <el-input v-model="tag.key" :placeholder="t('instance.tagKeyPlaceholder')" @input="onTagChange" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item :label="t('instance.tagValue', { index: index + 1 })">
+                  <el-input v-model="tag.value" :placeholder="t('instance.tagValuePlaceholder')" @input="onTagChange" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="2">
+                <div class="header-delete-wrapper">
+                  <el-button type="danger" size="small" @click="removeTag(index)" circle
+                    class="remove-header-btn" :title="t('instance.removeTag')">
+                    <el-icon>
+                      <Close />
+                    </el-icon>
+                  </el-button>
+                </div>
+              </el-col>
+            </el-row>
+          </div>
+
+          <el-row v-else :gutter="20">
+            <el-col :span="24">
+              <el-form-item>
+                <el-empty :description="t('instance.emptyTags')" :image-size="60" class="empty-headers" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </div>
+      </el-form>
+
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="handleDialogClose">{{ t('instance.cancel') }}</el-button>
+          <el-button type="primary" v-permission="'config:instances:write'" @click="handleSave" :loading="saveLoading">{{ t('instance.save') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import type { FormInstance } from 'element-plus'
+import { SERVICE_TYPE_LABELS, COMMON_SERVICE_TYPES } from '@/constants/serviceTypes'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { AdapterInfo } from '@/api/adapter'
+import type { ServiceConfigPayload } from '@/types/common'
+import type { RateLimitConfigPayload, RateLimitFormData } from '@/components/RateLimitConfig.vue'
+import type { CircuitBreakerConfigPayload, CircuitBreakerFormData } from '@/components/CircuitBreakerConfig.vue'
+import {
+  addServiceInstance,
+  deleteServiceInstance,
+  getServiceInstances,
+  updateServiceInstance,
+  saveRateLimitConfig,
+  saveCircuitBreakerConfig,
+  type InstanceConfig,
+  type RateLimitConfig as RateLimitConfigType,
+  type CircuitBreakerConfig as CircuitBreakerConfigType,
+} from '@/api/instance'
+import { getServiceTypes } from '@/api/dashboard'
+import { getAdapters, getAllConfigurations } from '@/api/service'
+import { clearCache } from '@/stores/playgroundCache'
+import { Plus, Delete, Close, Key, CopyDocument } from '@element-plus/icons-vue'
+import RateLimitConfig from '@/components/RateLimitConfig.vue'
+import CircuitBreakerConfig from '@/components/CircuitBreakerConfig.vue'
+import OnboardingSteps from './adapter/OnboardingSteps.vue'
+import PageSkeleton from '@/components/PageSkeleton.vue'
+import { uid } from '@/utils/uid'
+
+const route = useRoute()
+const router = useRouter()
+const { t } = useI18n()
+
+// v2.10.3 双语版：SERVICE_TYPE_LABELS 现为「类型→i18n key」映射，渲染时翻译；未知类型回退原值
+const serviceTypeMap: Record<string, string> = SERVICE_TYPE_LABELS as Record<string, string>
+const serviceTypeLabel = (type: string): string => {
+  const key = serviceTypeMap[type]
+  return key ? t(key) : type
+}
+
+// 指定显示顺序（会按此顺序排列卡片/标签）
+const serviceOrder: string[] = COMMON_SERVICE_TYPES as string[]
+
+// 服务类型（按指定顺序显示）
+const serviceTypes = ref<string[]>([])
+
+// 当前激活的服务类型
+const activeServiceType = ref('chat')
+
+// 适配器相关数据
+const adapters = ref<AdapterInfo[]>([])
+const globalConfig = ref<ServiceConfigPayload>({})
+const globalAdapter = ref<string>('')
+
+// 定义实例类型
+interface ServiceInstance {
+  id: string | number  // 修改为联合类型以支持字符串ID
+  serviceType: string
+  name: string
+  baseUrl: string
+  path: string
+  weight: number
+  status: 'active' | 'inactive'
+  instanceId: string
+  adapter?: string  // 适配器配置
+  headers?: Record<string, string>  // 请求头配置
+  tags?: Record<string, string>  // 标签配置
+  rateLimit: {
+    enabled: boolean
+    /** 与限流弹窗 el-option 的取值一致（#523：收成联合类型，避免任意 string 混进来） */
+    algorithm: 'token-bucket' | 'leaky-bucket' | 'sliding-window'
+    capacity: number
+    rate: number
+    scope: 'instance' | 'client-ip'
+    key: string
+    clientIpEnable: boolean
+  }
+  circuitBreaker: {
+    enabled: boolean
+    failureThreshold: number
+    timeout: number
+    successThreshold: number
+  }
+}
+
+// 实例数据缓存和当前数据
+const instancesCache = ref<Record<string, ServiceInstance[]>>({})
+const instances = ref<Record<string, ServiceInstance[]>>({})
+
+// 加载与状态
+const loading = ref(false)
+const saveLoading = ref(false)
+const dialogVisible = ref(false)
+const dialogTitle = ref('')
+const isEdit = ref(false)
+const formRef = ref<FormInstance>()
+
+// 搜索/过滤/分页
+const searchQuery = ref('')
+const statusFilter = ref('')
+const pageSize = ref(20)
+const currentPage = ref(1)
+
+// 每个服务类型 tab 的实例数量
+// 数据按 tab 惰性加载，未加载过的类型原本不显示计数（用户反馈「初次进来没有数量」），
+// 因此进入页面时另开一次静默预取补齐各类型数量（见 prefetchTypeCounts）。
+const typeCounts = ref<Record<string, number>>({})
+
+const tabCounts = computed<Record<string, number>>(() => {
+  const result: Record<string, number> = { ...typeCounts.value }
+  // 已加载的类型以 instances 为准：新增/删除后立即反映，不被预取的旧值覆盖
+  for (const [type, list] of Object.entries(instances.value)) {
+    result[type] = list.length
+  }
+  return result
+})
+
+// 复制基础 URL（表格内长 URL 截断，复制按钮补齐可用性）
+const copyUrl = async (url: string) => {
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    ElMessage.success(t('instance.copySuccess'))
+  } catch {
+    ElMessage.error(t('instance.copyFailed'))
+  }
+}
+
+// 表单数据
+const form = reactive<ServiceInstance>({
+  id: 0,
+  serviceType: 'chat',
+  name: '',
+  baseUrl: '',
+  path: '',
+  weight: 1,
+  instanceId: '',
+  status: 'active',
+  adapter: '',
+  headers: {},
+  tags: {},
+  rateLimit: {
+    enabled: false,
+    algorithm: 'token-bucket',
+    capacity: 100,
+    rate: 10,
+    scope: 'instance',
+    key: '',
+    clientIpEnable: false
+  },
+  circuitBreaker: {
+    enabled: false,
+    failureThreshold: 5,
+    timeout: 60000,
+    successThreshold: 2
+  }
+})
+
+// 请求头管理
+interface HeaderItem {
+  key: string
+  value: string
+}
+
+const customHeadersList = ref<HeaderItem[]>([])
+
+// 限流器配置弹窗相关
+const rateLimitDialogVisible = ref(false)
+const rateLimitDialogTitle = ref('')
+const rateLimitFormData = ref<RateLimitConfigPayload>({ rateLimit: null })
+
+// 熔断器配置弹窗相关
+const circuitBreakerDialogVisible = ref(false)
+const circuitBreakerDialogTitle = ref('')
+const circuitBreakerFormData = ref<CircuitBreakerConfigPayload>({ circuitBreaker: null })
+
+// 同步请求头列表
+const syncCustomHeadersList = () => {
+  customHeadersList.value = Object.entries(form.headers || {}).map(([key, value]) => ({
+    key,
+    value
+  }))
+}
+
+// 请求头变化处理
+const onCustomHeaderChange = () => {
+  const headers: Record<string, string> = {}
+  customHeadersList.value.forEach(header => {
+    if (header.key.trim() && header.value.trim()) {
+      headers[header.key.trim()] = header.value.trim()
+    }
+  })
+  form.headers = headers
+}
+
+// 添加请求头
+const addCustomHeader = () => {
+  customHeadersList.value.push({ key: '', value: '' })
+}
+
+// 移除请求头
+const removeCustomHeader = (index: number) => {
+  customHeadersList.value.splice(index, 1)
+  onCustomHeaderChange()
+}
+
+// 清除所有请求头
+const clearAllHeaders = () => {
+  customHeadersList.value = []
+  form.headers = {}
+}
+
+// 添加常用请求头模板
+const addAuthorizationHeader = () => {
+  const existingAuth = customHeadersList.value.find(h => h.key.toLowerCase() === 'authorization')
+  if (!existingAuth) {
+    customHeadersList.value.push({ key: 'Authorization', value: 'Bearer your-api-key-here' })
+    onCustomHeaderChange()
+  }
+}
+
+// 标签管理
+interface TagItem {
+  key: string
+  value: string
+}
+
+const tagsList = ref<TagItem[]>([])
+
+// 同步标签列表
+const syncTagsList = () => {
+  tagsList.value = Object.entries(form.tags || {}).map(([key, value]) => ({
+    key,
+    value
+  }))
+}
+
+// 标签变化处理
+const onTagChange = () => {
+  const tags: Record<string, string> = {}
+  tagsList.value.forEach(tag => {
+    if (tag.key.trim() && tag.value.trim()) {
+      tags[tag.key.trim()] = tag.value.trim()
+    }
+  })
+  form.tags = tags
+}
+
+// 添加标签
+const addTag = () => {
+  tagsList.value.push({ key: '', value: '' })
+}
+
+// 移除标签
+const removeTag = (index: number) => {
+  tagsList.value.splice(index, 1)
+  onTagChange()
+}
+
+// 清除所有标签
+const clearAllTags = () => {
+  tagsList.value = []
+  form.tags = {}
+}
+
+// 简单防抖
+function debounce<T extends (...args: never[]) => void>(fn: T, wait = 300) {
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  return (...args: Parameters<T>) => {
+    if (timeout) clearTimeout(timeout)
+    timeout = setTimeout(() => fn(...args), wait)
+  }
+}
+const applySearch = debounce(() => { currentPage.value = 1 }, 350)
+const handleSearchClear = () => { currentPage.value = 1 }
+
+// 计算当前选中类型是否有数据
+const hasInstances = computed(() => {
+  const list = instances.value[activeServiceType.value]
+  return Array.isArray(list) && list.length > 0
+})
+
+// 计算过滤后的数组（按搜索 & 状态）
+const filtered = computed(() => {
+  const list = instances.value[activeServiceType.value] || []
+  const q = (searchQuery.value || '').trim().toLowerCase()
+  return list.filter(item => {
+    if (statusFilter.value && item.status !== statusFilter.value) return false
+    if (!q) return true
+    return (
+      (item.name && item.name.toLowerCase().includes(q)) ||
+      (item.baseUrl && item.baseUrl.toLowerCase().includes(q)) ||
+      (item.path && item.path.toLowerCase().includes(q))
+    )
+  })
+})
+
+// 分页计算
+const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
+const paginated = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filtered.value.slice(start, start + pageSize.value)
+})
+
+// 监控页数、过滤变化，修正页码
+watch([filtered, pageSize], () => {
+  if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
+})
+
+// 监听服务类型变化，使用缓存或请求
+watch(activeServiceType, (newServiceType) => {
+  currentPage.value = 1
+  searchQuery.value = ''
+  statusFilter.value = ''
+  if (newServiceType && !instancesCache.value[newServiceType]) {
+    fetchServiceInstances(newServiceType)
+  } else if (newServiceType && instancesCache.value[newServiceType]) {
+    instances.value[newServiceType] = [...instancesCache.value[newServiceType]]
+  }
+})
+
+// Cross-link: 监听路由 query 变化，切换到对应服务类型 Tab
+watch(() => route.query.serviceType, (val) => {
+  if (val && typeof val === 'string' && serviceTypes.value.includes(val) && activeServiceType.value !== val) {
+    activeServiceType.value = val
+  }
+})
+
+// 获取适配器列表
+const fetchAdapters = async () => {
+  try {
+    const response = await getAdapters()
+    if (response.data?.success) {
+      adapters.value = response.data.data || []
+    }
+  } catch (error) {
+    console.error('获取适配器列表失败:', error)
+  }
+}
+
+// 获取全局配置
+const fetchGlobalConfig = async () => {
+  try {
+    const response = await getAllConfigurations()
+    if (response.data?.success) {
+      globalConfig.value = response.data.data || {}
+      // 从全局配置中提取默认适配器
+      globalAdapter.value = globalConfig.value.adapter || ''
+    }
+  } catch (error) {
+    console.error('获取全局配置失败:', error)
+  }
+}
+
+// 获取服务类型并按 serviceOrder 排序显示
+const fetchServiceTypes = async () => {
+  try {
+    const response = await getServiceTypes()
+    if (response.data?.success) {
+      const types: string[] = response.data.data || []
+
+      // 保持 serviceOrder 中的顺序，其他未在 serviceOrder 中的类型追加在后
+      const ordered = serviceOrder.filter(t => types.includes(t)).concat(types.filter(t => !serviceOrder.includes(t)))
+      serviceTypes.value = ordered
+
+      if (serviceTypes.value.length > 0) {
+        // Cross-link: 从路由 query 中读取 serviceType，预选对应 Tab
+        const queryType = route.query.serviceType as string | undefined
+        if (queryType && serviceTypes.value.includes(queryType)) {
+          activeServiceType.value = queryType
+        } else {
+          activeServiceType.value = serviceTypes.value[0]
+        }
+        fetchServiceInstances(activeServiceType.value)
+        // 首屏就把各 tab 的实例数补齐（不阻塞当前 tab 的加载）
+        void prefetchTypeCounts(serviceTypes.value)
+      }
+    }
+  } catch (error) {
+    console.error('获取服务类型失败:', error)
+    ElMessage.error(t('instance.messages.fetchTypesFailed'))
+  }
+}
+
+// 获取实例（带缓存与简单防抖）
+let fetchTimer: ReturnType<typeof setTimeout> | null = null
+const fetchServiceInstances = (serviceType: string) => {
+  if (fetchTimer) clearTimeout(fetchTimer)
+  fetchTimer = setTimeout(async () => {
+    loading.value = true
+    try {
+      if (instancesCache.value[serviceType]) {
+        instances.value[serviceType] = [...instancesCache.value[serviceType]]
+        loading.value = false
+        return
+      }
+      const response = await getServiceInstances(serviceType)
+      if (response.data?.success) {
+        const data = (response.data.data ?? []) as Partial<ServiceInstance>[]
+        // 确保每个实例都包含正确的服务类型和ID
+        // 后端实例行只保证核心字段（instanceId/name/baseUrl…），UI 侧补齐 id/adapter/headers/tags
+        const typedData = data.map((item) => ({
+          ...item,
+          id: item.instanceId || uid(), // 使用后端返回的instanceId作为唯一标识符，如果没有则使用客户端唯一ID
+          serviceType,
+          adapter: item.adapter || '', // 确保适配器字段存在
+          headers: item.headers || {}, // 确保headers字段存在
+          tags: item.tags || {} // 确保tags字段存在
+        })) as ServiceInstance[]
+        instancesCache.value[serviceType] = typedData
+        instances.value[serviceType] = [...typedData]
+      } else {
+        instances.value[serviceType] = []
+      }
+    } catch (error) {
+      console.error(`获取${serviceType}服务实例失败:`, error)
+      instances.value[serviceType] = []
+      ElMessage.error(t('instance.messages.fetchInstancesFailed', { type: serviceType }))
+    } finally {
+      loading.value = false
+    }
+  }, 200)
+}
+
+// 静默预取各服务类型的实例数量，供 tab 标签在首屏就显示计数。
+// 只读长度、不写 instances 缓存（避免把未访问的 tab 当成已加载）；失败静默，计数只是装饰。
+const prefetchTypeCounts = async (types: string[]) => {
+  await Promise.all(
+    types.map(async (type) => {
+      if (typeCounts.value[type] !== undefined || instancesCache.value[type]) return
+      try {
+        const response = await getServiceInstances(type)
+        if (response.data?.success) {
+          typeCounts.value[type] = (response.data.data ?? []).length
+        }
+      } catch {
+        // 计数缺失不影响主流程
+      }
+    })
+  )
+}
+
+// 刷新当前 tab
+const refreshCurrent = () => {
+  const serviceType = activeServiceType.value
+  delete instancesCache.value[serviceType]
+  fetchServiceInstances(serviceType)
+  // 同时刷新适配器列表和全局配置
+  fetchAdapters()
+  fetchGlobalConfig()
+  ElMessage.success(t('instance.messages.refreshing'))
+}
+
+// 添加实例
+const handleAddInstance = () => {
+  dialogTitle.value = t('instance.addInstance')
+  isEdit.value = false
+  Object.assign(form, {
+    id: 0,
+    serviceType: activeServiceType.value, // 确保使用当前选项卡的服务类型
+    name: '',
+    baseUrl: '',
+    path: '',
+    weight: 1,
+    status: 'active',
+    adapter: '',
+    headers: {},
+    tags: {},
+    rateLimit: {
+      enabled: false,
+      algorithm: 'token-bucket',
+      capacity: 100,
+      rate: 10,
+      scope: 'instance',
+      key: '',
+      clientIpEnable: false
+    },
+    circuitBreaker: {
+      enabled: false,
+      failureThreshold: 5,
+      timeout: 60000,
+      successThreshold: 2
+    }
+  })
+  customHeadersList.value = []
+  tagsList.value = []
+  dialogVisible.value = true
+}
+
+// 编辑实例
+const handleEdit = (row: ServiceInstance) => {
+  dialogTitle.value = t('instance.editInstance')
+  isEdit.value = true
+  // 使用数据库ID（row.id）作为instanceId
+  const dbId = row.id
+  Object.assign(form, {
+    ...row,
+    // 确保使用当前激活的页签对应的服务类型，而不是实例原来的服务类型
+    serviceType: activeServiceType.value,
+    // 确保headers字段存在
+    headers: row.headers || {},
+    // 确保tags字段存在
+    tags: row.tags || {},
+    // 确保 rateLimit 和 circuitBreaker 不为 null
+    rateLimit: row.rateLimit || {
+      enabled: false,
+      algorithm: 'token-bucket',
+      capacity: 100,
+      rate: 10,
+      scope: 'instance',
+      key: '',
+      clientIpEnable: false
+    },
+    circuitBreaker: row.circuitBreaker || {
+      enabled: false,
+      failureThreshold: 5,
+      timeout: 60000,
+      successThreshold: 2
+    },
+    // 使用数据库ID
+    instanceId: String(dbId)
+  })
+  syncCustomHeadersList()
+  syncTagsList()
+  dialogVisible.value = true
+}
+
+// 删除实例
+const handleDelete = (row: ServiceInstance) => {
+  ElMessageBox.confirm(t('instance.deleteConfirmMessage'), t('instance.confirmTitle'), {
+    confirmButtonText: t('instance.confirm'),
+    cancelButtonText: t('instance.cancel'),
+    type: 'warning'
+  }).then(async () => {
+    try {
+      // 确保使用当前激活的页签对应的服务类型
+      const serviceType = activeServiceType.value;
+      // 使用数据库ID
+      const dbId = row.id
+      const response = await deleteServiceInstance(serviceType, String(dbId))
+      if (response.data?.success) {
+        instances.value[serviceType] = (instances.value[serviceType] || []).filter(i => i.id !== dbId)
+        instancesCache.value[serviceType] = [...(instances.value[serviceType] || [])]
+        // 同时清除试验场的缓存，让试验场下拉列表刷新
+        clearCache(serviceType)
+        ElMessage.success(t('instance.messages.deleteSuccess'))
+      } else {
+        ElMessage.error(response.data?.message || t('instance.messages.deleteFailed'))
+      }
+    } catch (error) {
+      console.error('删除实例失败:', error)
+      ElMessage.error(t('instance.messages.deleteInstanceFailed'))
+    }
+  }).catch(() => {
+    ElMessage.info(t('instance.messages.deleteCancelled'))
+  })
+}
+
+// 关闭对话框
+const handleDialogClose = () => {
+  dialogVisible.value = false
+  if (formRef.value) formRef.value.resetFields()
+}
+
+// 保存实例（新增/编辑）- 仅保存基础属性，限流器和熔断器通过独立接口配置
+const handleSave = async () => {
+  if (!formRef.value) return
+  saveLoading.value = true
+  try {
+    // 确保使用当前选项卡的服务类型
+    const serviceType = activeServiceType.value;
+
+    // 构造实例数据（仅基础属性）
+    const instanceData: InstanceConfig = {
+      name: form.name,
+      baseUrl: form.baseUrl,
+      path: form.path || '',
+      weight: form.weight,
+      status: form.status,
+      adapter: form.adapter || undefined,
+      headers: form.headers || {},
+      tags: form.tags || {}
+    }
+
+    if (isEdit.value) {
+      // 使用后端返回的实例ID
+      const response = await updateServiceInstance(serviceType, form.instanceId, instanceData)
+      if (response.data?.success) {
+        // 编辑成功后，清除缓存并重新获取实例列表以确保数据同步
+        delete instancesCache.value[serviceType]
+        // 同时清除试验场的缓存，让试验场下拉列表刷新
+        clearCache(serviceType)
+        fetchServiceInstances(serviceType)
+        ElMessage.success(t('instance.messages.editSuccess'))
+      } else {
+        ElMessage.error(response.data?.message || t('instance.messages.editFailed'))
+        saveLoading.value = false
+        return
+      }
+    } else {
+      // 添加新实例
+      const response = await addServiceInstance(serviceType, instanceData)
+      if (response.data?.success) {
+        // 添加成功后，清除缓存并重新获取实例列表以确保数据同步
+        delete instancesCache.value[serviceType]
+        // 同时清除试验场的缓存，让试验场下拉列表刷新
+        clearCache(serviceType)
+        fetchServiceInstances(serviceType)
+        ElMessage.success(t('instance.messages.addSuccess'))
+      } else {
+        ElMessage.error(response.data?.message || t('instance.messages.addFailed'))
+        saveLoading.value = false
+        return
+      }
+    }
+
+    dialogVisible.value = false
+  } catch (error) {
+    console.error('保存实例失败:', error)
+    ElMessage.error(t('instance.messages.saveFailed'))
+  } finally {
+    saveLoading.value = false
+  }
+}
+
+// 分页事件
+const handleSizeChange = (size: number) => { pageSize.value = size; currentPage.value = 1 }
+const handlePageChange = (page: number) => { currentPage.value = page }
+
+// 当前正在编辑的实例（使用数据库ID）
+const currentEditInstanceId = ref<string>('')
+const currentEditServiceType = ref<string>('')
+
+// 打开限流器配置弹窗
+const openRateLimitConfig = (row: ServiceInstance) => {
+  // 使用数据库ID
+  currentEditInstanceId.value = String(row.id)
+  currentEditServiceType.value = activeServiceType.value
+  rateLimitDialogTitle.value = t('instance.rateLimitConfigTitle', { name: row.name })
+  // 从 row.rateLimit 中提取配置，转换为组件期望的嵌套格式
+  const rateLimitConfig = row.rateLimit || { enabled: false }
+  rateLimitFormData.value = {
+    rateLimit: {
+      enabled: rateLimitConfig.enabled || false,
+      algorithm: rateLimitConfig.algorithm || 'token-bucket',
+      capacity: rateLimitConfig.capacity || 100,
+      rate: rateLimitConfig.rate || 10,
+      scope: rateLimitConfig.scope || 'instance',
+      key: rateLimitConfig.key || '',
+      clientIpEnable: rateLimitConfig.clientIpEnable || false
+    }
+  }
+  rateLimitDialogVisible.value = true
+}
+
+// 打开熔断器配置弹窗
+const openCircuitBreakerConfig = (row: ServiceInstance) => {
+  // 使用数据库ID
+  currentEditInstanceId.value = String(row.id)
+  currentEditServiceType.value = activeServiceType.value
+  circuitBreakerDialogTitle.value = t('instance.circuitBreakerConfigTitle', { name: row.name })
+  // 从 row.circuitBreaker 中提取配置，转换为组件期望的嵌套格式
+  const circuitBreakerConfig = row.circuitBreaker || { enabled: false }
+  circuitBreakerFormData.value = {
+    circuitBreaker: {
+      enabled: circuitBreakerConfig.enabled || false,
+      failureThreshold: circuitBreakerConfig.failureThreshold || 5,
+      timeout: circuitBreakerConfig.timeout || 60000,
+      successThreshold: circuitBreakerConfig.successThreshold || 2
+    }
+  }
+  circuitBreakerDialogVisible.value = true
+}
+
+// 保存限流器配置
+const handleRateLimitSave = async (configData: RateLimitConfigPayload) => {
+  if (!currentEditInstanceId.value) return
+
+  saveLoading.value = true
+  try {
+    const serviceType = currentEditServiceType.value
+    const instanceId = currentEditInstanceId.value
+
+    // 从嵌套格式中提取限流器配置（组件 emit 的载荷是 `{ rateLimit }`；关闭时是 null ⇒ 走默认值）
+    const rateLimitConfig: Partial<RateLimitFormData> = configData.rateLimit ?? { enabled: false }
+
+    // 构造请求数据
+    const config: RateLimitConfigType = {
+      enabled: rateLimitConfig.enabled || false,
+      algorithm: rateLimitConfig.algorithm || 'token-bucket',
+      capacity: rateLimitConfig.capacity || 100,
+      rate: rateLimitConfig.rate || 10,
+      scope: rateLimitConfig.scope || 'instance',
+      key: rateLimitConfig.key || '',
+      clientIpEnable: rateLimitConfig.clientIpEnable || false
+    }
+
+    const response = await saveRateLimitConfig(serviceType, instanceId, config)
+
+    if (response.data?.success) {
+      ElMessage.success(t('instance.messages.rateLimitSaveSuccess'))
+      // 刷新缓存
+      delete instancesCache.value[serviceType]
+      fetchServiceInstances(serviceType)
+    } else {
+      ElMessage.error(response.data?.message || t('instance.messages.saveFailedGeneric'))
+    }
+  } catch (error) {
+    console.error('保存限流器配置失败:', error)
+    ElMessage.error(t('instance.messages.rateLimitSaveFailed'))
+  } finally {
+    saveLoading.value = false
+  }
+}
+
+// 保存熔断器配置
+const handleCircuitBreakerSave = async (configData: CircuitBreakerConfigPayload) => {
+  if (!currentEditInstanceId.value) return
+
+  saveLoading.value = true
+  try {
+    const serviceType = currentEditServiceType.value
+    const instanceId = currentEditInstanceId.value
+
+    // 从嵌套格式中提取熔断器配置
+    const circuitBreakerConfig: Partial<CircuitBreakerFormData> = configData.circuitBreaker ?? { enabled: false }
+
+    // 构造请求数据
+    const config: CircuitBreakerConfigType = {
+      enabled: circuitBreakerConfig.enabled || false,
+      failureThreshold: circuitBreakerConfig.failureThreshold || 5,
+      timeout: circuitBreakerConfig.timeout || 60000,
+      successThreshold: circuitBreakerConfig.successThreshold || 2
+    }
+
+    const response = await saveCircuitBreakerConfig(serviceType, instanceId, config)
+
+    if (response.data?.success) {
+      ElMessage.success(t('instance.messages.cbSaveSuccess'))
+      // 刷新缓存
+      delete instancesCache.value[serviceType]
+      fetchServiceInstances(serviceType)
+    } else {
+      ElMessage.error(response.data?.message || t('instance.messages.saveFailedGeneric'))
+    }
+  } catch (error) {
+    console.error('保存熔断器配置失败:', error)
+    ElMessage.error(t('instance.messages.cbSaveFailed'))
+  } finally {
+    saveLoading.value = false
+  }
+}
+
+// 初始化
+onMounted(() => {
+  fetchServiceTypes()
+  fetchAdapters()
+  fetchGlobalConfig()
+})
+</script>
+
+<style scoped>
+.header-cross-link {
+  font-size: 13px;
+}
+
+.search-input {
+  width: 360px;
+  min-width: 200px;
+}
+
+.filter-select {
+  width: 140px;
+  min-width: 120px;
+}
+
+.refresh-button {
+  color: var(--ja-text-secondary);
+}
+
+/* tabs & table area */
+.tabs-wrap {
+  padding: 0;
+}
+
+.service-tabs ::v-deep(.el-tabs__content) {
+  padding: 0;
+}
+
+/* 服务类型 tab：下划线指示器 + 计数（选中态靠主色下划线，不靠底色） */
+.service-tabs ::v-deep(.el-tabs__item) {
+  font-size: 14px;
+}
+
+.tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background-color: var(--el-fill-color);
+  color: var(--ja-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* 表格容器与服务/版本页保持同一语言：不再套一层带阴影的卡片 */
+.table-area {
+  padding: 0;
+}
+
+/* table */
+.instance-table {
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.instance-table :deep(.el-table__cell) {
+  font-size: 14px;
+  padding: 12px;
+}
+
+.instance-table :deep(.el-table__header th) {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ja-text-primary);
+  background-color: var(--el-fill-color-light);
+}
+
+.cell-text {
+  color: var(--ja-text-primary);
+}
+
+.cell-muted {
+  color: var(--ja-text-secondary);
+}
+
+/* URL 列：截断保留 + 复制按钮 */
+.url-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.copy-btn {
+  flex: none;
+  padding: 0 4px;
+  color: var(--ja-text-secondary);
+}
+
+.copy-btn:hover {
+  color: var(--ja-primary);
+}
+
+.ellipsis {
+  display: inline-block;
+  max-width: 420px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* empty and footer */
+.empty-wrap {
+  padding: 30px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.table-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ja-border-lighter);
+}
+
+.footer-info {
+  color: var(--ja-text-secondary);
+  font-size: 13px;
+}
+
+/* dialog */
+.instance-dialog :deep(.el-dialog__header) {
+  background-color: var(--el-fill-color-light);
+  border-bottom: 1px solid var(--ja-border-lighter);
+  padding: 14px 20px;
+}
+
+.instance-dialog :deep(.el-dialog__title) {
+  font-weight: 700;
+  color: var(--ja-text-primary);
+  font-size: 18px;
+}
+
+.instance-dialog :deep(.el-dialog__body) {
+  padding: 20px;
+}
+
+.instance-dialog :deep(.el-form-item__label) {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ja-text-primary);
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 20px;
+}
+
+/* 适配器相关样式 */
+.adapter-note {
+  font-size: 11px;
+  color: var(--ja-text-secondary);
+  margin-top: 2px;
+}
+
+.form-note {
+  font-size: 12px;
+  color: var(--ja-text-secondary);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* 请求头配置样式 - 与基本信息保持一致 */
+.headers-section {
+  margin: 0;
+  padding: 0;
+}
+
+.headers-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.headers-list {
+  margin-top: 16px;
+  padding: 16px;
+  background-color: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+}
+
+.header-row {
+  margin-bottom: 16px;
+  padding-top: 16px;
+  background-color: var(--ja-bg-card);
+  border: 1px solid var(--ja-border-light);
+  border-radius: 6px;
+  transition: all 0.3s ease;
+}
+
+.header-row:hover {
+  border-color: var(--ja-primary);
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.1);
+}
+
+.header-row:last-child {
+  margin-bottom: 0;
+}
+
+.empty-headers {
+  margin: 0;
+  background-color: transparent;
+  border: none;
+  padding: 20px 0;
+}
+
+/* 操作按钮样式 */
+.header-delete-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.remove-header-btn {
+  transition: all 0.3s ease;
+}
+
+.remove-header-btn:hover {
+  transform: scale(1.1);
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .headers-actions {
+    justify-content: center;
+  }
+
+  .header-row .el-col {
+    margin-bottom: 8px;
+  }
+
+  .header-row .el-col:last-child {
+    margin-bottom: 0;
+  }
+
+  .header-delete-wrapper {
+    margin-top: 10px;
+    height: auto;
+  }
+}
+
+/* 滚动条样式 */
+.headers-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.headers-list::-webkit-scrollbar-track {
+  background: var(--el-bg-color-page);
+  border-radius: 3px;
+}
+
+.headers-list::-webkit-scrollbar-thumb {
+  background: var(--el-border-color);
+  border-radius: 3px;
+}
+
+.headers-list::-webkit-scrollbar-thumb:hover {
+  background: var(--el-border-color-dark);
+}
+
+/* 表单项标签样式统一 */
+.headers-section .el-form-item__label {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ja-text-primary);
+}
+
+/* 请求头启用开关样式 */
+.headers-section .el-switch {
+  margin-left: 0;
+}
+</style>

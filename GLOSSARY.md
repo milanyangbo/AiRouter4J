@@ -1,0 +1,198 @@
+# GLOSSARY.md
+
+本项目的领域词汇表。**coder agent 在输出中命名领域概念时必须用这里的词**（见 `docs/agents/domain.md`），避免同义词漂移。
+
+> 状态说明：`[已定]` 定义已稳定；`[待定]` 尚未实现，定义可能随 ADR 演进。
+
+---
+
+## 一、网关拓扑：Face / Provider / Service
+
+**Face**（入站协议面）
+客户端与网关之间说的协议。一个 Face 负责一种 wire format 的 encode/decode。
+例：`OpenAiFace`、`AnthropicFace`。
+> 禁用：不要叫 controller / handler / endpoint —— 那些是 Spring 的实现细节。Face 是协议边界，不是 HTTP 路由。
+
+**Provider**（出站模型提供方适配器）
+网关与上游模型服务之间说的协议。一个 Provider 负责把 CanonicalRequest 翻译成某个厂商的 wire format，并把它的响应译回来。
+例：`OpenAiCompatibleProvider`（覆盖 DeepSeek / vLLM / Ollama / GPUStack 等 OpenAI 兼容端点）、`AnthropicProvider`。
+
+**Face 与 Provider 的关系**
+两者通过 **Canonical** 中间表示解耦，形成 **N+M 扩展**而非 N×N 翻译。新增一个 Face 或 Provider 只需加一个类。
+
+**Service**（逻辑服务名）
+客户端可见的逻辑模型名，如 `chat`、`embedding`。一个 Service 下挂若干实例。
+
+**ModelInstance**（实例）
+一个 Service 下的具体后端：`id` + `Endpoint`（baseUrl / 凭证 / 超时）+ `ProviderKind` + 权重 + 启用标志。
+> 禁用：不要叫 backend / node / replica。
+
+**ProviderKind**
+实例的协议种类枚举：`OPENAI_COMPATIBLE`、`ANTHROPIC`。决定用哪个 Provider 适配器。
+
+**Adapter** [旧词]
+`legacy/` 里用来同时指代"入站面"和"出站适配"的词，语义含糊，新版**不再使用**。见到 legacy 代码里的 `Adapter`，先判断它实际是 Face 还是 Provider。
+
+---
+
+## 二、中间表示：Canonical
+
+**CanonicalRequest**
+网关内部的请求中间表示。与任何厂商的 wire format 无关，字段是我们自己的领域模型。
+所有 Face 都必须先译到 CanonicalRequest，所有 Provider 都只接受 CanonicalRequest。
+
+**CanonicalResponse**
+一次完整（非流式）调用的中间表示。
+
+**CanonicalStreamEvent**
+流式调用的事件中间表示，`sealed interface`。子类型：
+
+| 子类型 | 含义 |
+|---|---|
+| `Opening` | 首个事件，携带 id / model 等元信息 |
+| `Delta` | 内容增量帧 |
+| `Terminal` | **正常终态**，携带 Usage 与 FinishReason |
+| `Failed` | **异常终态**，携带 GatewayError |
+
+**Canonical / Unified / IR**
+同义词。**本项目只用 Canonical**，另外两个词不要出现在代码与文档里。
+
+**wire format**
+协议在传输层上的实际字节/JSON 形状（OpenAI 的 JSON Schema、Anthropic 的 SSE event 类型等）。翻译层的全部工作就是 Canonical ↔ wire format 的互转。
+
+---
+
+## 三、流式管道
+
+**TerminalEvent**（终态事件）
+一次流式调用的结束语信号，`Terminal` 或 `Failed` 二者之一。**必须显式发出**，不允许依赖 Reactor 的 `onComplete` / `onError` 隐式推断。
+> 这是修复"流式绕过熔断器"的关键机制。见 §五 **OutcomeObserver**。
+
+**Opening / Delta / Terminal / Failed**
+见 CanonicalStreamEvent 表。
+
+**IdleTimeout**（块间空闲超时）
+两帧之间的最大静默时长，超过即判超时。**不是总时长**。与之相对：
+
+**ResponseTimeout**（总响应超时）
+整个响应从发起到结束的上限。⚠️ **对 `text/event-stream` 的下游响应禁止设置**，否则长流会被基础设施掐断（legacy 在 60s 处踩过）。
+
+**SLO 三角**
+流式资源的三个明确边界：`idleTimeout` × 最大累积内容 × 入站/出站缓冲区。三者必须同时显式配置。
+
+**Backpressure**（背压）
+消费者消费速度低于生产者时的压力传导。网关处于中间位置，**必须向两端传导**：对下游用 request(n)，对上游受控后才能继续。
+
+**Cancellation**（取消）
+客户端断连。必须传播到下游连接并释放资源；同时它是一个**终态**，需要结算（但不能算作失败）。
+
+**BoundedAccumulator**（有界累积器）
+流式过程中累积 content 的缓冲区，带上限，超限则截断。关键性质：**截断影响展示，不影响计费** —— token 估算走独立的字符计数轨道。
+
+---
+
+## 四、路由与流量治理
+
+**SelectionStrategy**（实例选择策略）
+`RANDOM` / `ROUND_ROBIN` / `WEIGHTED` / `LEAST_ACTIVE` / `FIRST_AVAILABLE`。
+
+**InstanceSelector**
+从候选实例中选一个。纯函数式决策，**不做 IO**。
+
+**Availability**（可用性）
+实例是否可以被选中 = 启用 ∧ 健康检查通过 ∧ 熔断器未 OPEN ∧ 限流未拒绝。
+> 注意：legacy 里同一个 handler 对"健康"的默认值自相矛盾（一处默认健康、一处默认不健康），新版只有一条判定路径。
+
+**CircuitBreaker**（熔断器）
+按实例粒度的状态机：`CLOSED` → `OPEN` → `HALF_OPEN` → `CLOSED`。OPEN 期间请求不被选中。
+
+**CircuitState**
+`CLOSED` / `OPEN` / `HALF_OPEN`。
+
+**HalfOpen**
+OPEN 冷却结束后的试探态，放行有限数量的探测请求，决定是否回到 CLOSED。
+
+**RateLimiter**（限流器）
+按维度（API Key / Service / 实例 / 全局）限额。算法包括 `TokenBucket`、`SlidingWindow`、`LeakyBucket`、`WarmUp`。
+
+**SlidingWindow** / **TokenBucket**
+限流算法实现，可插拔到同一个 `RateLimiter` 端口下。
+
+**Fail-closed / Fail-open**
+治理组件自身故障时的默认行为。**本项目默认 fail-closed**：限流器自己挂了应当拒绝而非放行。确需 fail-open 必须写进 ADR 并说明补偿措施。
+> legacy 的配额在 Redis 故障时默认 fail-open → 限额整体失效，这是新版必须修掉的。
+
+**Single-flight**（单飞）
+同一 key 的同一操作在同一时刻只允许一个执行者，其余跳过或等待。用于高并发下的压缩、结算、刷新场景，避免 CAS 无限重试。
+
+**OutcomeObserver**（结果结算点）
+**唯一的**成功/失败/取消观测点。所有协作组件（熔断器、延迟感知负载均衡、指标、配额结算）都只从这里取结果，**不得各自观测**。
+> 这是修复 legacy P0-1 的架构手段：流式只要在 Terminal/Failed/Cancel 时才到达这里。
+
+**SSRF 守卫**
+出站请求的双层地址校验：创建期校验 + 连接期再判 DNS 解析结果（堵 DNS rebinding）。**所有出站必须经过唯一出口**，不允许散落的 WebClient。
+
+---
+
+## 五、Agent 层
+
+**ChatClient**
+Spring AI 的请求入口，负责编排 Advisor 链。
+
+**Advisor**
+挂在 ChatClient 请求管线上的横切处理单元，`getOrder()` 决定顺序，不调用 `chain.next()` 即短路。
+
+**CallAdvisor / StreamAdvisor**
+两个**独立**接口。任何有安全语义的 Advisor 必须**同时实现两者**，否则流式路径被静默跳过且不报错。
+
+**Tool**
+模型可调用的能力单元，`@Tool` 注解声明。
+
+**Subagent**（子 Agent）
+在**独立上下文窗口**中运行的专职 Agent，由主 Agent 通过 Task 工具委派，只把结论返回主 Agent。定义即一个 Markdown 配置文件。
+
+**Orchestrator**（编排 Agent）
+负责任务分解与委派的主 Agent。本项目主线是 **Ops Agent**，见下。
+
+**Ops Agent**
+本项目的主 Agent。运维场景：查实例健康 / 熔断限流状态 / 调用历史 / 异常事件 / 配置变更审计。**工具的数据源就是本网关自己的可观测数据**。
+
+**Session**
+结构化、事件溯源的短期记忆单元，取代扁平的消息列表。参考实现：`spring-ai-session`。
+
+**Turn**（轮次）
+一个 UserMessage + 其后所有事件，直到下一个 UserMessage。**压缩的最小原子粒度** —— 保证保留窗口永远从用户消息开始，不会切断工具调用序列。
+
+**Compaction**（压缩）
+会话历史的收缩，由 Trigger（何时压）+ Strategy（怎么压）成对驱动。两者必须同时设置。
+
+**Branch**（分支标签）
+多 Agent 场景下隔离事件流的标签。必须用常量/枚举管理，禁止手写字符串。
+
+**A2A**
+Agent2Agent 协议，跨系统 Agent 互操作，通过 AgentCard 发现。
+
+**MCP**
+Model Context Protocol。注解在 Spring AI 2.x 中已从社区包移入核心。
+
+---
+
+## 六、质量保证
+
+**Golden-file Contract Test**（契约测试）
+用真实的上游请求/响应样本做快照比对，锁定 wire format 的完整行为（含边界：跨 chunk 的 UTF-8 截断、空[data]帧、错误帧不补 [DONE] 等）。
+**这是未来任何框架升级的唯一安全网。**
+
+**Property-based Test**
+对翻译层的纯函数用生成式输入断言不变量（如"任意 chunk 序列切分方式，合并结果唯一"）。
+
+**CHUNK_PARSE_COUNT**
+一次流式 pipeline 中同一个 chunk 被解析的次数。**验收指标：必须恒为 1。** 允许同一封装有多 reader，不允许重复 parse。
+
+> 背景见 `docs/planning/legacy-review.md`：旧版 Anthropic 流式路径对同一个 chunk 做了 4 次 `readTree` + 2 次 `writeValueAsString`。
+
+---
+
+## 术语缺口
+
+本表未覆盖、但你认为是真实概念的，先记在这里，由 `domain-modeling` 统一裁决，不要自行发明词。

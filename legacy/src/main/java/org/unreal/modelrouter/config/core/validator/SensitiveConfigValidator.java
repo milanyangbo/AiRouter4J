@@ -1,0 +1,183 @@
+package org.unreal.modelrouter.config.core.validator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 敏感配置校验器
+ * 在应用启动时校验必须的环境变量配置
+ *
+ * <p>v2.8.5 新增：确保敏感配置不被硬编码，强制使用环境变量</p>
+ *
+ * <h3>必须配置的环境变量：</h3>
+ * <ul>
+ *   <li>JWT_SECRET - JWT 密钥，长度 ≥32 字符</li>
+ *   <li>INITIAL_ADMIN_PASSWORD - 初始管理员密码</li>
+ *   <li>GPUSTACK_API_TOKEN - 模型服务 API Token（如使用 GPUStack）</li>
+ * </ul>
+ *
+ * <h3>两个桶的语义（issue #381 起）：</h3>
+ * <ul>
+ *   <li><b>warnings</b>：一律打印；</li>
+ *   <li><b>errors</b>：**一律打印**（打印与阻断解耦），但**只有 {@code strict-mode=true} 才阻断启动</b>
+ *       —— 此前 errors 在非严格模式下既不打印也不阻断，错误级发现对运维不可见。</li>
+ * </ul>
+ */
+@Component
+@ConditionalOnProperty(name = "jairouter.config.validation.enabled", havingValue = "true", matchIfMissing = true)
+public class SensitiveConfigValidator implements ApplicationListener<ApplicationReadyEvent> {
+
+    private static final Logger log = LoggerFactory.getLogger(SensitiveConfigValidator.class);
+
+    @Value("${JWT_SECRET:}")
+    private String jwtSecret;
+
+    @Value("${INITIAL_ADMIN_PASSWORD:}")
+    private String initialAdminPassword;
+
+    @Value("${GPUSTACK_API_TOKEN:}")
+    private String gpustackApiToken;
+
+    @Value("${jairouter.config.validation.strict-mode:false}")
+    private boolean strictMode;
+
+    @Override
+    public void onApplicationEvent(ApplicationReadyEvent event) {
+        List<String> warnings = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+
+        // 校验 JWT_SECRET
+        validateJwtSecret(warnings, errors);
+
+        // 校验 INITIAL_ADMIN_PASSWORD
+        validateInitialAdminPassword(warnings, errors);
+
+        // 校验 GPUSTACK_API_TOKEN（非必须，但强烈推荐）
+        validateGpustackApiToken(warnings);
+
+        // 输出结果
+        if (!warnings.isEmpty()) {
+            log.warn("====== 配置警告 ======");
+            warnings.forEach(w -> log.warn("  ⚠️ {}", w));
+            log.warn("建议：参考 .env.example 设置环境变量");
+            log.warn("====== 警告结束 ======");
+        }
+
+        // issue #381：错误桶**一律打印**（打印与阻断解耦）。
+        // 此前 errors 只在 strictMode 下才被处理 ⇒ 默认模式（strict-mode=false）里
+        // 「JWT_SECRET 看起来是硬编码值」这类错误级发现既不打印也不阻断，运维完全看不到。
+        if (!errors.isEmpty()) {
+            log.error("====== 配置错误 ======");
+            errors.forEach(e -> log.error("  ❌ {}", e));
+            log.error("====== 错误结束 ======");
+        }
+
+        if (!errors.isEmpty() && strictMode) {
+            throw new IllegalStateException("敏感配置校验失败，应用无法启动。请设置必要的环境变量。");
+        }
+    }
+
+    private void validateJwtSecret(List<String> warnings, List<String> errors) {
+        if (jwtSecret == null || jwtSecret.isEmpty()) {
+            if (strictMode) {
+                errors.add("JWT_SECRET 未设置（必须配置）");
+            } else {
+                warnings.add("JWT_SECRET 未设置（开发环境可忽略，生产环境必须配置）");
+            }
+        } else if (jwtSecret.length() < 32) {
+            if (strictMode) {
+                errors.add("JWT_SECRET 长度过短（必须 ≥32 字符，当前: " + jwtSecret.length() + ")");
+            } else {
+                warnings.add("JWT_SECRET 长度过短（建议 ≥32 字符，当前: " + jwtSecret.length() + ")");
+            }
+        } else if (isHardcodedSecret(jwtSecret)) {
+            errors.add("JWT_SECRET 看起来是硬编码值（请使用环境变量）");
+        } else {
+            log.info("✓ JWT_SECRET 配置正确（长度: {} 字符）", jwtSecret.length());
+        }
+    }
+
+    private void validateInitialAdminPassword(List<String> warnings, List<String> errors) {
+        if (initialAdminPassword == null || initialAdminPassword.isEmpty()) {
+            if (strictMode) {
+                errors.add("INITIAL_ADMIN_PASSWORD 未设置（必须配置）");
+            } else {
+                warnings.add(missingAdminPasswordWarning());
+            }
+        } else if (initialAdminPassword.length() < 8) {
+            warnings.add("INITIAL_ADMIN_PASSWORD 长度过短（建议 ≥8 字符，当前: " + initialAdminPassword.length() + ")");
+        } else if (isHardcodedSecret(initialAdminPassword)) {
+            warnings.add("INITIAL_ADMIN_PASSWORD 看起来是硬编码值（请使用环境变量）");
+        } else {
+            log.info("✓ INITIAL_ADMIN_PASSWORD 已配置");
+        }
+    }
+
+    private void validateGpustackApiToken(List<String> warnings) {
+        if (gpustackApiToken == null || gpustackApiToken.isEmpty()) {
+            warnings.add("GPUSTACK_API_TOKEN 未设置（模型服务将无法认证）");
+        } else if (isHardcodedSecret(gpustackApiToken)) {
+            warnings.add("GPUSTACK_API_TOKEN 看起来是硬编码值（请使用环境变量）");
+        } else {
+            log.info("✓ GPUSTACK_API_TOKEN 已配置");
+        }
+    }
+
+    /**
+     * {@code config/auth/jwt.yml} 里 {@code ${INITIAL_ADMIN_PASSWORD:...}} 的回落值。
+     *
+     * <p>它由 {@code SensitiveConfigValidatorTest} 从**真实 yml** 读出并交叉核对 —— 任何一侧改了默认值
+     * 而另一侧没跟上，测试都会红（避免这段文案变成第二种「撒谎的提示」）。</p>
+     */
+    static final String FACTORY_DEFAULT_ADMIN_PASSWORD = "ChangeMeOnFirstStartup123456";
+
+    /**
+     * 未设置 {@code INITIAL_ADMIN_PASSWORD} 时的告警文案（包内可见：供测试断言，issue #314）。
+     *
+     * <p><b>这段文案此前写的是「首次启动将生成随机密码」，与实现不符</b> —— 本仓库**不存在任何启动期随机
+     * 密码生成**：缺口令时 JWT 账户会沿用 {@code config/auth/jwt.yml} 里的出厂默认密码
+     * （见 {@link #FACTORY_DEFAULT_ADMIN_PASSWORD}），而生产 profile 下 {@code StartupSecurityGate}
+     * 会因此**直接启动失败**。唯一生成器是显式 CLI {@code --generate-password}（{@code KeyGeneratorCommandLine}）。</p>
+     *
+     * @return 描述真实后果的告警文案
+     */
+    static String missingAdminPasswordWarning() {
+        return "INITIAL_ADMIN_PASSWORD 未设置（将回落到配置里的出厂默认密码 "
+                + FACTORY_DEFAULT_ADMIN_PASSWORD
+                + "；生产 profile 会因此启动失败 —— 请设置该环境变量，"
+                + "或用 --generate-password 生成一个强密码）";
+    }
+
+    /**
+     * 检查是否是硬编码的秘密值
+     * 检测常见的硬编码模式：占位符、测试值等
+     * 
+     * @param secret 要检查的密钥值
+     * @return true 如果是硬编码值，false 如果是合法密钥
+     */
+    public boolean isHardcodedSecret(String secret) {
+        if (secret == null) {
+            return false;
+        }
+
+        String lowerSecret = secret.toLowerCase();
+
+        // 检测常见占位符
+        return lowerSecret.contains("your-")
+               || lowerSecret.contains("placeholder")
+               || lowerSecret.contains("example")
+               || lowerSecret.contains("test")
+               || lowerSecret.contains("demo")
+               || lowerSecret.contains("changeme")
+               || lowerSecret.equals("secret")
+               || lowerSecret.equals("password");
+    }
+}

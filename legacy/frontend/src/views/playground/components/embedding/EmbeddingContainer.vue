@@ -1,0 +1,688 @@
+<template>
+  <div class="embedding-container">
+    <!-- 顶部工具栏 -->
+    <div class="service-toolbar">
+      <div class="toolbar-left">
+        <el-select
+          v-model="selectedModel"
+          :placeholder="t('playgroundEmbedding.toolbar.selectModel')"
+          :loading="instancesLoading"
+          filterable
+          class="model-select"
+        >
+          <template #prefix>
+            <el-icon><Cpu /></el-icon>
+          </template>
+          <el-option
+            v-for="inst in availableInstances"
+            :key="inst.instanceId"
+            :label="inst.name"
+            :value="inst.name"
+            :disabled="inst.healthStatus === 'UNHEALTHY'"
+          >
+            <div class="instance-option">
+              <span
+                class="health-indicator"
+                :class="{
+                  'health-healthy': inst.healthStatus === 'HEALTHY',
+                  'health-unhealthy': inst.healthStatus === 'UNHEALTHY',
+                  'health-unknown': inst.healthStatus === 'UNKNOWN' || !inst.healthStatus
+                }"
+              >
+                ●
+              </span>
+              <span class="instance-name">{{ inst.name }}</span>
+              <span
+                v-if="inst.healthStatus === 'UNHEALTHY'"
+                class="health-status-text"
+              >
+                {{ t('playgroundEmbedding.instance.offline') }}
+              </span>
+              <span
+                v-else-if="inst.healthStatus === 'UNKNOWN' || !inst.healthStatus"
+                class="health-status-text unknown"
+              >
+                {{ t('playgroundEmbedding.instance.unknown') }}
+              </span>
+            </div>
+          </el-option>
+        </el-select>
+        <el-button
+          text
+          @click="showConfig = !showConfig"
+        >
+          <el-icon><Setting /></el-icon>
+          {{ showConfig ? t('playgroundEmbedding.toolbar.hideConfig') : t('playgroundEmbedding.toolbar.showConfig') }}
+        </el-button>
+      </div>
+      <div class="toolbar-right">
+        <el-button
+          text
+          @click="handleClear"
+        >
+          <el-icon><Delete /></el-icon>
+          {{ t('playgroundEmbedding.toolbar.clear') }}
+        </el-button>
+      </div>
+    </div>
+
+    <!-- 配置面板 -->
+    <Transition name="slide-down">
+      <div
+        v-if="showConfig"
+        class="config-panel"
+      >
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <div class="config-item">
+              <label class="config-label">{{ t('playgroundEmbedding.labels.encodingFormat') }}</label>
+              <el-select
+                v-model="config.encodingFormat"
+                size="small"
+              >
+                <el-option
+                  label="float"
+                  value="float"
+                />
+                <el-option
+                  label="base64"
+                  value="base64"
+                />
+              </el-select>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="config-item">
+              <label class="config-label">{{ t('playgroundEmbedding.labels.dimensions') }}</label>
+              <el-input-number
+                v-model="config.dimensions"
+                :min="0"
+                :max="4096"
+                size="small"
+                controls-position="right"
+              />
+            </div>
+          </el-col>
+        </el-row>
+      </div>
+    </Transition>
+
+    <!-- 主内容区 -->
+    <div class="service-content">
+      <!-- 输入区 -->
+      <div class="input-card">
+        <div class="card-header">
+          <span class="card-title">{{ t('playgroundEmbedding.input.title') }}</span>
+          <el-button
+            text
+            size="small"
+            @click="addInput"
+          >
+            <el-icon><Plus /></el-icon>
+            {{ t('playgroundEmbedding.input.add') }}
+          </el-button>
+        </div>
+        <div class="input-list">
+          <div
+            v-for="(text, index) in inputTexts"
+            :key="index"
+            class="input-item"
+          >
+            <el-input
+              v-model="inputTexts[index]"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              :placeholder="t('playgroundEmbedding.input.placeholder', { index: index + 1 })"
+              resize="none"
+            />
+            <el-button
+              v-if="inputTexts.length > 1"
+              type="danger"
+              text
+              size="small"
+              class="remove-btn"
+              @click="removeInput(index)"
+            >
+              <el-icon><Close /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="action-bar">
+        <el-button
+          type="primary"
+          :loading="isLoading"
+          :disabled="!selectedModel || !hasValidInput"
+          @click="handleGenerate"
+        >
+          <el-icon><Promotion /></el-icon>
+          {{ t('playgroundEmbedding.action.generate') }}
+        </el-button>
+      </div>
+
+      <!-- 结果展示区 -->
+      <div class="result-card">
+        <div class="card-header">
+          <span class="card-title">{{ t('playgroundEmbedding.result.title') }}</span>
+          <el-button
+            v-if="result"
+            text
+            size="small"
+            @click="handleCopyResult"
+          >
+            <el-icon><DocumentCopy /></el-icon>
+            {{ t('playgroundEmbedding.result.copy') }}
+          </el-button>
+        </div>
+
+        <!-- 空状态 -->
+        <div
+          v-if="!result && !isLoading"
+          class="empty-state"
+        >
+          <el-icon
+            :size="48"
+            color="var(--ja-ink-3)"
+          >
+            <DataLine />
+          </el-icon>
+          <span class="empty-text">{{ t('playgroundEmbedding.result.empty') }}</span>
+        </div>
+
+        <!-- 加载状态 -->
+        <div
+          v-if="isLoading"
+          class="loading-state"
+        >
+          <el-icon
+            class="is-loading"
+            :size="32"
+          >
+            <Loading />
+          </el-icon>
+          <span>{{ t('playgroundEmbedding.result.generating') }}</span>
+        </div>
+
+        <!-- 结果显示 -->
+        <div
+          v-if="result && !isLoading"
+          class="result-content"
+        >
+          <!-- 统计信息 -->
+          <div class="result-stats">
+            <div class="stat-item">
+              <span class="stat-label">{{ t('playgroundEmbedding.stats.vectorCount') }}</span>
+              <span class="stat-value">{{ embeddingData?.length || 0 }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">{{ t('playgroundEmbedding.labels.dimensions') }}</span>
+              <span class="stat-value">{{ vectorDimension }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">{{ t('playgroundEmbedding.stats.duration') }}</span>
+              <span class="stat-value">{{ result.duration }}ms</span>
+            </div>
+          </div>
+
+          <!-- 向量列表 - 直接展示，不使用折叠 -->
+          <div class="vector-list">
+            <div
+              v-for="(item, idx) in embeddingData"
+              :key="idx"
+              class="vector-item"
+            >
+              <div class="vector-header">
+                <span class="vector-index">{{ t('playgroundEmbedding.vector.index', { index: idx + 1 }) }}</span>
+                <el-button
+                  text
+                  size="small"
+                  @click="copyVector(item.embedding ?? [])"
+                >
+                  <el-icon><DocumentCopy /></el-icon>
+                  {{ t('playgroundEmbedding.result.copy') }}
+                </el-button>
+              </div>
+              <div class="vector-value">
+                {{ formatVectorCompact(item.embedding ?? []) }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import {
+  Setting,
+  Delete,
+  Plus,
+  Close,
+  Promotion,
+  DocumentCopy,
+  DataLine,
+  Loading,
+  Cpu
+} from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { usePlaygroundData } from '@/composables/usePlaygroundData'
+import { useRoutePreselect, preselectInstanceName } from '@/composables/useRoutePreselect'
+import { sendServiceRequest } from '@/api/playground'
+import type { EmbeddingRequestConfig, PlaygroundResponse } from '../../types/playground'
+import { parseErrorMessage, getErrorSuggestion } from '../../utils/errorHandler'
+
+const { t } = useI18n()
+
+// 状态
+const showConfig = ref(false)
+const selectedModel = ref('')
+const isLoading = ref(false)
+const result = ref<PlaygroundResponse | null>(null)
+
+// 输入文本
+const inputTexts = ref<string[]>([''])
+
+// 配置
+const config = ref<Partial<EmbeddingRequestConfig>>({
+  encodingFormat: 'float',
+  dimensions: 0
+})
+
+// 数据获取
+const { availableInstances, instancesLoading, initializeData } =
+  usePlaygroundData('embedding')
+
+// Route preselect: auto-select instance from onboarding ?serviceType=embedding
+const { requestedServiceType } = useRoutePreselect()
+watch(
+  availableInstances,
+  (instances) => {
+    if (
+      requestedServiceType() === 'embedding' &&
+      !selectedModel.value &&
+      instances.length > 0
+    ) {
+      const name = preselectInstanceName(instances)
+      if (name) selectedModel.value = name
+    }
+  },
+  { once: true }
+)
+
+// 是否有有效输入
+const hasValidInput = computed(() => {
+  return inputTexts.value.some((text) => text.trim().length > 0)
+})
+
+// 提取向量数据（处理嵌套的响应结构）
+interface EmbeddingVectorRow {
+  embedding?: number[]
+  [key: string]: unknown
+}
+
+const embeddingData = computed<EmbeddingVectorRow[]>(() => {
+  const rows = (result.value?.data as { data?: { data?: EmbeddingVectorRow[] } } | null)?.data?.data
+  return Array.isArray(rows) ? rows : []
+})
+
+// 向量维度
+const vectorDimension = computed(() => {
+  if (embeddingData.value?.[0]?.embedding) {
+    return embeddingData.value[0].embedding.length
+  }
+  return config.value.dimensions || t('playgroundEmbedding.stats.dimensionUnknown')
+})
+
+// 初始化
+onMounted(() => {
+  initializeData()
+})
+
+// 添加输入
+const addInput = () => {
+  inputTexts.value.push('')
+}
+
+// 删除输入
+const removeInput = (index: number) => {
+  inputTexts.value.splice(index, 1)
+}
+
+// 清空
+const handleClear = () => {
+  inputTexts.value = ['']
+  result.value = null
+}
+
+// 生成向量
+const handleGenerate = async () => {
+  if (!selectedModel.value || !hasValidInput.value) return
+
+  isLoading.value = true
+  result.value = null
+
+  try {
+    const validInputs = inputTexts.value.filter((text) => text.trim().length > 0)
+    const requestConfig: EmbeddingRequestConfig = {
+      model: selectedModel.value,
+      input: validInputs.length === 1 ? validInputs[0] : validInputs,
+      encodingFormat: config.value.encodingFormat,
+      dimensions: config.value.dimensions || undefined
+    }
+
+    const token = localStorage.getItem('admin_token')
+    const headers: Record<string, string> = {}
+    if (token) headers['Jairouter_Token'] = token
+
+    const response = await sendServiceRequest('embedding', requestConfig, headers)
+    result.value = response
+    const count = (response.data as { data?: { data?: unknown[] } } | null)?.data?.data?.length || 0
+    ElMessage.success(t('playgroundEmbedding.messages.generateSuccess', { count }))
+  } catch (error) {
+    const errorMsg = parseErrorMessage(error, t('playgroundEmbedding.messages.errorContext'))
+    const suggestion = getErrorSuggestion(error)
+
+    if (suggestion) {
+      ElMessage({
+        type: 'error',
+        message: `${errorMsg}\n\n💡 ${t('playgroundEmbedding.messages.suggestion')}: ${suggestion}`,
+        duration: 6000,
+        showClose: true
+      })
+    } else {
+      ElMessage.error(errorMsg)
+    }
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// 格式化向量 - 压缩展示（显示前后各3个值，中间省略）
+const formatVectorCompact = (embedding: number[]) => {
+  if (!embedding || embedding.length === 0) return '[]'
+
+  const len = embedding.length
+
+  // 小于等于8维，直接显示全部
+  if (len <= 8) {
+    const values = embedding.map((v) => v.toFixed(4))
+    return `[${values.join(', ')}]`
+  }
+
+  // 大于8维，压缩显示：前3个 + 省略号 + 后3个
+  const first3 = embedding.slice(0, 3).map((v) => v.toFixed(4))
+  const last3 = embedding.slice(-3).map((v) => v.toFixed(4))
+
+  return `[${first3.join(', ')}, ..., ${last3.join(', ')}]  (${t('playgroundEmbedding.vector.dimensionSuffix', { dim: len })})`
+}
+
+// 复制向量
+const copyVector = async (embedding: number[]) => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(embedding))
+    ElMessage.success(t('playgroundEmbedding.messages.vectorCopied'))
+  } catch {
+    ElMessage.error(t('playgroundEmbedding.messages.copyFailed'))
+  }
+}
+
+// 复制完整结果
+const handleCopyResult = async () => {
+  if (!result.value) return
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(result.value.data, null, 2))
+    ElMessage.success(t('playgroundEmbedding.messages.resultCopied'))
+  } catch {
+    ElMessage.error(t('playgroundEmbedding.messages.copyFailed'))
+  }
+}
+
+// 暴露方法
+defineExpose({
+  handleClear
+})
+</script>
+
+<style scoped>
+.embedding-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px);
+  background-color: var(--ja-surface);
+}
+
+.service-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--ja-space-3) var(--ja-space-4);
+  background-color: var(--ja-paper);
+  border-bottom: 1px solid var(--ja-border);
+  border-radius: var(--ja-radius-sm) var(--ja-radius-sm) 0 0;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-3);
+}
+
+.model-select {
+  width: 240px;
+}
+
+.toolbar-right {
+  display: flex;
+  gap: var(--ja-space-1);
+}
+
+.config-panel {
+  padding: var(--ja-space-3) var(--ja-space-4);
+  background-color: var(--ja-paper);
+  border-bottom: 1px solid var(--ja-border);
+}
+
+.config-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ja-space-2);
+}
+
+.config-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ja-ink-2);
+}
+
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  transform: translateY(-10px);
+  opacity: 0;
+}
+
+.service-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--ja-space-4);
+}
+
+.input-card,
+.result-card {
+  background-color: var(--ja-paper);
+  border: 1px solid var(--ja-border);
+  border-radius: var(--ja-radius-sm);
+  padding: var(--ja-space-4);
+  margin-bottom: var(--ja-space-4);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--ja-space-3);
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ja-ink);
+}
+
+.input-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ja-space-3);
+}
+
+.input-item {
+  display: flex;
+  gap: var(--ja-space-2);
+  align-items: flex-start;
+}
+
+.input-item :deep(.el-input) {
+  flex: 1;
+}
+
+.remove-btn {
+  margin-top: 4px;
+}
+
+.action-bar {
+  display: flex;
+  justify-content: center;
+  gap: var(--ja-space-3);
+  padding: 12px 0;
+}
+
+.result-card {
+  min-height: 200px;
+}
+
+.empty-state,
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ja-space-8) 0;
+  gap: var(--ja-space-3);
+  color: var(--ja-ink-3);
+}
+
+.empty-text {
+  font-size: 14px;
+}
+
+.result-content {
+  padding: 12px 0;
+}
+
+.result-stats {
+  display: flex;
+  gap: var(--ja-space-6);
+  padding: var(--ja-space-3);
+  background-color: var(--ja-surface-2);
+  border-radius: var(--ja-radius-sm);
+  margin-bottom: var(--ja-space-4);
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ja-space-1);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--ja-ink-3);
+}
+
+.stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ja-ink);
+}
+
+.vector-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ja-space-3);
+}
+
+.vector-item {
+  padding: var(--ja-space-3);
+  background-color: var(--ja-surface-2);
+  border-radius: var(--ja-radius-sm);
+  border: 1px solid var(--ja-border);
+}
+
+.vector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--ja-space-2);
+}
+
+.vector-index {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ja-ink);
+}
+
+.vector-value {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--ja-ink-2);
+  line-height: 1.6;
+  word-break: break-all;
+  background-color: var(--ja-paper);
+  padding: var(--ja-space-2) var(--ja-space-3);
+  border-radius: var(--ja-radius-sm);
+}
+/* 健康状态指示器样式 */
+.instance-option {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-2);
+}
+
+.health-indicator {
+  font-size: 12px;
+}
+
+.health-healthy {
+  color: var(--ja-success);
+}
+
+.health-unhealthy {
+  color: var(--ja-danger);
+}
+
+.health-unknown {
+  color: var(--ja-ink-3);
+}
+
+.instance-name {
+  flex: 1;
+}
+
+.health-status-text {
+  font-size: 12px;
+  color: var(--ja-danger);
+}
+
+.health-status-text.unknown {
+  color: var(--ja-ink-3);
+}
+</style>

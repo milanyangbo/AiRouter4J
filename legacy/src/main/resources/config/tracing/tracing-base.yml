@@ -1,0 +1,214 @@
+# ========================================
+# 追踪基础配置
+# ========================================
+# 此文件包含分布式追踪和链路跟踪配置
+#
+# ⚠️ 键名必须与 `TracingConfiguration` 的字段一致：Spring 默认忽略认不出的键，
+# 写错键名不会报错，只会**静默不生效**。本文件曾因此积累 33 个死键（issue #215），
+# 现已逐个接上或删除。`TracingConfigBindingGuardTest` 会按 NoUnboundElementsBindHandler
+# 把本文件绑一遍，任何「配了没人读」的键都会让测试变红。
+
+jairouter:
+  # 追踪配置
+  tracing:
+    # 追踪功能总开关
+    enabled: true
+    
+    # 服务信息
+    service-name: "jairouter"
+    service-version: "1.0.0"
+    service-namespace: "production"
+    
+    # OpenTelemetry配置
+    open-telemetry:
+      enabled: true
+      resource:
+        attributes: {}
+      sdk:
+        disabled: false
+        # 原 open-telemetry.sdk.trace.processors.batch.* 四个键（schedule-delay /
+        # max-export-batch-size / export-timeout / max-queue-size）**没有任何消费方** ——
+        # issue #215 当时只把它们"按字段实名接上"（键能绑定），但没人读它们，于是它们照样不生效。
+        # 真正的批处理器参数取自 performance.batch 与 performance.buffer.size，
+        # 见 OpenTelemetryAutoConfiguration#tracerProvider。已随 issue #224 删除字段与这里的键。
+    
+    # 采样配置
+    sampling:
+      # 采样策略（issue #234 才真正接上）：
+      #   ratio（默认）—— 只按下面的 ratio 做 traceId 比例采样
+      #   rule         —— 按 rules 逐条匹配 span 属性，未命中回落 ratio
+      #   adaptive     —— 用 adaptive.* 的上下限约束采样率，需 adaptive.enabled=true
+      # 取值非法或所需子配置没开时会回落 ratio 并在启动日志里告警。
+      strategy: ratio
+
+      # v2.7.9 优化：默认采样率从 1.0 改为 0.1，减少追踪开销 90%
+      ratio: 0.1
+      service-ratios: {}
+      always-sample:
+        - "/api/v1"
+        - "/api/security"
+      never-sample:
+        - "/health"
+        - "/actuator"
+      rules: []
+      adaptive:
+        # 仅在 strategy=adaptive 时为 true 才会被装配（issue #234）
+        enabled: false
+    
+    # 结构化日志配置
+    logging:
+      structured-logging: true
+      format: "json"
+      include-stack-trace: false
+      # 原 custom-fields / level-mapping / sanitize-enabled / include-span-id 四个键没有任何消费方，
+      # 已随 issue #224 删除（字段与键一起删）。
+    
+    # 导出器配置
+    exporter:
+      type: "logging"
+      
+      # Jaeger导出器配置 (已弃用，建议使用OTLP)
+      jaeger:
+        endpoint: "http://localhost:14268/api/traces"
+        timeout: 10s
+        headers: {}
+      
+      # Zipkin导出器配置
+      zipkin:
+        endpoint: "http://localhost:9411/api/v2/spans"
+        timeout: 10s
+      
+      # OTLP导出器配置
+      otlp:
+        endpoint: "http://localhost:4317"
+        timeout: 10s
+        compression: "gzip"
+        headers: {}
+      
+      # 日志导出器配置
+      logging:
+        enabled: true
+    
+    # 性能配置
+    #
+    # ⚠️ 只登记**真正生效**的旋钮（issue #220）。已知的反例，故意不写进来：
+    #   * `performance.thread-pool.max-size` —— boundedElastic 只有 threadCap 一说（即 core-size），
+    #     该字段只被 /actuator/info 回显，不影响行为；
+    #   * `components.http.capture-headers` / `capture-body` / `max-body-size` / `excluded-paths`、
+    #     `components.database.capture-sql` / `max-sql-length`、`components.cache.capture-keys` /
+    #     `capture-values` —— 同样只被 /actuator/info 回显；
+    #   * `components.{http,cache,messaging}.enabled` —— 同上（真正生效的是
+    #     load-balancer / rate-limiter / circuit-breaker 三处 enabled，见 TracingWrapperFactory）。
+    # 把它们写进 yml 会让人以为调了有用，比不写更糟；是否接上消费方另开 issue 跟踪。
+    performance:
+      # 异步处理总开关。原 async.enabled 是死键（没有任何字段接它），真正的开关是这一项（issue #215）
+      async-processing: true
+
+      # 内存监控 / 性能监控两个调度器的线程上限与队列上限（#182 引入）。
+      # 注意这两个键**没有对应字段** —— 由 TracingMemoryManager / TracingPerformanceMonitor
+      # 的构造器参数 @Value 直接读取（必须走构造器注入：字段注入发生在构造器之后，而调度器
+      # 正是在构造器里建的，用字段会静默读到默认值）。TracingConfigBindingGuardTest 已把这两个
+      # 键登记为「允许的非绑定键」，新增别的非绑定键仍会让它变红。
+      scheduler:
+        thread-cap: 2
+        queue-capacity: 100
+
+      # 追踪数据异步处理线程池（`AsyncTracingProcessor` 用它创建 Schedulers.newBoundedElastic）。
+      # 原先这里写的是 async.worker-threads / async.queue-size —— 那两个键没有任何绑定，
+      # 调了不生效（实测生效值一直是本类默认的 core-size 2 / queue-capacity 1000，issue #215）；
+      # 归并到与代码对齐的 thread-pool.* 之后，下面的值才真正生效。
+      thread-pool:
+        core-size: 8
+        queue-capacity: 8192
+        # boundedElastic 的 threadCap 即上限，没有 core/max 之分，因此这里**不写 max-size**。
+        thread-name-prefix: "tracing-"
+        # 空闲线程存活时间。接到 boundedElastic 的 ttlSeconds 上（issue #220：此前该字段被绑定
+        # 但没有任何消费方，调参静默无效）。默认 60s 与 Reactor 自己的默认值一致。
+        keep-alive: 60s
+
+      # 批处理配置
+      batch:
+        timeout: 30s
+        size: 2048
+        # 同时进行的批次数上限（AsyncTracingProcessor 的 flatMap 并发度）
+        max-concurrent-batches: 3
+
+      # 缓冲区配置
+      buffer:
+        size: 8192
+        # 未攒满一个批次时，最早的数据最多再等多久（避免低流量下数据长期不落）
+        max-wait-time: 30s
+    
+    # 组件特定配置
+    #
+    # 原 webflux / webclient 两块的键在 TracingComponentConfig 里根本没有对应字段，属凭空写的死键，
+    # 已删除并归并到 http（issue #215）。#224 又把该类的子段核了一遍并删掉三棵**零消费方**的子树：
+    # database / cache / messaging —— 它们的 enabled 与 capture-* 全仓没有读者（getComponents()
+    # 只有两处调用点：TracingInfoContributor 只读 http、TracingWrapperFactory 只读下面三个开关）。
+    #
+    # ⚠️ http 下的字段目前**只被 /actuator/info 回显**，不改变采集行为（issue #224）；下面三个
+    # load-balancer / rate-limiter / circuit-breaker 的 enabled 才是真正的行为开关。
+    components:
+      # HTTP 侧（WebFlux / WebClient）插桩
+      http:
+        enabled: true
+
+      # 限流器配置
+      # capture-* 只被 TracingInfoContributor 回显到 /actuator/info，
+      # 不改变采集行为；其余（capture-quota / capture-decision）属零消费方且不回显，已在 #224 删除。
+      rate-limiter:
+        enabled: true
+        capture-algorithm: true
+        capture-statistics: true
+      
+      # 熔断器配置
+      # 同上：capture-state / capture-statistics 被回显，capture-state-changes / capture-failure-rate 已在 #224 删除。
+      circuit-breaker:
+        enabled: true
+        capture-state: true
+        capture-statistics: true
+      
+      # 负载均衡器配置
+      # 同上：capture-strategy / capture-statistics 被回显，capture-selection 与未被回显的
+      # capture-candidates 已在 #224 删除。
+      load-balancer:
+        enabled: true
+        capture-strategy: true
+        capture-statistics: true
+    
+    # 安全配置
+    #
+    # ⚠️ 开关键由 `TracingSecurityAutoConfiguration` 的 @ConditionalOnProperty 消费，语义是
+    # 「缺省即开启」（`matchIfMissing = true`）：`security.enabled`（整段）、
+    # `security.sanitization.enabled`、`security.access-control.enabled`、`security.encryption.enabled`。
+    # 其中 `sanitization.enabled` 类里有同名字段、故登记在下面；`security.enabled` 与
+    # `access-control.enabled` **类里没有字段**，写进 yml 会被绑定守护测试判红，
+    # `encryption.enabled` 虽有字段但只被 /actuator/info 回显（且字段默认 false ≠ 条件的「缺省即开」），
+    # 因此这三个只在注释里登记。
+    security:
+      sanitization:
+        enabled: true
+        inherit-global-rules: true
+        additional-patterns: []
+      access-control:
+        restrict-trace-access: true
+        allowed-roles: []
+    
+    # 监控配置
+    monitoring:
+      metrics:
+        traces:
+          # 处理延迟直方图的桶边界，单位**秒**。TracingPerformanceMonitor 注册
+          # tracing.processing.latency 时读它（该指标以毫秒记录，装配时由消费方换算）。
+          histogram-buckets: [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+      health:
+        enabled: true
+        # 导出器健康检查周期。除绑定到本字段外，`ExporterHealthChecker` 的
+        # `@Scheduled(fixedDelayString = "${…check-interval:30000}")` 也读同一个键（30s = 30000ms）。
+        check-interval: 30s
+      alerts:
+        thresholds:
+          # 堆使用率超过该比例即判内存瓶颈（TracingPerformanceMonitor#detectBottlenecks）
+          memory-usage: 0.8
+          # trace.export 操作的 P99 危险阈值，单位毫秒
+          export-latency-p99: 5000

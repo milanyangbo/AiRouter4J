@@ -1,0 +1,659 @@
+# 快速开始
+
+<!-- 版本信息 -->
+> **文档版本**: 1.1.2
+> **最后更新**: 2026-09-18
+> **适用版本**: v3.1.1+
+> **Git 提交**: 61384b4a
+> **作者**: Lincoln
+<!-- /版本信息 -->
+
+
+
+本指南将在 5 分钟内帮您快速体验 JAiRouter 的核心功能，无需复杂配置即可开始使用。
+
+## 🎯 学习目标
+
+完成本指南后，您将能够：
+- ✅ 启动 JAiRouter 服务
+- ✅ 配置第一个 AI 模型服务
+- ✅ 发送 API 请求并获得响应
+- ✅ 体验负载均衡和限流功能
+- ✅ 生成安全密钥并完成配置
+
+## 📋 前提条件
+
+选择以下任一方式：
+
+### 方式一：Docker（推荐新手）
+- ✅ 已安装 Docker 20.10+
+- ✅ 无需安装 Java 环境
+
+### 方式二：本地运行
+- ✅ 已安装 Java 17+
+- ✅ 下载了 JAiRouter JAR 文件
+
+### 可选：AI 模型服务
+- 如果您已有 AI 模型服务（如 Ollama、GPUStack），可以直接配置
+- 如果没有，我们将在步骤中提供测试用的模拟服务
+
+> 💡 **提示**: 如果您还没有安装 JAiRouter，请先查看 [安装指南](installation.md)。
+
+## 🗝️ 步骤 0：生成安全密钥（v3.1.1+ 推荐）
+
+生产环境（prod profile）刻意不内置 JWT 密钥，因此需要自行生成一个 **至少 32 字符** 的密钥。
+
+> 💡 **提示**: 可以使用镜像内置工具一键生成密钥：
+> ```bash
+> docker run --rm sodlinken/jairouter:latest --generate-key
+> ```
+> 也可以使用以下命令行方式生成：
+
+### Linux / macOS / Git Bash
+
+```bash
+# 生成 Base64 编码的 JWT 密钥（推荐 32 字节 → 44 字符 Base64）
+openssl rand -base64 32
+```
+
+### Windows PowerShell
+
+```powershell
+# 生成 Base64 编码的 JWT 密钥
+[Convert]::ToBase64String((1..32 | ForEach-Object {Get-Random -Maximum 256}))
+```
+
+### 设置环境变量
+
+```bash
+# 设置 JWT 密钥（替换为上一步生成的密钥）
+export JWT_SECRET="your-base64-encoded-secret"
+
+# 可选：覆盖管理员密码（生产环境建议设置）
+export INITIAL_ADMIN_PASSWORD="your-own-strong-password"
+```
+
+> 💡 **提示**: 快速体验（dev profile）无需配置密钥，内置了开发密钥可直接启动。生产环境才需要设置 `JWT_SECRET`。
+> 🔐 **控制台默认账号**: `admin` / `ChangeMeOnFirstStartup123456`（**仅在账号表为空时自动创建**）。生产环境请通过上文的 `INITIAL_ADMIN_PASSWORD` 覆盖，或在首次登录后立即修改。
+
+## 🚀 步骤 1：启动 JAiRouter
+
+### 方式一：Docker 快速体验（推荐）
+
+```bash
+# 使用 dev 方式启动（零配置，内置开发密钥）
+docker run -d \
+  --name jairouter \
+  -p 8080:8080 \
+  -e SPRING_PROFILES_ACTIVE=dev \
+  sodlinken/jairouter:latest
+
+# 检查运行状态
+docker ps --filter "name=jairouter"
+```
+
+> ⚠️ **生产环境提醒**: 镜像默认以 prod 方式启动，**必须**自行提供 JWT 密钥，否则服务无法启动。示例：
+> ```bash
+> docker run -d --name jairouter -p 8080:8080 \
+>   -e JWT_SECRET="<至少32字符的密钥>" \
+>   sodlinken/jairouter:latest
+> ```
+
+**预期输出**：
+```
+CONTAINER ID   IMAGE                           COMMAND                  CREATED         STATUS         PORTS                    NAMES
+abc123def456   sodlinken/jairouter:latest   "java -jar /app/mode…"   2 seconds ago   Up 1 second    0.0.0.0:8080->8080/tcp   jairouter
+```
+
+### 方式二：JAR 文件直接运行
+
+```bash
+# 如果已下载 JAR 文件
+java -jar model-router.jar
+
+# 或指定配置文件
+java -jar model-router.jar --spring.config.location=classpath:/application.yml
+```
+
+**预期输出**：
+```
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+ :: Spring Boot ::                (v3.5.x)
+
+2025-01-15 10:00:00.000  INFO --- [           main] o.u.m.ModelRouterApplication            : Started ModelRouterApplication in 3.456 seconds
+```
+
+> 💡 **故障排查**: 如果端口 8080 被占用，可以使用 `-p 8081:8080` 映射到其他端口。
+
+## ✅ 步骤 2：验证服务启动
+
+### 检查服务健康状态
+
+```bash
+# 检查健康状态
+curl http://localhost:8080/actuator/health
+```
+
+**预期响应**：
+```json
+{
+  "status": "UP",
+  "components": {
+    "diskSpace": {
+      "status": "UP"
+    },
+    "ping": {
+      "status": "UP"
+    }
+  }
+}
+```
+
+### 检查服务信息
+
+```bash
+# 查看应用信息
+curl http://localhost:8080/actuator/info
+```
+
+**预期响应**：
+```json
+{
+  "app": {
+    "name": "JAiRouter",
+    "version": "0.3.1",
+    "description": "AI Model Service Router and Load Balancer"
+  }
+}
+```
+
+> ✅ **成功标志**: 看到 `"status": "UP"` 表示服务启动成功！
+
+## 📚 步骤 3：探索 API 文档
+
+### 访问 Swagger UI
+
+在浏览器中打开：
+```
+http://localhost:8080/swagger-ui/index.html
+```
+
+您将看到交互式 API 文档，包含三大类接口：
+
+| 接口类别 | 路径前缀 | 功能描述 |
+|----------|----------|----------|
+| **统一 API** | `/v1/*` | OpenAI 兼容的 AI 服务接口 |
+| **配置管理** | `/api/config/*` | 动态配置管理接口 |
+| **监控运维** | `/actuator/*` | 健康检查和监控指标 |
+
+### 核心 API 预览
+
+- **Chat 对话**: `POST /v1/chat/completions`
+- **文本嵌入**: `POST /v1/embeddings`
+- **添加实例**: `POST /api/config/instance/{type}`
+- **查看实例**: `GET /api/config/instance/{type}`
+
+> 💡 **提示**: 在 Swagger UI 中可以直接测试 API，无需额外工具。
+
+![登录页](images/login-zh-CN.png)
+
+![管理控制台](images/dashboard-zh-CN.png)
+
+### 前置条件：一个管理面 token
+
+本节命令调用的是**管理面 API**，它们需要认证 —— 不带 token 会返回
+`401 {"error":{"code":"AUTH_MISSING"}}`。先在当前 shell 里取一次 JWT 并复用
+（开发环境默认账户为 `admin` / `ChangeMeOnFirstStartup123456`；生产请务必更换）：
+
+```bash
+TOKEN=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"ChangeMeOnFirstStartup123456"}' \
+  http://localhost:8080/api/auth/jwt/login | jq -r .data.token)
+```
+
+下面每条命令都用 `-H "Jairouter_Token: $TOKEN"` 带上它。
+注意头名：JWT 头是 **`Jairouter_Token`**（可用 `jairouter.security.jwt.jwt-header` 配置），
+**不是** `Authorization: Bearer`。
+
+## ⚙️ 步骤 4：配置第一个 AI 服务
+
+我们提供两种配置方式，推荐使用 API 方式进行动态配置。
+
+### 方式一：API 动态配置（推荐）
+
+假设您有一个运行在 `http://localhost:11434` 的 Ollama 服务：
+
+```bash
+# 添加 Chat 服务实例
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "llama3.2:3b",
+    "baseUrl": "http://localhost:11434",
+    "path": "/v1/chat/completions",
+    "weight": 1
+  }'
+```
+
+**预期响应**：
+```json
+{
+  "success": true,
+  "message": "Instance added successfully",
+  "instanceId": "llama3.2:3b@http://localhost:11434"
+}
+```
+
+### 方式二：配置文件（适合批量配置）
+
+创建配置目录和文件：
+
+```bash
+# 创建配置目录
+mkdir -p config
+
+# 创建配置文件
+cat > config/model-router-config@1.json << 'EOF'
+{
+  "services": {
+    "chat": {
+      "instances": [
+        {
+          "name": "llama3.2:3b",
+          "baseUrl": "http://localhost:11434",
+          "path": "/v1/chat/completions",
+          "weight": 1
+        }
+      ],
+      "loadBalance": {
+        "type": "round-robin"
+      }
+    }
+  }
+}
+EOF
+```
+
+然后重启 JAiRouter：
+
+```bash
+# Docker 重启（挂载配置目录，dev 方式启动）
+docker stop jairouter
+docker rm jairouter
+docker run -d \
+  --name jairouter \
+  -p 8080:8080 \
+  -e SPRING_PROFILES_ACTIVE=dev \
+  -v $(pwd)/config:/app/config:ro \
+  sodlinken/jairouter:latest
+
+# JAR 重启
+# 停止当前进程（Ctrl+C），然后重新运行
+java -jar model-router.jar
+```
+
+### 常见服务配置示例
+
+以下是常用 AI 服务的快速配置示例：
+
+#### 在线 API 服务
+
+**OpenAI GPT**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gpt-4o",
+    "baseUrl": "https://api.openai.com",
+    "path": "/v1/chat/completions",
+    "adapter": "normal",
+    "headers": {
+      "Authorization": "Bearer sk-proj-xxxxx"
+    }
+  }'
+```
+
+**DeepSeek**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "deepseek-chat",
+    "baseUrl": "https://api.deepseek.com",
+    "path": "/v1/chat/completions",
+    "adapter": "normal",
+    "headers": {
+      "Authorization": "Bearer sk-xxxxxxxx"
+    }
+  }'
+```
+
+**Anthropic Claude**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "claude-sonnet",
+    "baseUrl": "https://api.anthropic.com",
+    "path": "/v1/messages",
+    "adapter": "claude",
+    "headers": {
+      "x-api-key": "sk-ant-api03-xxxxx"
+    }
+  }'
+```
+
+> 💡 **提示**: Claude 适配器会自动注入 `anthropic-version` 头，无需手动配置。
+
+**Google Gemini**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gemini-pro",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "path": "/chat/completions",
+    "adapter": "normal",
+    "headers": {
+      "Authorization": "Bearer AIzaSyxxxxx"
+    }
+  }'
+```
+
+#### 本地推理引擎
+
+**Ollama**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "llama3.2:3b",
+    "baseUrl": "http://localhost:11434",
+    "path": "/api/chat",
+    "adapter": "ollama"
+  }'
+```
+
+**vLLM**
+```bash
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "vllm-qwen",
+    "baseUrl": "http://localhost:8000",
+    "path": "/v1/chat/completions",
+    "adapter": "vllm"
+  }'
+```
+
+> 💡 **提示**: 更多配置示例请查看 [常用服务配置示例](../configuration/instance-examples.md)。
+
+### 没有 AI 服务？使用模拟服务
+
+如果您暂时没有可用的 AI 服务，可以配置一个模拟服务进行测试：
+
+```bash
+# 添加模拟服务实例
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "mock-model",
+    "baseUrl": "http://httpbin.org",
+    "path": "/json",
+    "weight": 1
+  }'
+```
+
+> 💡 **提示**: 模拟服务仅用于测试路由功能，不会返回真实的 AI 响应。
+
+## 步骤 5：测试 AI 服务
+
+### 测试 Chat 接口
+
+```bash
+curl -X POST "http://localhost:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <管理台创建的 API Key>" \
+  -d '{
+    "model": "llama3.2:3b",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello, how are you?"
+      }
+    ],
+    "max_tokens": 100
+  }'
+```
+
+### 预期响应
+
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1677652288,
+  "model": "llama3.2:3b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! I'm doing well, thank you for asking. How can I help you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 9,
+    "completion_tokens": 20,
+    "total_tokens": 29
+  }
+}
+```
+
+## 步骤 6：查看服务状态
+
+### 检查实例列表
+
+```bash
+# 获取 Chat 服务的所有实例
+curl -H "Jairouter_Token: $TOKEN" "http://localhost:8080/api/config/instance/chat"
+```
+
+### 查看监控指标
+
+🔑 **这些运维端点需要管理员凭据**：下列 `/actuator/**` 调用走**正常认证链** —— 只有 `/actuator/health`（含
+> `liveness` / `readiness` 子路径）、`/actuator/info`、`/actuator/prometheus` 允许匿名（供 k8s 探针与
+> Prometheus 抓取），其余都需要 ADMIN 角色。**不带凭据会得到 `401 AUTH_MISSING`。**
+> （修复前即使带了 ADMIN JWT 也会 401：认证链被整段排除，与 `hasRole("ADMIN")` 互相抵消，见 issue #340。）
+>
+> 取 JWT 与调用示例（本机实测通过）：
+>
+> ```bash
+> TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/jwt/login \
+>   -H 'Content-Type: application/json' \
+>   -d '{"username":"admin","password":"<你的管理员密码>"}' | jq -r .data.token)
+> curl -s -H "Jairouter_Token: $TOKEN" http://localhost:8080/actuator/metrics | jq
+> ```
+
+```bash
+# 查看应用指标
+curl "http://localhost:8080/actuator/metrics"
+
+# 查看特定指标（如请求计数）
+curl "http://localhost:8080/actuator/metrics/http.server.requests"
+```
+
+## 步骤 7：体验负载均衡
+
+添加第二个服务实例来体验负载均衡：
+
+```bash
+# 添加另一个实例
+curl -X POST "http://localhost:8080/api/config/instance/chat" \
+  -H "Jairouter_Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "llama3.2:1b",
+    "baseUrl": "http://localhost:11434",
+    "path": "/v1/chat/completions",
+    "weight": 2
+  }'
+```
+
+现在发送多个请求，JAiRouter 会根据配置的负载均衡策略（默认为轮询）分发请求。
+
+## 步骤 8：体验限流功能
+
+JAiRouter 内置了多种限流算法。让我们快速测试一下：
+
+```bash
+# 快速发送多个请求
+for i in {1..10}; do
+  curl -X POST "http://localhost:8080/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "llama3.2:3b",
+      "messages": [{"role": "user", "content": "Test request '$i'"}],
+      "max_tokens": 10
+    }' &
+done
+```
+
+如果配置了限流，部分请求可能会收到 `429 Too Many Requests` 响应。
+
+## 常见问题
+
+### Q: 服务启动失败怎么办？
+
+**A:** 检查以下几点：
+1. 端口 8080 是否被占用
+2. Java 版本是否为 17+
+3. 查看日志获取详细错误信息
+
+```bash
+# Docker 查看日志
+docker logs jairouter
+
+# JAR 运行时日志会输出到控制台
+```
+
+### Q: 无法连接到后端 AI 服务？
+
+**A:** 确认：
+1. 后端服务是否正常运行
+2. 网络连接是否正常
+3. 配置的 URL 和端口是否正确
+
+```bash
+# 测试后端服务连接
+curl http://localhost:11434/v1/models
+```
+
+### Q: API 调用返回错误？
+
+**A:** 检查：
+1. 请求格式是否正确
+2. 模型名称是否匹配
+3. 查看 JAiRouter 日志获取详细信息
+
+## 🎉 恭喜完成快速开始！
+
+您已经成功体验了 JAiRouter 的核心功能。现在您可以：
+
+### 🎯 继续深入学习
+
+| 下一步 | 内容 | 适合场景 |
+|--------|------|----------|
+| **[第一步指南](first-steps.md)** | 深入配置和生产准备 | 准备在项目中使用 |
+| **[配置指南](../configuration/index.md)** | 详细配置参数说明 | 需要特定配置 |
+| **[API 参考](../api-reference/index.md)** | 完整 API 文档 | 开发集成 |
+| **[部署指南](../deployment/index.md)** | 生产环境部署 | 上线部署 |
+
+### 🔧 解决问题
+
+如果在快速开始过程中遇到问题：
+
+- **服务启动问题**: 查看 [安装指南故障排查](installation.md#故障排查)
+- **配置问题**: 查看 [第一步指南](first-steps.md#常见问题)
+- **API 调用问题**: 查看 [故障排查文档](../troubleshooting/index.md)
+
+### 📚 推荐学习路径
+
+**新手用户**：
+1. ✅ 快速开始（当前）
+2. 👉 [第一步指南](first-steps.md) - 学习核心配置
+3. 👉 [配置指南](../configuration/index.md) - 掌握高级配置
+
+**有经验用户**：
+1. ✅ 快速开始（当前）
+2. 👉 [API 参考](../api-reference/index.md) - 查看接口详情
+3. 👉 [部署指南](../deployment/index.md) - 生产环境部署
+
+## 示例配置
+
+这里提供一个完整的配置示例，包含多种服务类型：
+
+```json
+{
+  "services": {
+    "chat": {
+      "instances": [
+        {
+          "name": "llama3.2:3b",
+          "baseUrl": "http://localhost:11434",
+          "path": "/v1/chat/completions",
+          "weight": 1
+        },
+        {
+          "name": "qwen2:7b",
+          "baseUrl": "http://localhost:11434",
+          "path": "/v1/chat/completions",
+          "weight": 2
+        }
+      ],
+      "loadBalance": {
+        "type": "round-robin"
+      },
+      "rateLimit": {
+        "type": "token-bucket",
+        "capacity": 100,
+        "refillRate": 10
+      }
+    },
+    "embedding": {
+      "instances": [
+        {
+          "name": "nomic-embed-text",
+          "baseUrl": "http://localhost:11434",
+          "path": "/v1/embeddings",
+          "weight": 1
+        }
+      ],
+      "loadBalance": {
+        "type": "random"
+      }
+    }
+  },
+  "store": {
+    "type": "file",
+    "path": "config/"
+  }
+}
+```
+
+将此配置保存为 `config/model-router-config@1.json`，重启 JAiRouter 即可生效。

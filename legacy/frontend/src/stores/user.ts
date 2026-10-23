@@ -1,0 +1,274 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import request from '@/utils/request'
+import { i18n } from '@/i18n'
+import type { ApiResponse, RouterResponse } from '@/types'
+
+// i18n.global.t 轻量包装（兜底 Error 文案，调用时求值，随语言切换生效）
+const gt = (key: string): string =>
+  (i18n.global as unknown as { t: (key: string) => string }).t(key)
+
+/**
+ * 从 `catch` 捕获的未知异常里取后端错误文案。
+ * 优先取 axios 风格的 `response.data.message`，其次 `Error.message`；
+ * 两者都没有则返回 undefined，由调用方回落 i18n 文案（#521：替代 `catch (error: any)`）。
+ */
+const extractErrorMessage = (error: unknown): string | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined
+  const err = error as { response?: { data?: { message?: string } }; message?: string }
+  return err.response?.data?.message ?? err.message
+}
+
+// 用户信息接口
+export interface UserInfo {
+  username: string
+  roles?: string[]
+  permissions?: string[]
+  [key: string]: unknown
+}
+
+// 定义登录响应数据类型
+interface LoginResponseData {
+  token: string
+  tokenType: string
+  expiresIn: number
+  message: string
+  timestamp: string
+}
+
+export const useUserStore = defineStore('user', () => {
+  const token = ref<string | null>(localStorage.getItem('admin_token'))
+  const userInfo = ref<UserInfo | null>(null)
+  // v2.9.8 RBAC: 当前用户权限码列表（来自 JWT permissions claim，无 ROLE_ 前缀）
+  const permissions = ref<string[]>([])
+  let refreshTimer: number | null = null
+
+  // 从JWT token解析角色
+  const parseRolesFromToken = (jwtToken: string): string[] => {
+    try {
+      const payload = JSON.parse(atob(jwtToken.split('.')[1]))
+      return payload.roles || payload.authorities || []
+    } catch {
+      return []
+    }
+  }
+
+  // v2.9.8 RBAC: 从JWT token解析权限码（同 parseRolesFromToken 模式）
+  // 旧版本签发的令牌无 permissions claim 时返回空数组
+  const parsePermissionsFromToken = (jwtToken: string): string[] => {
+    try {
+      const payload = JSON.parse(atob(jwtToken.split('.')[1]))
+      return Array.isArray(payload.permissions) ? payload.permissions : []
+    } catch {
+      return []
+    }
+  }
+
+  // 从JWT token解析用户名
+  const parseUsernameFromToken = (jwtToken: string): string => {
+    try {
+      const payload = JSON.parse(atob(jwtToken.split('.')[1]))
+      return payload.sub || ''
+    } catch {
+      return ''
+    }
+  }
+
+  // v3.0.3 修复：冷启动（F5 / 深链 / 新标签页）时 localStorage 只有 admin_token，
+  // userInfo 与 permissions 均为空 → 路由守卫的 meta.roles 判定（/security/*、/system/*）
+  // 误判为无角色并重定向到仪表板。这里在 store 初始化时用既有 token 补齐用户信息
+  // （与 setToken 同源解析），使冷启动与应用内行为一致。
+  if (token.value) {
+    const bootRoles = parseRolesFromToken(token.value)
+    const bootPerms = parsePermissionsFromToken(token.value)
+    permissions.value = bootPerms
+    userInfo.value = {
+      username: parseUsernameFromToken(token.value),
+      roles: bootRoles,
+      permissions: bootPerms
+    }
+  }
+
+  // 检查是否为管理员
+  const isAdmin = computed(() => {
+    return userInfo.value?.roles?.includes('ADMIN') || false
+  })
+
+  // 检查是否有指定角色
+  const hasRole = (role: string): boolean => {
+    return userInfo.value?.roles?.includes(role) || false
+  }
+
+  // 检查是否有任意一个角色
+  const hasAnyRole = (roles: string[]): boolean => {
+    if (!userInfo.value?.roles) return false
+    return roles.some(role => userInfo.value!.roles!.includes(role))
+  }
+
+  // v2.9.8 RBAC: 检查是否拥有指定权限码（menu/路由守卫过滤用）
+  const hasPermission = (code: string): boolean => {
+    // ADMIN 拥有全部权限（超集）
+    if (isAdmin.value) return true
+    const list = permissions.value
+    // 旧令牌（无 permissions claim）或未在 role_permissions 登记的角色 → 权限数据为空时不限制。
+    // 与后端"未登记 URL 权限规则回退 authenticated"保持一致，避免旧令牌登录后菜单整体消失。
+    if (!list || list.length === 0) return true
+    return list.includes(code)
+  }
+
+  const setToken = (newToken: string) => {
+    token.value = newToken
+    localStorage.setItem('admin_token', newToken)
+    // 从token中提取用户信息
+    const username = parseUsernameFromToken(newToken)
+    const roles = parseRolesFromToken(newToken)
+    const perms = parsePermissionsFromToken(newToken)
+    permissions.value = perms
+    userInfo.value = { username, roles, permissions: perms }
+  }
+
+  const clearToken = () => {
+    token.value = null
+    localStorage.removeItem('admin_token')
+    userInfo.value = null
+    permissions.value = []
+
+    if (refreshTimer) {
+      clearInterval(refreshTimer)
+      refreshTimer = null
+    }
+  }
+
+  const isAuthenticated = () => {
+    return !!token.value
+  }
+
+  // 启动定时刷新令牌
+  const startTokenRefresh = () => {
+    if (refreshTimer) {
+      clearInterval(refreshTimer)
+    }
+
+    refreshTimer = window.setInterval(async () => {
+      if (token.value) {
+        try {
+          await refreshToken()
+        } catch (error) {
+          console.error('自动刷新令牌失败:', error)
+          clearToken()
+          import('@/router').then(({ default: router }) => {
+            router.push('/login')
+          })
+        }
+      }
+    }, 30 * 60 * 1000)
+  }
+
+  // 刷新令牌方法
+  const refreshToken = async () => {
+    try {
+      const response = await request.post<ApiResponse<LoginResponseData>>('/auth/jwt/refresh', {
+        token: token.value
+      })
+
+      if (response.data.success && response.data.data) {
+        const newToken = response.data.data.token
+        setToken(newToken)
+        return response.data
+      } else {
+        throw new Error(response.data.message || gt('errors.tokenRefreshFailed'))
+      }
+    } catch (error) {
+      console.error('令牌刷新请求失败:', error)
+      throw new Error(extractErrorMessage(error) || gt('errors.tokenRefreshFailed'))
+    }
+  }
+
+  // 登录方法
+  const login = async (username: string, password: string) => {
+    try {
+      const response = await request.post<ApiResponse<LoginResponseData>>('/auth/jwt/login', {
+        username,
+        password
+      })
+      
+      if (response.data.success && response.data.data) {
+        const jwtToken = response.data.data.token
+        setToken(jwtToken)
+        startTokenRefresh()
+        return response.data
+      } else {
+        throw new Error(response.data.message || gt('errors.loginFailed'))
+      }
+    } catch (error) {
+      console.error('登录请求失败:', error)
+      throw new Error(extractErrorMessage(error) || gt('errors.loginFailed'))
+    }
+  }
+
+  // 登出方法
+  const logout = async () => {
+    try {
+      if (token.value) {
+        const username = parseUsernameFromToken(token.value)
+        await request.post('/auth/jwt/revoke', {
+          token: token.value,
+          userId: username,
+          reason: '用户主动登出'
+        })
+      }
+    } catch (error) {
+      console.error('登出请求失败:', error)
+    } finally {
+      clearToken()
+    }
+  }
+
+  // 获取用户信息（POST /auth/jwt/validate，后端仅 @PostMapping）
+  const getUserInfo = async () => {
+    try {
+      const response = await request.post<RouterResponse<{ valid: boolean; userId: string; message: string }>>(
+        '/auth/jwt/validate',
+        { token: token.value }
+      )
+      
+      if (response.data.success && response.data.data) {
+        const validation = response.data.data
+        if (validation.valid && validation.userId) {
+          // Validate endpoint returns userId; preserve roles/permissions parsed from JWT
+          if (userInfo.value) {
+            userInfo.value.username = validation.userId
+          } else {
+            userInfo.value = { username: validation.userId }
+          }
+          return userInfo.value
+        }
+      }
+    } catch (error) {
+      console.error('获取用户信息失败:', error)
+      clearToken()
+      throw error
+    }
+  }
+
+  return {
+    token,
+    userInfo,
+    permissions,
+    isAdmin,
+    setToken,
+    clearToken,
+    isAuthenticated,
+    hasRole,
+    hasAnyRole,
+    hasPermission,
+    login,
+    logout,
+    getUserInfo,
+    refreshToken,
+    startTokenRefresh,
+    parseRolesFromToken,
+    parsePermissionsFromToken,
+    parseUsernameFromToken
+  }
+})

@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jairouter-schema-init
+  labels:
+    app.kubernetes.io/name: jairouter
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 2
+  # 完成后自动清理，避免每次部署累积已完成的 Job。
+  ttlSecondsAfterFinished: 600
+  # 这里**不设** activeDeadlineSeconds：迁移专用入口（`migrate` profile）跑完即退出，
+  # 且启动/迁移失败时也会以非 0 退出码结束（见下方 args 注释与 issue #193），
+  # 所以 Job 的成败可直接判读，不需要「跑满 N 秒强制终止」这种把失败伪装成超时的兜底。
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jairouter
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: jairouter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10010
+        runAsGroup: 10010
+        fsGroup: 10010
+      containers:
+        - name: schema-init
+          image: sodlinken/jairouter:latest
+          imagePullPolicy: IfNotPresent
+          # 迁移专用入口（issue #193）：`migrate` profile 同时设定「非 Web」与「跑完即退出」，
+          # **退出码反映成败** —— 0 = 启动与迁移全部通过；非 0 = 启动或迁移失败。
+          # 于是 Job 的 Complete/Failed 就是可信的判据。
+          #
+          # 它由**单一实例**先跑完，避免多副本同时启动时的并发 DDL：建表统一由 Flyway 承担，
+          # PostgreSQL 与 H2 各有一套脚本（见 src/main/resources/db/migration/{postgres,h2}，
+          # 由 FlywayDialectEnvironmentPostProcessor 按数据源方言自动启用，issue #191 / #192）。
+          #
+          # 该模式下仍会跑生产安全前置检查（JWT_SECRET / INITIAL_ADMIN_PASSWORD 强度）——
+          # 与应用 Pod 同一套判据：配置不合格时 Job 也会失败，这是有意的（失败早于上线）。
+          args:
+            - "--spring.main.banner-mode=off"
+          env:
+            # prod + json-logs（容器日志一行一条 JSON，见 #211）+ migrate（迁移专用入口，见 #193）
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod,json-logs,migrate
+          envFrom:
+            - configMapRef:
+                name: jairouter-config
+            - secretRef:
+                name: jairouter-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: jairouter-config-files
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

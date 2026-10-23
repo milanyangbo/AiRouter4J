@@ -1,0 +1,447 @@
+# JWT 认证配置说明
+
+<!-- 版本信息 -->
+> **文档版本**: 2.1.0
+> **最后更新**: 2026-09-15
+> **Git 提交**: 61384b4a
+> **作者**: Lincoln
+<!-- /版本信息 -->
+
+## 概述
+
+JAiRouter 支持 JWT（JSON Web Token）认证，可以与现有的身份认证系统集成。JWT 认证提供了无状态的认证机制，支持令牌刷新和黑名单功能。
+
+## 功能特性
+
+### 核心功能
+
+- **标准 JWT 支持**：完全兼容 RFC 7519 标准
+- **多种签名算法**：支持 HS256、HS384、HS512、RS256、RS384、RS512
+- **令牌刷新**：支持访问令牌和刷新令牌机制
+- **黑名单功能**：支持令牌撤销和登出
+- **与 API Key 共存**：可以与 API Key 认证同时使用
+- **用户名密码登录**：支持通过用户名密码获取JWT令牌
+- **持久化存储**：支持将 JWT 账户和令牌信息存储在 H2 数据库中
+- **H2 数据库默认存储**：H2 数据库是 JWT 数据的默认持久化存储方式
+
+### 账户管理增强 (v1.5.7+)
+
+- **账户自动初始化**：JWT 账户从 YAML 配置自动初始化到数据库
+- **账户状态管理**：支持账户启用/禁用状态切换
+
+### 安全黑名单 (v1.7.0+)
+
+- **安全黑名单管理**：支持 IP/用户/令牌级别的黑名单
+- **黑名单自动清理**：定期清理过期的黑名单记录
+
+## 快速开始
+
+### 1. 启用 JWT 认证
+
+配置文件：`config/auth/jwt.yml`
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      enabled: true
+      secret: "${JWT_SECRET}"
+      algorithm: "HS256"
+      expiration-minutes: 60
+      jwt-header: "Jairouter_Token"  # 自定义 JWT 头
+```
+
+### 2. 设置 JWT 密钥
+
+#### 对称密钥（HS256/HS384/HS512）
+
+```bash
+# 生产环境 JWT 密钥配置
+export JWT_SECRET="your-very-strong-production-jwt-secret-key-at-least-32-characters-long"
+```
+
+令牌有效期**不走环境变量**，请在 `config/auth/jwt.yml` 里设置：
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      expiration-minutes: 15        # 访问令牌有效期
+      refresh-expiration-days: 30   # 刷新令牌有效期
+```
+
+#### 非对称密钥（RS256/RS384/RS512）
+
+```bash
+# 生产环境非对称密钥配置
+export JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nyour-public-key-here\n-----END PUBLIC KEY-----"
+export JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nyour-private-key-here\n-----END PRIVATE KEY-----"
+```
+
+### 3. 配置用户账户
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      enabled: true
+      secret: "dev-jwt-secret-key-for-development-only-not-for-production"
+      algorithm: "HS256"
+      expiration-minutes: 60
+      refresh-expiration-days: 7
+      issuer: "jairouter"
+      blacklist-enabled: true
+      # 用户账户配置
+      accounts:
+        - username: "admin"
+          password: "{bcrypt}$2a$10$xmZ5S3DY567m5z6vcPVkreKZ885VqWFb1DB5.RgCEvqHLKj0H/G7u"
+          roles: [ "ADMIN", "USER" ]
+          enabled: true
+        - username: "user"
+          password: "{noop}user123"
+          roles: [ "USER" ]
+          enabled: true
+```
+
+### 4. 客户端使用
+
+在 HTTP 请求头中添加 JWT 令牌：
+
+```bash
+curl -H "Jairouter_Token: your-jwt-token-here" \
+     -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"model": "gpt-3.5-turbo", "messages": [...]}' \
+     http://localhost:8080/v1/chat/completions
+```
+
+---
+
+## 登录获取JWT令牌
+
+### 登录端点
+
+```
+POST /api/auth/jwt/login
+```
+
+### 请求示例
+
+```bash
+curl -X POST http://localhost:8080/api/auth/jwt/login \
+     -H "Content-Type: application/json" \
+     -d '{
+           "username": "admin",
+           "password": "admin123"
+         }'
+```
+
+### 响应示例
+
+```json
+{
+  "success": true,
+  "message": "登录成功",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "tokenType": "Bearer",
+    "expiresIn": 3600,
+    "message": "登录成功",
+    "timestamp": "2026-09-15T12:00:00"
+  },
+  "errorCode": null
+}
+```
+
+---
+
+## JWT 配置参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | boolean | false | 是否启用 JWT 认证 |
+| `secret` | string | - | JWT 签名密钥（对称算法） |
+| `public-key` | string | - | JWT 公钥（非对称算法） |
+| `private-key` | string | - | JWT 私钥（非对称算法） |
+| `algorithm` | string | "HS256" | JWT 签名算法 |
+| `expiration-minutes` | int | 60 | 访问令牌过期时间（分钟） |
+| `refresh-expiration-days` | int | 7 | 刷新令牌过期时间（天） |
+| `issuer` | string | "jairouter" | JWT 发行者标识 |
+| `blacklist-enabled` | boolean | true | 是否启用黑名单功能 |
+| `jwt-header` | string | "Jairouter_Token" | 自定义 JWT 头名称 |
+| `accounts` | array | [] | 用户账户列表 |
+
+---
+
+## 支持的签名算法
+
+### 对称算法（HMAC）
+
+- **HS256**：HMAC using SHA-256
+- **HS384**：HMAC using SHA-384
+- **HS512**：HMAC using SHA-512
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      algorithm: "HS256"
+      secret: "${JWT_SECRET}"
+```
+
+### 非对称算法（RSA）
+
+- **RS256**：RSASSA-PKCS1-v1_5 using SHA-256
+- **RS384**：RSASSA-PKCS1-v1_5 using SHA-384
+- **RS512**：RSASSA-PKCS1-v1_5 using SHA-512
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      algorithm: "RS256"
+      public-key: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+        -----END PUBLIC KEY-----
+      private-key: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
+        -----END PRIVATE KEY-----
+```
+
+---
+
+## 令牌刷新机制
+
+### 配置刷新令牌
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      expiration-minutes: 15        # 访问令牌15分钟过期
+      refresh-expiration-days: 30   # 刷新令牌30天过期
+```
+
+### 刷新令牌流程
+
+1. **获取访问令牌和刷新令牌**
+```bash
+curl -X POST http://localhost:8080/api/auth/jwt/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "user", "password": "pass"}'
+```
+
+2. **使用访问令牌访问 API**
+```bash
+curl -H "Jairouter_Token: access_token_here" \
+     http://localhost:8080/v1/chat/completions
+```
+
+3. **刷新访问令牌**
+```bash
+curl -X POST http://localhost:8080/api/auth/jwt/refresh \
+     -H "Content-Type: application/json" \
+     -d '{"refresh_token": "refresh_token_here"}'
+```
+
+---
+
+## JWT 令牌持久化存储
+
+### 启用令牌持久化
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      persistence:
+        enabled: true              # 持久化总开关
+        storage-path: config-store # 默认持久化实现使用的文件存储目录
+        memory:
+          max-tokens: 50000        # 内存缓存上限
+          cleanup-threshold: 0.8   # 缓存占用到 80% 时开始清理
+          lru-enabled: true
+        startup-recovery:
+          enabled: true            # 启动时从存储恢复令牌
+        composite:
+          enabled: false           # 文件 + Redis 组合存储
+        sync:
+          enabled: false           # 各存储之间的后台同步
+        cleanup:
+          enabled: true
+          schedule: "0 0 2 * * ?"   # 每天凌晨 2 点
+          retention-days: 30
+          batch-size: 1000
+        redis:
+          enabled: false           # Redis 连接信息来自 spring.data.redis.*
+```
+
+### H2 数据库存储优势
+
+1. **默认存储方式**：H2 数据库是 JWT 令牌的默认存储方式
+2. **持久化**：数据不会因应用重启而丢失
+3. **高性能**：嵌入式数据库，无网络开销
+4. **易于维护**：单一数据库文件，便于备份
+5. **强大查询**：支持复杂的 SQL 查询
+
+---
+
+## 黑名单功能
+
+### 启用黑名单
+
+```yaml
+jairouter:
+  security:
+    jwt:
+      blacklist-enabled: true
+      blacklist:
+        persistence:
+          enabled: true
+          storage-path: config-store/jwt-blacklist
+          max-memory-size: 10000   # 内存中最多保留的条目数
+          cleanup-interval: 3600   # 清理间隔（秒）
+```
+
+### 令牌撤销
+
+```bash
+curl -X POST http://localhost:8080/api/auth/jwt/revoke \
+     -H "Jairouter_Token: token_to_revoke"
+```
+
+### 存储不可用时的降级行为
+
+黑名单校验依赖存储（Redis）。存储不可达时，校验会**降级为仅依据本实例本地缓存判定**：
+
+- 本地缓存中已有记录的令牌仍会被拦截；
+- 未命中本地缓存的令牌会被**放行**——因此在存储恢复前，**其他实例撤销的令牌、或本实例重启后丢失本地缓存的令牌不会立即失效**；"撤销"由全局即时生效退化为尽力而为；
+- 降级只在首次失败时告警一次（其后同类失败降为 DEBUG 日志），避免每个请求刷屏、掩盖真正的鉴权失败；
+- 启动时会做一次存储可用性探测，不可用即给出明确告警，不必等到第一个请求失败才发现；
+- 存储恢复后校验自动恢复，**无需重启**。
+
+> ⚠️ 这是"可用性优先"的既有取舍。若你的部署把"撤销立即生效"当作硬性安全要求，请保证黑名单存储与网关同时可用（同 compose / 同集群部署并配置健康检查），并关注启动期的降级告警。
+
+---
+
+## 令牌管理 API
+
+### 获取令牌列表
+```bash
+curl -X GET "http://localhost:8080/api/auth/jwt/tokens?page=0&size=20&status=ACTIVE" \
+     -H "Jairouter_Token: admin_token"
+```
+
+### 撤销特定令牌
+```bash
+curl -X POST "http://localhost:8080/api/auth/jwt/revoke" \
+     -H "Jairouter_Token: admin_token" \
+     -H "Content-Type: application/json" \
+     -d '{"reason": "安全策略违规"}'
+```
+
+### 批量令牌撤销
+```bash
+curl -X POST "http://localhost:8080/api/auth/jwt/revoke/batch" \
+     -H "Jairouter_Token: admin_token" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "tokenIds": ["token-uuid-123", "token-uuid-456"],
+       "reason": "批量安全清理"
+     }'
+```
+
+### 获取黑名单统计
+```bash
+curl -X GET "http://localhost:8080/api/auth/jwt/blacklist/stats" \
+     -H "Jairouter_Token: admin_token"
+```
+
+---
+
+## 与 API Key 集成
+
+JWT 认证可以与 API Key 认证同时使用：
+
+```yaml
+jairouter:
+  security:
+    enabled: true
+    api-key:
+      enabled: true
+    jwt:
+      enabled: true
+```
+
+认证优先级：
+1. 如果请求包含 JWT 令牌，优先使用 JWT 认证
+2. 如果 JWT 认证失败或不存在 JWT 令牌，尝试 API Key 认证
+3. 如果两种认证都失败，返回 401 错误
+
+---
+
+## 安全最佳实践
+
+### 1. 密钥管理
+
+- **使用强密钥**：对称密钥至少 256 位（32 字节）
+- **定期轮换**：定期更换 JWT 签名密钥
+- **安全存储**：使用环境变量或密钥管理系统存储密钥
+
+### 2. 令牌生命周期
+
+- **短期访问令牌**：访问令牌应该有较短的过期时间（15-60分钟）
+- **长期刷新令牌**：刷新令牌可以有较长的过期时间（7-30天）
+- **及时撤销**：在用户登出时及时撤销令牌
+
+### 3. 算法选择
+
+- **生产环境推荐**：使用 RS256 等非对称算法
+- **开发环境**：可以使用 HS256 等对称算法
+- **避免弱算法**：不要使用 none 算法
+
+---
+
+## 故障排除
+
+### 常见问题
+
+#### 令牌验证失败
+
+**错误**：`Invalid JWT token`
+
+**解决方案**：
+1. 检查令牌格式
+2. 验证签名密钥配置
+3. 检查令牌是否过期
+4. 查看详细错误日志
+
+#### 令牌过期
+
+**错误**：`JWT token has expired`
+
+**解决方案**：
+1. 使用刷新令牌获取新的访问令牌
+2. 重新登录获取新令牌
+3. 调整令牌过期时间配置
+
+### 调试技巧
+
+#### 启用详细日志
+
+```yaml
+logging:
+  level:
+    org.unreal.modelrouter.auth: DEBUG
+```
+
+#### 令牌解析工具
+
+- https://jwt.io/
+- https://jwt-decoder.com/
+
+---
+
+*最后更新：2026-09-15*

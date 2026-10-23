@@ -1,0 +1,330 @@
+package org.unreal.modelrouter.monitor.monitoring.error;
+
+import lombok.extern.slf4j.Slf4j;
+import org.unreal.modelrouter.monitor.tracing.TracingContext;
+import org.unreal.modelrouter.monitor.tracing.TracingContextHolder;
+import org.unreal.modelrouter.monitor.tracing.logger.StructuredLogger;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * 错误追踪器
+ *
+ * 统一处理系统中的异常追踪，提供：
+ * - 异常信息的结构化记录
+ * - 异常堆栈的脱敏和截断处理
+ * - 异常分类和聚合统计功能
+ * - 与追踪上下文的集成
+ *
+ * @author JAiRouter Team
+ * @since 1.0.0
+ */
+@Slf4j
+public final class ErrorTracker {
+
+    private final StructuredLogger structuredLogger;
+
+    private StackTraceSanitizer stackTraceSanitizer;
+    private ErrorMetricsCollector errorMetricsCollector;
+    private ExceptionPersistenceService exceptionPersistenceService;
+    private ErrorCodeResolver errorCodeResolver;
+
+    public void setStackTraceSanitizer(final StackTraceSanitizer stackTraceSanitizer) {
+        this.stackTraceSanitizer = stackTraceSanitizer;
+    }
+
+    public void setErrorMetricsCollector(final ErrorMetricsCollector errorMetricsCollector) {
+        this.errorMetricsCollector = errorMetricsCollector;
+    }
+
+    public void setExceptionPersistenceService(final ExceptionPersistenceService exceptionPersistenceService) {
+        this.exceptionPersistenceService = exceptionPersistenceService;
+    }
+
+    public void setErrorCodeResolver(final ErrorCodeResolver errorCodeResolver) {
+        this.errorCodeResolver = errorCodeResolver;
+    }
+    
+    // 异常统计
+    private final ConcurrentHashMap<String, AtomicLong> errorTypeCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> errorLocationCounters = new ConcurrentHashMap<>();
+    
+    // 异常聚合统计
+    private final ConcurrentHashMap<String, ErrorAggregation> errorAggregations = new ConcurrentHashMap<>();
+    
+    public ErrorTracker(final StructuredLogger structuredLogger) {
+        this.structuredLogger = structuredLogger;
+    }
+    
+    /**
+     * 记录异常信息
+     * 
+     * @param throwable 异常对象
+     * @param operation 操作名称
+     * @param additionalInfo 额外信息
+     */
+    public void trackError(
+            final Throwable throwable, final String operation,
+            final Map<String, Object> additionalInfo) {
+        if (throwable == null) {
+            return;
+        }
+        
+        Instant startTime = Instant.now();
+        
+        try {
+            // 获取当前追踪上下文
+            TracingContext context = TracingContextHolder.getCurrentContext();
+            
+            // 脱敏异常信息
+            StackTraceSanitizer.SanitizedThrowable sanitizedThrowable = null;
+            if (stackTraceSanitizer != null) {
+                sanitizedThrowable = stackTraceSanitizer.sanitize(throwable);
+            }
+            
+            // 更新统计信息
+            updateErrorStatistics(throwable, operation);
+            
+            // 记录结构化日志
+            Map<String, Object> errorInfo = new HashMap<>();
+            if (additionalInfo != null) {
+                errorInfo.putAll(additionalInfo);
+            }
+            
+            errorInfo.put("operation", operation);
+            errorInfo.put("exceptionClass", throwable.getClass().getName());
+            
+            // 添加脱敏后的异常信息
+            if (sanitizedThrowable != null) {
+                errorInfo.put("sanitizedMessage", sanitizedThrowable.getMessage());
+                errorInfo.put("sanitizedStackTrace", sanitizedThrowable.toSimpleString());
+            }
+            
+            // 记录到结构化日志中
+            structuredLogger.logError(throwable, context, errorInfo);
+            
+            // 更新聚合统计
+            aggregateError(throwable, operation, context);
+            
+            // 记录指标
+            if (errorMetricsCollector != null) {
+                Duration duration = Duration.between(startTime, Instant.now());
+                errorMetricsCollector.recordError(
+                    throwable.getClass().getSimpleName(),
+                    operation,
+                    null,
+                    null,
+                    null,
+                    null,
+                    duration
+                );
+            }
+
+            // 持久化到数据库
+            if (exceptionPersistenceService != null) {
+                String sanitizedMessage = sanitizedThrowable != null ? sanitizedThrowable.getMessage() : null;
+                String sanitizedStackTrace = sanitizedThrowable != null ? sanitizedThrowable.toSimpleString() : null;
+                persistExceptionSafely(
+                    throwable,
+                    operation,
+                    context,
+                    additionalInfo,
+                    sanitizedMessage,
+                    sanitizedStackTrace
+                );
+            }
+
+        } catch (Exception e) {
+            log.warn("记录错误信息时发生异常", e);
+        }
+    }
+
+    /**
+     * 持久化异常事件，且不在 Reactor 非阻塞线程上执行阻塞写入（issue #263）.
+     *
+     * <p>{@link ExceptionPersistenceService#persistException} 是 {@code @Transactional} 的阻塞 JDBC
+     * 写入，而本链路由出站失败路径（{@code BaseAdapter} 的 {@code onErrorResume}）与
+     * {@code ReactiveGlobalExceptionHandler} 在 Netty 事件循环上触发。在非阻塞线程上把写入交给
+     * {@link reactor.core.scheduler.Schedulers#boundedElastic()}；可阻塞线程上保持内联，
+     * 维持原有的同步可见语义。</p>
+     *
+     * <p>{@code context} 由调用方在进入本方法前捕获、按参数传入，因此卸载到其他线程不会丢失
+     * 追踪上下文。{@code persistException} 内部自行捕获并记录异常，不会向调度器抛出。</p>
+     */
+    private void persistExceptionSafely(
+            final Throwable throwable, final String operation,
+            final TracingContext context, final Map<String, Object> additionalInfo,
+            final String sanitizedMessage, final String sanitizedStackTrace) {
+        // 阻塞持久化不得在 EventLoop 上执行（issue #263）
+        if (reactor.core.scheduler.Schedulers.isInNonBlockingThread()) {
+            reactor.core.scheduler.Schedulers.boundedElastic().schedule(() ->
+                    exceptionPersistenceService.persistException(
+                            throwable, operation, context, additionalInfo,
+                            sanitizedMessage, sanitizedStackTrace));
+            return;
+        }
+        exceptionPersistenceService.persistException(
+                throwable, operation, context, additionalInfo,
+                sanitizedMessage, sanitizedStackTrace);
+    }
+    
+    /**
+     * 记录异常信息（简化版）
+     * 
+     * @param throwable 异常对象
+     * @param operation 操作名称
+     */
+    public void trackError(final Throwable throwable, final String operation) {
+        trackError(throwable, operation, null);
+    }
+    
+    /**
+     * 更新错误统计信息
+     * 
+     * @param throwable 异常对象
+     * @param operation 操作名称
+     */
+    private void updateErrorStatistics(final Throwable throwable, final String operation) {
+        // 按异常类型统计
+        String errorType = throwable.getClass().getName();
+        errorTypeCounters.computeIfAbsent(errorType, k -> new AtomicLong(0)).incrementAndGet();
+        
+        // 按操作位置统计
+        String location = operation != null ? operation : "unknown";
+        errorLocationCounters.computeIfAbsent(location, k -> new AtomicLong(0)).incrementAndGet();
+    }
+    
+    /**
+     * 聚合错误信息
+     * 
+     * @param throwable 异常对象
+     * @param operation 操作名称
+     * @param context 追踪上下文
+     */
+    private void aggregateError(final Throwable throwable, final String operation, final TracingContext context) {
+        String errorKey = generateErrorKey(throwable, operation);
+        ErrorAggregation aggregation = errorAggregations.computeIfAbsent(
+            errorKey, 
+            k -> new ErrorAggregation(throwable.getClass().getName(), operation)
+        );
+        
+        aggregation.increment();
+        
+        // 记录聚合信息到结构化日志
+        Map<String, Object> aggregationData = new HashMap<>();
+        aggregationData.put("errorType", throwable.getClass().getSimpleName());
+        aggregationData.put("operation", operation);
+        aggregationData.put("count", aggregation.getCount());
+        aggregationData.put("firstOccurrence", aggregation.getFirstOccurrence());
+        aggregationData.put("lastOccurrence", System.currentTimeMillis());
+        
+        if (context != null && context.isActive()) {
+            aggregationData.put("traceId", context.getTraceId());
+        }
+        
+        structuredLogger.logBusinessEvent("error_aggregation", aggregationData, context);
+    }
+    
+    /**
+     * 生成错误键值，用于聚合相同类型的错误
+     * 
+     * @param throwable 异常对象
+     * @param operation 操作名称
+     * @return 错误键值
+     */
+    private String generateErrorKey(final Throwable throwable, final String operation) {
+        return throwable.getClass().getName() + ":" + (operation != null ? operation : "unknown");
+    }
+    
+    /**
+     * 获取错误类型统计
+     * 
+     * @return 错误类型统计映射
+     */
+    public Map<String, Long> getErrorTypeStatistics() {
+        Map<String, Long> result = new HashMap<>();
+        errorTypeCounters.forEach((key, value) -> result.put(key, value.get()));
+        return result;
+    }
+    
+    /**
+     * 获取错误位置统计
+     * 
+     * @return 错误位置统计映射
+     */
+    public Map<String, Long> getErrorLocationStatistics() {
+        Map<String, Long> result = new HashMap<>();
+        errorLocationCounters.forEach((key, value) -> result.put(key, value.get()));
+        return result;
+    }
+    
+    /**
+     * 重置所有内部状态（统计计数器和聚合信息）。
+     * 主要用于测试环境确保测试间完全隔离。
+     */
+    public void reset() {
+        errorTypeCounters.clear();
+        errorLocationCounters.clear();
+        errorAggregations.clear();
+    }
+
+    /**
+     * 获取错误聚合信息
+     * 
+     * @return 错误聚合映射
+     */
+    public Map<String, ErrorAggregation> getErrorAggregations() {
+        return new HashMap<>(errorAggregations);
+    }
+    
+    /**
+     * 错误聚合类
+     */
+    public static class ErrorAggregation {
+        private final String errorType;
+        private final String operation;
+        private final AtomicLong count = new AtomicLong(0);
+        private final long firstOccurrence;
+        
+        public ErrorAggregation(final String errorType, final String operation) {
+            this.errorType = errorType;
+            this.operation = operation;
+            this.firstOccurrence = System.currentTimeMillis();
+        }
+        
+        public void increment() {
+            count.incrementAndGet();
+        }
+        
+        public String getErrorType() {
+            return errorType;
+        }
+        
+        public String getOperation() {
+            return operation;
+        }
+        
+        public long getCount() {
+            return count.get();
+        }
+        
+        public long getFirstOccurrence() {
+            return firstOccurrence;
+        }
+        
+        @Override
+        public String toString() {
+            return "ErrorAggregation{"
+                    + "errorType='" + errorType + '\''
+                    + ", operation='" + operation + '\''
+                    + ", count=" + count
+                    + ", firstOccurrence=" + firstOccurrence
+                    + '}';
+        }
+    }
+}

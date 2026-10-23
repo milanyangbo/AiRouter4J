@@ -1,0 +1,445 @@
+package org.unreal.modelrouter.auth.sanitization.impl;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.unreal.modelrouter.common.constants.ErrorCode;
+import org.unreal.modelrouter.common.exception.SanitizationException;
+import org.unreal.modelrouter.common.util.SafeRegexValidator;
+import org.unreal.modelrouter.auth.sanitization.SanitizationRuleEngine;
+import org.unreal.modelrouter.auth.security.model.RuleType;
+import org.unreal.modelrouter.auth.security.model.SanitizationRule;
+import reactor.core.publisher.Mono;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+
+/**
+ * 默认脱敏规则引擎实现
+ * 负责执行具体的脱敏逻辑，包括正则表达式匹配和替换策略
+ */
+@Slf4j
+@Component
+public final class DefaultSanitizationRuleEngine implements SanitizationRuleEngine {
+    
+    /**
+     * 编译后的正则表达式缓存
+     */
+    private final Map<String, Pattern> compiledPatterns = new ConcurrentHashMap<>();
+    
+    /**
+     * 规则匹配统计
+     */
+    private final Map<String, Long> ruleMatchCounts = new ConcurrentHashMap<>();
+    
+    /**
+     * 默认掩码字符
+     */
+    private static final String DEFAULT_MASK_CHAR = "*";
+    
+    /**
+     * 默认哈希算法
+     */
+    private static final String DEFAULT_HASH_ALGORITHM = "SHA-256";
+    
+    @Override
+    public Mono<String> applySanitizationRules(
+            final String content, final List<SanitizationRule> rules, final String contentType) {
+        if (content == null) {
+            return Mono.empty();
+        }
+        
+        if (content.isEmpty()) {
+            return Mono.just(content);
+        }
+        
+        if (rules == null || rules.isEmpty()) {
+            return Mono.just(content);
+        }
+        
+        return Mono.fromCallable(() -> {
+            String sanitizedContent = content;
+            
+            // 按优先级排序规则
+            List<SanitizationRule> sortedRules = rules.stream()
+                    .filter(SanitizationRule::isEnabled)
+                    .filter(rule -> rule.isApplicableToContentType(contentType))
+                    .sorted(Comparator.comparingInt(SanitizationRule::getPriority))
+                    .toList();
+            
+            // 依次应用每个规则
+            for (SanitizationRule rule : sortedRules) {
+                try {
+                    sanitizedContent = applyRule(sanitizedContent, rule);
+                } catch (Exception e) {
+                    log.error("应用脱敏规则失败: ruleId={}, error={}", rule.getRuleId(), e.getMessage(), e);
+                    // 继续处理其他规则，不因单个规则失败而中断整个流程
+                }
+            }
+            
+            return sanitizedContent;
+        })
+        .onErrorMap(throwable -> new SanitizationException(
+                "脱敏处理失败", throwable, ErrorCode.SANITIZATION_FAILED.code()));
+    }
+
+    @Override
+    public Mono<String> applySanitizationRules(
+            final String content, final List<SanitizationRule> rules,
+            final String contentType, final boolean preserveJsonStructure) {
+        if (preserveJsonStructure && contentType != null && contentType.startsWith("application/json")) {
+            return applySanitizationRulesJsonAware(content, rules, contentType);
+        }
+        return applySanitizationRules(content, rules, contentType);
+    }
+
+    /**
+     * JSON 结构保护脱敏：仅对 JSON 字符串字面量内部应用规则，不破坏数值字面量和结构字符。
+     */
+    private Mono<String> applySanitizationRulesJsonAware(
+            final String content, final List<SanitizationRule> rules, final String contentType) {
+        if (content == null) {
+            return Mono.empty();
+        }
+        if (content.isEmpty() || rules == null || rules.isEmpty()) {
+            return Mono.justOrEmpty(content);
+        }
+
+        return Mono.fromCallable(() -> {
+            List<SanitizationRule> sortedRules = rules.stream()
+                    .filter(SanitizationRule::isEnabled)
+                    .filter(rule -> rule.isApplicableToContentType(contentType))
+                    .sorted(Comparator.comparingInt(SanitizationRule::getPriority))
+                    .toList();
+
+            if (sortedRules.isEmpty()) {
+                return content;
+            }
+
+            StringBuilder result = new StringBuilder(content.length());
+            int i = 0;
+
+            // 当前字符串值所属的键名（原样，比较时转小写）。JSON 键名本就不脱敏，
+            // 这里复用同一处「键名 vs 值」判定顺带记下来，供 EXEMPT_KEYS 豁免使用。
+            String currentKey = null;
+
+            while (i < content.length()) {
+                if (content.charAt(i) == '"') {
+                    int j = i + 1;
+                    while (j < content.length()) {
+                        char c = content.charAt(j);
+                        if (c == '\\') {
+                            j += 2;
+                        } else if (c == '"') {
+                            break;
+                        } else {
+                            j++;
+                        }
+                    }
+
+                    String stringValue = content.substring(i + 1, j);
+
+                    // 判断是否为 JSON 键名（闭合引号后仅空白然后跟 ':'）
+                    int afterQuote = j + 1;
+                    while (afterQuote < content.length()
+                            && Character.isWhitespace(content.charAt(afterQuote))) {
+                        afterQuote++;
+                    }
+                    boolean isKey = afterQuote < content.length()
+                            && content.charAt(afterQuote) == ':';
+
+                    if (isKey) {
+                        currentKey = stringValue;
+                        result.append(content, i, j + 1);
+                    } else if (JsonKeyExemption.isExempt(currentKey)) {
+                        // 键名豁免：原样拷贝（连转义序列也不动），不做任何规则替换。
+                        result.append(content, i, j + 1);
+                    } else {
+                        String masked = stringValue;
+                        for (SanitizationRule rule : sortedRules) {
+                            try {
+                                masked = applyRule(masked, rule);
+                            } catch (Exception e) {
+                                log.error("JSON字符串脱敏失败: ruleId={}, error={}",
+                                        rule.getRuleId(), e.getMessage(), e);
+                            }
+                        }
+                        result.append('"').append(masked).append('"');
+                    }
+                    i = j + 1;
+                } else {
+                    int nextQuote = content.indexOf('"', i);
+                    if (nextQuote == -1) {
+                        result.append(content, i, content.length());
+                        break;
+                    }
+                    result.append(content, i, nextQuote);
+                    i = nextQuote;
+                }
+            }
+
+            return result.toString();
+        })
+        .onErrorMap(throwable -> new SanitizationException(
+                "JSON脱敏处理失败", throwable, ErrorCode.SANITIZATION_FAILED.code()));
+    }
+    
+    /**
+     * 应用单个脱敏规则
+     */
+    private String applyRule(final String content, final SanitizationRule rule) {
+        Pattern pattern = getCompiledPattern(rule);
+        if (pattern == null) {
+            log.warn("无法获取规则的编译模式: ruleId={}", rule.getRuleId());
+            return content;
+        }
+        
+        java.util.regex.Matcher matcher = pattern.matcher(content);
+        if (!matcher.find()) {
+            return content;
+        }
+        
+        // 记录匹配统计
+        incrementMatchCount(rule.getRuleId());
+        
+        // 根据策略进行替换
+        return switch (rule.getStrategy()) {
+            case MASK -> applyMaskStrategy(content, matcher, rule);
+            case REPLACE -> applyReplaceStrategy(content, matcher, rule);
+            case REMOVE -> applyRemoveStrategy(content, matcher);
+            case HASH -> applyHashStrategy(content, matcher);
+        };
+    }
+    
+    /**
+     * 应用掩码策略
+     */
+    private String applyMaskStrategy(final String content,
+            final java.util.regex.Matcher matcher, final SanitizationRule rule) {
+        String maskChar = rule.getReplacementChar() != null ? rule.getReplacementChar() : DEFAULT_MASK_CHAR;
+        
+        StringBuffer result = new StringBuffer();
+        matcher.reset();
+        
+        while (matcher.find()) {
+            String matched = matcher.group();
+            String masked = maskChar.repeat(matched.length());
+            matcher.appendReplacement(result, java.util.regex.Matcher.quoteReplacement(masked));
+        }
+        matcher.appendTail(result);
+        
+        return result.toString();
+    }
+    
+    /**
+     * 应用替换策略
+     */
+    private String applyReplaceStrategy(final String content,
+            final java.util.regex.Matcher matcher, final SanitizationRule rule) {
+        String replacement = rule.getReplacementText() != null ? rule.getReplacementText() : "[REDACTED]";
+        return matcher.replaceAll(java.util.regex.Matcher.quoteReplacement(replacement));
+    }
+    
+    /**
+     * 应用删除策略
+     */
+    private String applyRemoveStrategy(final String content, final java.util.regex.Matcher matcher) {
+        return matcher.replaceAll("");
+    }
+    
+    /**
+     * 应用哈希策略
+     */
+    private String applyHashStrategy(final String content, final java.util.regex.Matcher matcher) {
+        StringBuffer result = new StringBuffer();
+        matcher.reset();
+        
+        while (matcher.find()) {
+            String matched = matcher.group();
+            String hashed = generateHash(matched);
+            matcher.appendReplacement(result, java.util.regex.Matcher.quoteReplacement(hashed));
+        }
+        matcher.appendTail(result);
+        
+        return result.toString();
+    }
+    
+    /**
+     * 生成哈希值
+     */
+    private String generateHash(final String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance(DEFAULT_HASH_ALGORITHM);
+            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = String.format("%02x", b);
+                hexString.append(hex);
+            }
+            
+            // 返回前8位作为简短哈希
+            return "[HASH:" + hexString.substring(0, 8).toUpperCase() + "]";
+        } catch (NoSuchAlgorithmException e) {
+            log.error("哈希算法不可用: {}", DEFAULT_HASH_ALGORITHM, e);
+            return "[HASH:ERROR]";
+        }
+    }
+    
+    /**
+     * 获取编译后的正则表达式模式
+     */
+    private Pattern getCompiledPattern(final SanitizationRule rule) {
+        return compiledPatterns.computeIfAbsent(rule.getRuleId(), k -> {
+            if (isRegexType(rule)) {
+                final String reason = SafeRegexValidator.validateUserPattern(rule.getPattern());
+                if (reason != null) {
+                    log.warn("跳过不安全的正则规则: ruleId={}, reason={}{}",
+                            rule.getRuleId(), reason,
+                            SafeRegexValidator.formatPatternForLog(rule.getPattern()));
+                    return null;
+                }
+            }
+            try {
+                String pattern = buildPattern(rule);
+                return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
+            } catch (PatternSyntaxException e) {
+                log.error("编译正则表达式失败: ruleId={}, pattern={}, error={}", 
+                         rule.getRuleId(), rule.getPattern(), e.getMessage());
+                return null;
+            }
+        });
+    }
+    
+    /**
+     * 根据规则类型构建正则表达式模式
+     */
+    private String buildPattern(final SanitizationRule rule) {
+        return switch (rule.getType()) {
+            case SENSITIVE_WORD -> "\\b" + Pattern.quote(rule.getPattern()) + "\\b";
+            case PII_PATTERN, CUSTOM_REGEX -> rule.getPattern();
+        };
+    }
+
+    private static boolean isRegexType(final SanitizationRule rule) {
+        return rule.getType() == RuleType.PII_PATTERN || rule.getType() == RuleType.CUSTOM_REGEX;
+    }
+    
+    /**
+     * 增加匹配计数
+     */
+    private void incrementMatchCount(final String ruleId) {
+        ruleMatchCounts.merge(ruleId, 1L, Long::sum);
+    }
+    
+    @Override
+    public Mono<Boolean> validateRule(final SanitizationRule rule) {
+        return Mono.fromCallable(() -> {
+            if (rule == null) {
+                return false;
+            }
+            
+            if (rule.getRuleId() == null || rule.getRuleId().trim().isEmpty()) {
+                return false;
+            }
+            
+            if (rule.getPattern() == null || rule.getPattern().trim().isEmpty()) {
+                return false;
+            }
+            
+            if (rule.getStrategy() == null) {
+                return false;
+            }
+            
+            if (isRegexType(rule)) {
+                final String reason = SafeRegexValidator.validateUserPattern(rule.getPattern());
+                if (reason != null) {
+                    log.warn("规则验证失败，正则不安全: ruleId={}, reason={}", rule.getRuleId(), reason);
+                    return false;
+                }
+            }
+            
+            try {
+                String pattern = buildPattern(rule);
+                Pattern.compile(pattern);
+                return true;
+            } catch (PatternSyntaxException e) {
+                log.warn("规则验证失败，正则表达式语法错误: ruleId={}, pattern={}, error={}", 
+                        rule.getRuleId(), rule.getPattern(), e.getMessage());
+                return false;
+            }
+        });
+    }
+    
+    @Override
+    public Mono<Void> compileRules(final List<SanitizationRule> rules) {
+        return Mono.fromRunnable(() -> {
+            if (rules == null || rules.isEmpty()) {
+                return;
+            }
+            
+            log.info("开始编译脱敏规则，规则数量: {}", rules.size());
+            int successCount = 0;
+            int failureCount = 0;
+            
+            for (SanitizationRule rule : rules) {
+                try {
+                    if (isRegexType(rule)) {
+                        final String reason = SafeRegexValidator.validateUserPattern(rule.getPattern());
+                        if (reason != null) {
+                            log.warn("跳过不安全的正则规则: ruleId={}, reason={}{}",
+                                    rule.getRuleId(), reason,
+                                    SafeRegexValidator.formatPatternForLog(rule.getPattern()));
+                            failureCount++;
+                            continue;
+                        }
+                    }
+                    String pattern = buildPattern(rule);
+                    Pattern compiledPattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
+                    compiledPatterns.put(rule.getRuleId(), compiledPattern);
+                    successCount++;
+                } catch (PatternSyntaxException e) {
+                    log.error("编译规则失败: ruleId={}, pattern={}, error={}", 
+                             rule.getRuleId(), rule.getPattern(), e.getMessage());
+                    failureCount++;
+                }
+            }
+            
+            log.info("脱敏规则编译完成，成功: {}, 失败: {}", successCount, failureCount);
+        });
+    }
+    
+    @Override
+    public Mono<Long> getRuleMatchCount(final String ruleId) {
+        return Mono.fromCallable(() -> ruleMatchCounts.getOrDefault(ruleId, 0L));
+    }
+    
+    /**
+     * 清除编译缓存
+     */
+    public void clearCompiledPatterns() {
+        compiledPatterns.clear();
+        log.info("已清除编译后的正则表达式缓存");
+    }
+    
+    /**
+     * 重置匹配统计
+     */
+    public void resetMatchCounts() {
+        ruleMatchCounts.clear();
+        log.info("已重置规则匹配统计");
+    }
+    
+    /**
+     * 获取所有规则匹配统计
+     */
+    public Map<String, Long> getAllMatchCounts() {
+        return Map.copyOf(ruleMatchCounts);
+    }
+}

@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  jairouter-dev:
+    image: sodlinken/jairouter:dev
+    container_name: jairouter-dev
+    ports:
+      - "9900:8080"
+      - "5005:5005"
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - JAVA_OPTS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+      - REDIS_HOST=redis-dev
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-key-for-development-only}
+      - JWT_EXPIRATION_MINUTES=${JWT_EXPIRATION_MINUTES:-60}
+      - JWT_REFRESH_EXPIRATION_DAYS=${JWT_REFRESH_EXPIRATION_DAYS:-1}
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./src:/app/src:ro
+      - ./data:/app/data
+    networks:
+      - jairouter-network
+    depends_on:
+      - redis-dev
+    # 停机宽限期须大于 spring.lifecycle.timeout-per-shutdown-phase(30s)，
+    # 否则 Docker 会先 SIGKILL，优雅停机配置失效
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  redis-dev:
+    image: redis:7-alpine
+    container_name: jairouter-redis-dev
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      sh -c "
+        if [ -n \"$$REDIS_PASSWORD\" ]; then
+          redis-server --requirepass $$REDIS_PASSWORD --appendonly no
+        else
+          redis-server --appendonly no
+        fi
+      "
+    volumes:
+      - redis-dev-data:/data
+    restart: unless-stopped
+    networks:
+      - jairouter-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis-dev-data:
+    driver: local
+
+networks:
+  jairouter-network:
+    driver: bridge

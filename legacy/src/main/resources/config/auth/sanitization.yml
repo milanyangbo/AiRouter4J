@@ -1,0 +1,74 @@
+# ========================================
+# 数据脱敏配置 (auth 模块)
+# ========================================
+# 此文件包含响应数据脱敏配置
+# 位置：org.unreal.modelrouter.auth.security
+
+jairouter:
+  security:
+    sanitization:
+      response:
+        # 脱敏功能开关
+        enabled: false
+        
+        # 敏感词列表（按单词命中，\b 词边界 + 忽略大小写）
+        # 注意：通用英文词不要放进词表 —— `\bkey\b` 会把 "press any key to continue"
+        # 这类正常文案打码（#561），因此词表只保留「本身即凭据语义」的词。
+        sensitive-words:
+          - "password"
+          - "account"
+          - "secret"
+          - "token"
+        
+        # PII 模式（正则表达式）
+        # ⚠️ 列表顺序 = 执行顺序（顺序决定派生规则的 priority），必须「先长后短」：
+        # 身份证 → 银行卡 → 手机号 → 邮箱。长号码若先被短规则打掉前 N 位，剩下的位数
+        # 就再也凑不成整段模式、尾部会留明文（#561 的原始症状正是 "***********67890"）。
+        # 每条都用 (?<!\d) / (?!\d) 或 \b 卡住数字边界：即使顺序被改错，也不会从更长
+        # 数字串中间截取。
+        pii-patterns:
+          - "(?<!\\d)\\d{17}[\\dXx](?!\\d)"                        # 身份证（18 位，末位可为 X）
+          - "(?<!\\d)(?:\\d{16}|\\d{19})(?!\\d)"                   # 银行卡（无分隔符 16/19 位）
+          - "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"  # 银行卡（4 位一组，空格/横线分隔）
+          - "(?<!\\d)1[3-9]\\d{9}(?!\\d)"                          # 手机号（11 位，1[3-9] 开头）
+          - "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"      # 邮箱
+        
+        # 脱敏字符
+        masking-char: "*"
+        
+        # 是否记录脱敏日志
+        log-sanitization: false
+        
+        # 是否保留 JSON 结构
+        preserve-json-structure: true
+
+        # 生效范围（哪些路径的响应进入脱敏）—— issue #560 可配置化 A 档
+        # mode=exclude（默认）：patterns 是「不脱敏」的例外；不写 patterns 时使用内置排除集合
+        #   （/api/**、/admin/**、/actuator/**、/health、/metrics、/swagger-ui/ 等），
+        #   其余路径（含 /v1/** 的非流式 JSON）脱敏。
+        # mode=include：只有命中 patterns 的路径才脱敏（用于只放开某几个入口）。
+        #   ⚠️ include 且 patterns 为空 = 一条响应都不脱敏，服务端会打 WARN、控制台会显红。
+        # 匹配规则：带 * / ? 的按 Ant 风格；不带通配符的按前缀匹配（与旧内置集合语义一致）。
+        # 注意：本项只影响 HTTP 响应过滤器；记录侧 sanitizeForStorage 不受它控制。
+        scope:
+          mode: exclude
+          patterns: []
+          # 例：只放开 AI 入口的脱敏
+          # mode: include
+          # patterns:
+          #   - /v1/**
+
+        # 单次响应允许缓冲的字节上限 —— issue #594
+        # 脱敏要把整个响应体读进内存做正则替换，必须设上限，否则大响应 + 高并发会打满堆。
+        # 超过上限时：
+        #   - 有 Content-Length ⇒ 跳过脱敏、原样放行（记告警与审计，宁可漏脱敏也不破坏响应）；
+        #   - 无 Content-Length（chunked）⇒ 无法回放原始内容，按脱敏失败终止（不会输出半截内容）。
+        # 下限 1 KiB；默认 1 MiB。
+        max-buffered-bytes: 1048576
+        
+
+        # 是否对 text/event-stream 流式响应逐帧脱敏 —— issue #560 第二阶段
+        # 开启后按行处理：只替换 data: 行的负载，event:/id:/retry:/注释行与 [DONE] 哨兵原样透传，
+        # 分帧语义不变；不做整段缓冲，因此不受 max-buffered-bytes 的「整段」限制（单行仍受限）。
+        # 单帧脱敏失败只回退该帧，不中断整条流。默认开启 —— 关闭等于「开关为开、流式不设防」。
+        sanitize-sse: true

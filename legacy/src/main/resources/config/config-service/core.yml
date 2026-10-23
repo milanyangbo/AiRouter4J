@@ -1,0 +1,42 @@
+# ========================================
+# 配置服务核心配置 (config 模块)
+# ========================================
+# 此文件包含 ConfigurationService 核心配置
+# 位置：org.unreal.modelrouter.config.core
+
+store:
+  # 存储类型（v1.5.1+ 使用 JPA）
+  type: jpa
+  
+  # 配置文件路径（用于导入导出）
+  path: ./config
+  
+
+# 数据源配置（支持环境变量覆盖，默认 H2）
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:h2:file:./data/jairouter;DB_CLOSE_DELAY=-1;MODE=MySQL;DATABASE_TO_UPPER=FALSE}
+    username: ${DATABASE_USERNAME:sa}
+    password: ${DATABASE_PASSWORD:}
+  
+  # JPA 配置
+  jpa:
+    hibernate:
+      # H2（默认）用 update，让 Hibernate 管理表结构。
+      #
+      # 注意：连 PostgreSQL 时这个值会被 FlywayDialectEnvironmentPostProcessor 覆盖为 validate
+      # （建表改由 Flyway 的 db/migration/postgres 版本化脚本负责，issue #191 / #192）；
+      # H2 不动它 —— 该模式下 Hibernate 的 schema 校验查不到小写对象（见处理器类注释）。
+      # 覆盖按 spring.datasource.url 的方言判定，因此不能写成 profile。本行仍必须保留：缺了它，
+      # Hibernate 对嵌入式数据源的默认值会退化为 create-drop，开发库会在停机时被清空。
+      # 测试环境（application-test.yml）显式设了 create-drop 与 flyway.enabled=false，不受影响。
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  
+  # H2 控制台配置（默认关闭）
+  h2:
+    console:
+      enabled: false

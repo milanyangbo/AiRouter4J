@@ -1,0 +1,120 @@
+# JAiRouter
+
+<!-- 版本信息 -->
+> **Doc Version**: 1.0.0
+> **Last Updated**: 2026-08-15
+> **Git Commit**: b1088a7e
+> **Author**: Lincoln
+<!-- /版本信息 -->
+
+<p align="center">
+  <strong>AI Model Service Unified Gateway</strong><br>
+  <em>Connect to all models with a single line of code</em>
+</p>
+
+<p align="center">
+  <a href="getting-started/quick-start.md">
+    <img src="https://img.shields.io/badge/Quick_Start-🚀-blue?style=for-the-badge" alt="Quick Start">
+  </a>
+  <a href="configuration/index.md">
+    <img src="https://img.shields.io/badge/Configuration-📖-green?style=for-the-badge" alt="Configuration">
+  </a>
+  <a href="https://github.com/Lincoln-cn/JAiRouter">
+    <img src="https://img.shields.io/badge/GitHub-🐙-black?style=for-the-badge" alt="GitHub">
+  </a>
+</p>
+
+---
+
+## 🎯 Core Value
+
+| Feature | Description |
+|---------|-------------|
+| **🔌 Unified API** | OpenAI-compatible interface, seamlessly connect to Ollama, vLLM, GPUStack, etc. |
+| **⚖️ Smart Load Balancing** | 5 strategies for automatic request distribution, health checks to remove failed nodes |
+| **🛡️ Traffic Control** | Rate limiting, circuit breaking, degradation for service stability |
+| **🔐 Dual Authentication** | JWT + API Key with audit logs and blacklist support |
+| **📊 Full-chain Tracing** | OpenTelemetry integration, performance bottlenecks at a glance |
+| **💾 State Persistence** | Redis / file storage, supports high-availability cluster deployment |
+| **🎫 Token Quota & Multi-dimensional Limiting** | Ledger across dimensions (tenant / API Key / user / service / model) × four windows (minute / hour / day / month), with Redis distributed counting and failover; **disabled by default** |
+| **🔗 Multi-protocol Entry** | OpenAI-native `/v1` and Anthropic `/v1/messages` served directly, so Claude Code can connect as-is (including tool calls) |
+| **⚡ Response Cache** | Exact-key and streaming SSE caching; cache hits do not consume downstream quota and can be invalidated on demand |
+
+![Management Console](getting-started/images/dashboard-en-US.png)
+
+---
+
+## 🏗️ Architecture Overview
+
+```
+┌─────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
+│   OpenAI SDK    │────▶│     JAiRouter       │────▶│    Ollama       │
+│   Langchain     │     │  • Load Balancing   │     │    vLLM         │
+│   HTTP Client   │     │  • Rate Limiting    │     │    GPUStack     │
+└─────────────────┘     │  • Authentication   │     │    Xinference   │
+                        └─────────────────────┘     └─────────────────┘
+```
+
+---
+
+## ⚡ 1-Minute Quick Start
+
+```bash
+# Start the service (dev mode, zero config)
+docker run -d --name jairouter -p 8080:8080 -e SPRING_PROFILES_ACTIVE=dev sodlinken/jairouter:latest
+
+# For production, also provide JWT_SECRET and INITIAL_ADMIN_PASSWORD (at least 32 characters / a strong password), otherwise the process exits at startup
+
+# Access the console
+open http://localhost:8080
+```
+
+---
+
+## 📚 Quick Navigation
+
+| I want to... | Recommended Docs |
+|--------------|------------------|
+| Get started quickly | [Quick Start Guide](getting-started/quick-start.md) |
+| Deploy in production | [Deployment Guide](deployment/index.md) |
+| Configure services | [Configuration Guide](configuration/index.md) |
+| Integrate via API | [API Reference](api-reference/index.md) |
+| Set up monitoring | [Monitoring Guide](monitoring/index.md) |
+| Troubleshoot issues | [Troubleshooting](troubleshooting/index.md) |
+
+---
+
+## 📈 Project Status
+
+[![GitHub stars](https://img.shields.io/github/stars/Lincoln-cn/JAiRouter?style=social)](https://github.com/Lincoln-cn/JAiRouter/stargazers)
+[![Docker Pulls](https://img.shields.io/docker/pulls/sodlinken/jairouter)](https://hub.docker.com/r/sodlinken/jairouter)
+[![License](https://img.shields.io/github/license/Lincoln-cn/JAiRouter)](https://github.com/Lincoln-cn/JAiRouter/blob/master/LICENSE)
+
+> **Current Release**: v3.3.5 (2026-10-17)
+
+---
+
+## 🔧 Supported Backends
+
+| Backend | Description |
+|---------|-------------|
+| **GPUStack** | GPUStack private model service |
+| **Ollama** | Local LLM runtime |
+| **vLLM** | High-performance LLM inference engine |
+| **Xinference** | Distributed model inference framework |
+| **LocalAI** | OpenAI-compatible local inference |
+| **OpenAI** | Official OpenAI API |
+
+---
+
+## 🤝 Community Support
+
+- [GitHub Issues](https://github.com/Lincoln-cn/JAiRouter/issues) - Bug reports
+- [GitHub Discussions](https://github.com/Lincoln-cn/JAiRouter/discussions) - Discussions
+- [Contributing Guide](development/contributing.md) - Join development
+
+---
+
+<p align="center">
+If JAiRouter helps you, please give it a ⭐️ <a href="https://github.com/Lincoln-cn/JAiRouter">Star</a>!
+</p>

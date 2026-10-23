@@ -1,0 +1,29 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### 本机 / IDE ###
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.DS_Store
+
+### 构建产物 ###
+build/
+out/
+node_modules/
+dist/
+
+### 密钥与本地覆写 —— 任何含真实凭证的文件都不得入库 ###
+*.local
+.env
+.env.*
+!.env.example
+secrets/
+
+### 日志 ###
+*.log
+logs/

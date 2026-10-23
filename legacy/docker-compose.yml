@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  jairouter:
+    image: sodlinken/jairouter:alpine
+    container_name: jairouter
+    ports:
+      - "9900:8080"
+    environment:
+      - SERVER_PORT=8080
+      - SPRING_PROFILES_ACTIVE=prod
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set (>=32 characters) - see README}
+      - JWT_EXPIRATION_MINUTES=${JWT_EXPIRATION_MINUTES:-15}
+      - JWT_REFRESH_EXPIRATION_DAYS=${JWT_REFRESH_EXPIRATION_DAYS:-30}
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./config-store:/app/config-store
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - jairouter-network
+    external_links:
+      - redis:redis
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  jairouter-network:
+    driver: bridge

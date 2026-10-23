@@ -1,0 +1,101 @@
+# ========================================
+# JWT持久化监控配置
+# ========================================
+# 此文件包含JWT令牌持久化的监控和指标配置
+
+jairouter:
+  security:
+    monitoring:
+      # ========================================
+      # JWT持久化监控配置
+      # ========================================
+      jwt-persistence:
+        enabled: false  # 默认关闭，各环境按需启用
+        
+        # 指标收集配置
+        metrics:
+          # 令牌操作指标
+          token-operations:
+            histogram-buckets: [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+            include-operations:
+              - create
+              - validate
+              - refresh
+              - revoke
+              - cleanup
+            
+          # 黑名单操作指标
+          blacklist-operations:
+            histogram-buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
+            include-operations:
+              - add
+              - check
+              - remove
+              - cleanup
+          
+          # 存储健康指标
+          storage-health:
+            include-storages:
+              - redis
+              - memory
+              - composite
+            
+          # 性能指标
+          performance:
+            response-time-buckets: [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+        # ========================================
+        # 健康检查配置
+        # ========================================
+        health-checks:
+          enabled: true
+          check-interval: 60  # 秒
+          # Redis健康检查
+          redis:
+            enabled: true
+          # 内存存储健康检查
+          memory:
+            enabled: true
+        # ========================================
+        # 监控数据导出配置
+        # ========================================
+        export:
+          prometheus:
+            include-labels:
+              - environment
+              - storage_type
+              - operation_type
+              
+        # ========================================
+        # 调试和诊断配置
+        # ========================================
+        diagnostics:
+          # 性能分析配置
+          profiling:
+            include-operations:
+              - token-validation
+              - blacklist-check
+              
+# ========================================
+# 管理端点配置
+# ========================================
+management:
+  endpoint:
+    # JWT令牌管理端点
+    jwt-tokens:
+      enabled: false  # 默认关闭，调试时启用
+      sensitive: true
+      cache:
+        time-to-live: 0  # 不缓存敏感信息
+      
+    # JWT黑名单管理端点
+    jwt-blacklist:
+      enabled: false  # 默认关闭，调试时启用
+      sensitive: true
+      cache:
+        time-to-live: 0  # 不缓存敏感信息
+        
+    # JWT持久化健康检查端点
+    jwt-persistence-health:
+      enabled: true
+      sensitive: false
+      show-details: when-authorized

@@ -1,0 +1,532 @@
+package org.unreal.modelrouter.auth.security.audit;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.unreal.modelrouter.common.dto.AuditEvent;
+import org.unreal.modelrouter.common.dto.AuditEventQuery;
+import org.unreal.modelrouter.common.dto.AuditEventType;
+import org.unreal.modelrouter.common.dto.SecurityReport;
+import org.unreal.modelrouter.persistence.jpa.entity.SecurityAuditEventEntity;
+import org.unreal.modelrouter.persistence.jpa.entity.SecurityAuditEventEntity.RiskLevel;
+import org.unreal.modelrouter.persistence.jpa.repository.SecurityAuditEventRepository;
+import org.unreal.modelrouter.auth.security.model.SecurityAuditEvent;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * 扩展安全审计服务实现（JPA版本）
+ * 实现真实的审计日志存储和查询功能
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class ExtendedSecurityAuditServiceImpl implements ExtendedSecurityAuditService {
+
+    private final SecurityAuditEventRepository auditRepository;
+    private final AuditEntityMapper entityMapper;
+    private final SecurityReportGenerator reportGenerator;
+
+    /** 审计管道自观测（软依赖，见 {@link #persist}；issue #396） */
+    private final ObjectProvider<AuditMetricsService> auditMetricsProvider;
+
+    // 安全事件类型
+    private static final List<AuditEventType> SECURITY_EVENT_TYPES = Arrays.asList(
+            AuditEventType.SECURITY_ALERT,
+            AuditEventType.SUSPICIOUS_ACTIVITY,
+            AuditEventType.AUTHENTICATION_FAILED,
+            AuditEventType.AUTHORIZATION_FAILED
+    );
+
+    // ========== JWT令牌审计方法 ==========
+
+    @Override
+    @Transactional
+    public Mono<Void> auditTokenIssued(final String userId, final String tokenId,
+            final String ipAddress, final String userAgent) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.JWT_TOKEN_ISSUED)
+                    .userId(userId)
+                    .resourceId(tokenId)
+                    .clientIp(ipAddress)
+                    .userAgent(userAgent)
+                    .action("ISSUE")
+                    .details("JWT令牌颁发成功")
+                    .success(true)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("JWT令牌颁发审计记录: userId={}, tokenId={}", userId, tokenId);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditTokenRefreshed(final String userId, final String oldTokenId,
+            final String newTokenId, final String ipAddress) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("oldTokenId", oldTokenId);
+            metadata.put("newTokenId", newTokenId);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.JWT_TOKEN_REFRESHED)
+                    .userId(userId)
+                    .resourceId(newTokenId)
+                    .clientIp(ipAddress)
+                    .action("REFRESH")
+                    .details("JWT令牌刷新成功")
+                    .success(true)
+                    .metadata(entityMapper.toJson(metadata))
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("JWT令牌刷新审计记录: userId={}", userId);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditTokenRevoked(final String userId, final String tokenId,
+            final String reason, final String revokedBy) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("revokedBy", revokedBy);
+            metadata.put("reason", reason);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.JWT_TOKEN_REVOKED)
+                    .userId(userId)
+                    .resourceId(tokenId)
+                    .action("REVOKE")
+                    .details("JWT令牌撤销: " + reason)
+                    .success(true)
+                    .metadata(entityMapper.toJson(metadata))
+                    .riskLevel(RiskLevel.MEDIUM)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("JWT令牌撤销审计记录: userId={}, tokenId={}, reason={}", userId, tokenId, reason);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditTokenValidated(final String userId, final String tokenId,
+            final boolean isValid, final String ipAddress) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.JWT_TOKEN_VALIDATED)
+                    .userId(userId)
+                    .resourceId(tokenId)
+                    .clientIp(ipAddress)
+                    .action("VALIDATE")
+                    .details(isValid ? "JWT令牌验证成功" : "JWT令牌验证失败")
+                    .success(isValid)
+                    .failureReason(isValid ? null : "令牌无效或已过期")
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.debug("JWT令牌验证审计记录: userId={}, valid={}", userId, isValid);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    // ========== API Key审计方法 ==========
+
+    @Override
+    @Transactional
+    public Mono<Void> auditApiKeyCreated(final String keyId, final String createdBy, final String ipAddress) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.API_KEY_CREATED)
+                    .userId(createdBy)
+                    .resourceId(keyId)
+                    .clientIp(ipAddress)
+                    .action("CREATE")
+                    .details("API Key创建成功")
+                    .success(true)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("API Key创建审计记录: keyId={}, createdBy={}", keyId, createdBy);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditApiKeyUsed(final String keyId, final String endpoint,
+            final String ipAddress, final boolean success) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("endpoint", endpoint);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.API_KEY_USED)
+                    .resourceId(keyId)
+                    .clientIp(ipAddress)
+                    .resource(endpoint)
+                    .action("USE")
+                    .details(success ? "API Key使用成功" : "API Key使用失败")
+                    .success(success)
+                    .failureReason(success ? null : "认证失败或权限不足")
+                    .metadata(entityMapper.toJson(metadata))
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.debug("API Key使用审计记录: keyId={}, endpoint={}, success={}", keyId, endpoint, success);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditApiKeyRevoked(final String keyId, final String reason, final String revokedBy) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("revokedBy", revokedBy);
+            metadata.put("reason", reason);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.API_KEY_REVOKED)
+                    .userId(revokedBy)
+                    .resourceId(keyId)
+                    .action("REVOKE")
+                    .details("API Key撤销: " + reason)
+                    .success(true)
+                    .metadata(entityMapper.toJson(metadata))
+                    .riskLevel(RiskLevel.MEDIUM)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("API Key撤销审计记录: keyId={}, reason={}", keyId, reason);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditApiKeyExpired(final String keyId) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.API_KEY_EXPIRED)
+                    .resourceId(keyId)
+                    .action("EXPIRE")
+                    .details("API Key已过期")
+                    .success(true)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.info("API Key过期审计记录: keyId={}", keyId);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    // ========== 安全事件审计方法 ==========
+
+    @Override
+    @Transactional
+    public Mono<Void> auditSecurityEvent(final String eventType, final String details,
+            final String userId, final String ipAddress) {
+        return Mono.fromRunnable(() -> {
+            AuditEventType type = entityMapper.parseEventType(eventType);
+            RiskLevel riskLevel = entityMapper.determineRiskLevel(type, false);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(type)
+                    .userId(userId)
+                    .clientIp(ipAddress)
+                    .action("SECURITY_EVENT")
+                    .details(details)
+                    .success(false)
+                    .riskLevel(riskLevel)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.warn("安全事件审计记录: type={}, userId={}, details={}", eventType, userId, details);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> auditSuspiciousActivity(final String activity, final String userId,
+            final String ipAddress, final String details) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("activity", activity);
+            metadata.put("details", details);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.SUSPICIOUS_ACTIVITY)
+                    .userId(userId)
+                    .clientIp(ipAddress)
+                    .action("SUSPICIOUS")
+                    .details(activity)
+                    .success(false)
+                    .metadata(entityMapper.toJson(metadata))
+                    .riskLevel(RiskLevel.HIGH)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+            log.warn("可疑活动审计记录: activity={}, userId={}, ip={}", activity, userId, ipAddress);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    // ========== 查询方法 ==========
+
+    @Override
+    public Flux<AuditEvent> findAuditEvents(final AuditEventQuery query) {
+        return Mono.fromCallable(() -> {
+            PageRequest pageRequest = PageRequest.of(
+                    query.getPage(),
+                    Math.min(query.getSize(), 100),
+                    Sort.by(Sort.Direction.fromString(query.getSortDirection()), query.getSortBy())
+            );
+
+            Page<SecurityAuditEventEntity> page = auditRepository.findByConditions(
+                    query.getStartTime(),
+                    query.getEndTime(),
+                    query.getEventTypes(),
+                    query.getUserId(),
+                    query.getResourceId(),
+                    query.getIpAddress(),
+                    query.getSuccess(),
+                    null,
+                    null,
+                    pageRequest
+            );
+
+            return page.getContent().stream()
+                    .map(entityMapper::entityToDto)
+                    .collect(Collectors.toList());
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMapMany(Flux::fromIterable);
+    }
+
+    @Override
+    public Mono<Long> countAuditEvents(final AuditEventQuery query) {
+        return Mono.fromCallable(() -> {
+            return auditRepository.countByConditions(
+                    query.getStartTime(),
+                    query.getEndTime(),
+                    query.getEventTypes(),
+                    query.getUserId(),
+                    query.getResourceId(),
+                    query.getIpAddress(),
+                    query.getSuccess(),
+                    null,
+                    null
+            );
+        })
+        .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @Override
+    public Mono<SecurityReport> generateSecurityReport(final LocalDateTime from, final LocalDateTime to) {
+        return reportGenerator.generateSecurityReport(from, to);
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> recordAuditEvent(final AuditEvent auditEvent) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = entityMapper.dtoToEntity(auditEvent);
+            persist(entity);
+            log.debug("审计事件记录: type={}, userId={}", auditEvent.getType(), auditEvent.getUserId());
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> batchRecordAuditEvents(final List<AuditEvent> auditEvents) {
+        return Mono.fromRunnable(() -> {
+            List<SecurityAuditEventEntity> entities = auditEvents.stream()
+                    .map(entityMapper::dtoToEntity)
+                    .collect(Collectors.toList());
+            auditRepository.saveAll(entities);
+            log.info("批量审计事件记录: count={}", auditEvents.size());
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    public Flux<AuditEvent> getUserAuditEvents(final String userId, final LocalDateTime startTime,
+            final LocalDateTime endTime, final int limit) {
+        return Mono.fromCallable(() -> {
+            List<SecurityAuditEventEntity> entities = auditRepository.findByTimeRange(startTime, endTime);
+            return entities.stream()
+                    .filter(e -> userId.equals(e.getUserId()))
+                    .limit(limit)
+                    .map(entityMapper::entityToDto)
+                    .collect(Collectors.toList());
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMapMany(Flux::fromIterable);
+    }
+
+    @Override
+    public Flux<AuditEvent> getIpAuditEvents(final String ipAddress, final LocalDateTime startTime,
+            final LocalDateTime endTime, final int limit) {
+        return Mono.fromCallable(() -> {
+            List<SecurityAuditEventEntity> entities = auditRepository.findByTimeRange(startTime, endTime);
+            return entities.stream()
+                    .filter(e -> ipAddress.equals(e.getClientIp()))
+                    .limit(limit)
+                    .map(entityMapper::entityToDto)
+                    .collect(Collectors.toList());
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMapMany(Flux::fromIterable);
+    }
+
+    // ========== SecurityAuditService方法 ==========
+
+    /**
+     * 审计写入的**唯一漏斗**：落库 + 审计管道自观测（issue #396）。
+     *
+     * <p>背景：这些指标原先只有 {@code EnhancedSecurityAuditService}（内存缓冲实现）在写，而该实现默认不是 Bean、
+     * 开启还会导致启动失败（issue #395）⇒ 指标注册了却恒为 0。该实现删除后，写入方改为本类。</p>
+     *
+     * <p>指标服务本身是条件 Bean（{@code jairouter.security.audit.metrics.enabled}），
+     * 故用 {@link ObjectProvider} 作**软依赖**：关掉指标不影响审计落库。</p>
+     */
+    private void persist(final SecurityAuditEventEntity entity) {
+        final AuditMetricsService metrics = auditMetricsProvider.getIfAvailable();
+        final String eventType = entity.getEventType() != null ? entity.getEventType().name() : "UNKNOWN";
+        final boolean success = Boolean.TRUE.equals(entity.getSuccess());
+        final long startNanos = System.nanoTime();
+        try {
+            auditRepository.save(entity);
+            if (metrics != null) {
+                metrics.recordEvent(eventType, success);
+            }
+        } catch (RuntimeException e) {
+            if (metrics != null) {
+                metrics.recordEvent(eventType, false);
+            }
+            throw e;
+        } finally {
+            if (metrics != null) {
+                metrics.recordWriteDuration((System.nanoTime() - startNanos) / 1_000_000L);
+            }
+        }
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> recordEvent(final SecurityAuditEvent event) {
+        return Mono.fromRunnable(() -> {
+            SecurityAuditEventEntity entity = entityMapper.securityEventToEntity(event);
+            persist(entity);
+            log.debug("安全审计事件记录: eventType={}", event.getEventType());
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> recordAuthenticationEvent(final String userId, final String clientIp, final String userAgent,
+                                               final boolean success, final String failureReason) {
+        return Mono.fromRunnable(() -> {
+            AuditEventType eventType = success 
+            ? AuditEventType.JWT_TOKEN_ISSUED : AuditEventType.AUTHENTICATION_FAILED;
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(eventType)
+                    .userId(userId)
+                    .clientIp(clientIp)
+                    .userAgent(userAgent)
+                    .action("AUTHENTICATE")
+                    .details(success ? "认证成功" : "认证失败")
+                    .success(success)
+                    .failureReason(failureReason)
+                    .riskLevel(success ? RiskLevel.LOW : RiskLevel.MEDIUM)
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    @Transactional
+    public Mono<Void> recordSanitizationEvent(final String userId, final String contentType,
+            final String ruleId, final int matchCount) {
+        return Mono.fromRunnable(() -> {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("contentType", contentType);
+            metadata.put("ruleId", ruleId);
+            metadata.put("matchCount", matchCount);
+
+            SecurityAuditEventEntity entity = SecurityAuditEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .eventType(AuditEventType.DATA_SANITIZATION)
+                    .userId(userId)
+                    .action("SANITIZE")
+                    .details("数据脱敏处理")
+                    .success(true)
+                    .metadata(entityMapper.toJson(metadata))
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            persist(entity);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    @Override
+    public Flux<SecurityAuditEvent> queryEvents(final LocalDateTime startTime, final LocalDateTime endTime,
+                                               final String eventType, final String userId, final int limit) {
+        return Mono.fromCallable(() -> {
+            List<SecurityAuditEventEntity> entities = auditRepository.findByTimeRange(startTime, endTime);
+            return entities.stream()
+                    .filter(e -> eventType == null || eventType.equals(e.getEventType().name()))
+                    .filter(e -> userId == null || userId.equals(e.getUserId()))
+                    .limit(limit)
+                    .map(entityMapper::entityToSecurityEvent)
+                    .collect(Collectors.toList());
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMapMany(Flux::fromIterable);
+    }
+
+    @Override
+    public Mono<Map<String, Object>> getSecurityStatistics(final LocalDateTime startTime, final LocalDateTime endTime) {
+        return reportGenerator.getSecurityStatistics(startTime, endTime);
+    }
+
+    @Override
+    public Mono<Long> cleanupExpiredLogs(final int retentionDays) {
+        return reportGenerator.cleanupExpiredLogs(retentionDays);
+    }
+
+    @Override
+    public Mono<Boolean> shouldTriggerAlert(final String eventType, final int timeWindowMinutes, final int threshold) {
+        return reportGenerator.shouldTriggerAlert(eventType, timeWindowMinutes, threshold);
+    }
+
+    @Override
+    public Mono<Long> countEvents(final LocalDateTime startTime, final LocalDateTime endTime,
+                                  final List<AuditEventType> eventTypes, final String clientIp,
+                                  final Boolean success) {
+        return reportGenerator.countEvents(startTime, endTime, eventTypes, clientIp, success);
+    }
+}

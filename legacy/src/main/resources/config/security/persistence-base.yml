@@ -1,0 +1,121 @@
+# ========================================
+# JWT令牌持久化基础配置
+# ========================================
+# H2 数据库存储配置
+store:
+  type: h2  # 默认使用 H2 数据库存储
+
+jairouter:
+  security:
+    jwt:
+      # 令牌持久化配置
+      persistence:
+        enabled: false  # 默认关闭，各环境按需启用
+        
+        # 复合存储策略配置
+        composite:
+          enabled: true  # 启用复合存储策略（Redis + StoreManager）
+        
+        # 数据同步配置
+        sync:
+          enabled: true  # 启用数据同步功能
+          
+        # 启动时数据恢复配置
+        startup-recovery:
+          enabled: true  # 启用启动时数据恢复
+        
+        # 清理配置
+        cleanup:
+          enabled: true
+          schedule: "0 0 2 * * ?"  # 每天凌晨2点
+          retention-days: 30
+          batch-size: 1000
+        
+        # Redis存储配置
+        redis:
+          # 只保留开关：连接信息统一由 REDIS_HOST/REDIS_PORT/REDIS_PASSWORD（或 spring.data.redis.*）
+          # 提供；其余键自 issue #196（取消 JWT 独立 Redis）起已无消费者，留着会误导（见 #202）。
+          enabled: false  # 默认关闭，需要时启用
+          
+      # 黑名单持久化配置
+      blacklist:
+        persistence:
+          enabled: false  # 默认关闭
+          
+        # 复合存储策略配置
+        composite:
+          enabled: true  # 启用复合存储策略（Redis + StoreManager）
+          
+        # Redis黑名单配置
+        redis:
+          # 同上：只保留开关（见 #202）
+          enabled: false  # 默认关闭，需要时启用
+
+    # 安全审计配置
+    audit:
+      enabled: true
+      retentionDays: 30
+
+# ========================================
+# Spring 配置（R2DBC 和 Redis）
+# ========================================
+spring:
+  # Spring Data R2DBC 配置
+  r2dbc:
+    username: sa
+    password:
+    pool:
+      initial-size: 10
+      max-size: 20
+      max-idle-time: 30m
+  
+  # SQL 初始化配置已移除
+  # 使用 JPA ddl-auto: update 自动管理表结构，避免 schema.sql 与 Entity 不同步问题
+  # 参见: skill schema-sql-jpa-sync
+  
+  # Redis连接配置（共享）
+  data:
+    redis:
+      # 基础连接配置（当启用Redis时生效）
+      host: "${REDIS_HOST:localhost}"
+      port: "${REDIS_PORT:6379}"
+      password: "${REDIS_PASSWORD:}"
+      database: "${REDIS_DATABASE:0}"
+      timeout: 5000ms
+      
+      # Lettuce连接池配置
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+        shutdown-timeout: 100ms
+      
+      # 集群配置（如果使用Redis集群）
+      #cluster:
+      #  nodes: "${REDIS_CLUSTER_NODES:}"
+      #  max-redirects: 3
+      
+      # 哨兵配置（如果使用Redis哨兵）
+      #sentinel:
+      #  master: "${REDIS_SENTINEL_MASTER:}"
+      #  nodes: "${REDIS_SENTINEL_NODES:}"
+
+# ========================================
+# 监控和健康检查配置
+# ========================================
+management:
+  health:
+    redis:
+      # 与 monitoring-base.yml 保持一致：默认关闭 Redis 健康探针，
+      # 避免未部署 Redis 时 /actuator/health 恒为 DOWN（issue #46）。
+      # 使用 Redis 的部署请设置 REDIS_ENABLED=true。
+      enabled: ${REDIS_ENABLED:false}
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    export:
+      redis:
+        enabled: false  # 默认关闭Redis指标导出

@@ -1,0 +1,468 @@
+package org.unreal.modelrouter.common.exceptionhandler;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.web.reactive.error.ErrorWebExceptionHandler;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.ServerWebInputException;
+import org.springframework.web.server.ResponseStatusException;
+import org.unreal.modelrouter.common.controller.response.RouterResponse;
+import org.unreal.modelrouter.common.exception.AuthenticationException;
+import org.unreal.modelrouter.common.exception.AuthorizationException;
+import org.unreal.modelrouter.common.exception.SanitizationException;
+import org.unreal.modelrouter.common.exception.SecurityException;
+import org.unreal.modelrouter.common.exception.SecurityAuthenticationException;
+import org.unreal.modelrouter.monitor.monitoring.error.ErrorTracker;
+import org.unreal.modelrouter.monitor.tracing.TracingContext;
+import org.unreal.modelrouter.monitor.tracing.TracingContextHolder;
+import reactor.core.publisher.Mono;
+
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * WebFlux 全局异常处理器
+ * 替代 @RestControllerAdvice，避免 ReadOnlyHttpHeaders 问题
+ *
+ * <p>v3.1 PR-4d：错误体按请求路径分形状输出——{@code /v1/messages}（Anthropic 面）输出
+ * {@code {"type":"error","error":{"type","message"}}}，其余 {@code /v1/**}（OpenAI 面）输出
+ * {@code {"error":{"message","type","code"}}}，使 OpenAI SDK / Claude Code 能解析网关自身错误；
+ * 状态码、日志与 {@code /api/**}（{@code RouterResponse}）行为保持不变。
+ * 映射细节见 {@link V1ErrorBodyMapper}。</p>
+ *
+ * <p>v3.1 PR-4d.1：错误体字节一律显式按 {@link StandardCharsets#UTF_8} 编码（此前用平台默认
+ * 字符集 {@code String#getBytes()}，在非 UTF-8 默认字符集的机器上会让「认证失败」「数据处理失败」
+ * 等中文错误消息乱码）。在默认字符集本就是 UTF-8 的平台上（JDK 18+ 的 JEP 400 默认值），
+ * 输出字节与改动前完全一致。</p>
+ */
+@Component
+@Order(-2) // 高优先级，在默认异常处理器之前
+@RequiredArgsConstructor
+public class ReactiveGlobalExceptionHandler implements ErrorWebExceptionHandler {
+
+    private static final Logger logger = LoggerFactory.getLogger(ReactiveGlobalExceptionHandler.class);
+
+    /**
+     * 兜底错误消息（异常处理器自身失败时使用）.
+     */
+    private static final String SIMPLE_ERROR_MESSAGE = "Internal Server Error";
+
+    /**
+     * 非 {@code /v1/**} 路径的静态兜底错误体（保持既有形状不变）.
+     */
+    private static final String SIMPLE_ERROR_BODY =
+            "{\"success\":false,\"message\":\"Internal Server Error\",\"code\":\"500\"}";
+    
+    private final ErrorTracker errorTracker;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    {
+        // 注册JavaTimeModule以支持LocalDateTime序列化
+        objectMapper.registerModule(new JavaTimeModule());
+    }
+
+    @Override
+    public Mono<Void> handle(final ServerWebExchange exchange, final Throwable ex) {
+        ServerHttpResponse response = exchange.getResponse();
+        logger.debug("响应状态: committed={}, status={}", response.isCommitted(), response.getStatusCode());
+
+        // 如果响应已经提交，直接返回
+        if (response.isCommitted()) {
+            logger.warn("响应已提交，跳过异常处理: {}", ex.getMessage());
+            return Mono.empty();
+        }
+
+        try {
+            // 记录异常到追踪系统
+            recordError(ex);
+            
+            // 根据异常类型设置响应
+            if (ex instanceof SecurityException) {
+                return handleSecurityException(exchange, (SecurityException) ex);
+            } else if (ex instanceof SecurityAuthenticationException) {
+                return handleSecurityAuthenticationException(exchange, (SecurityAuthenticationException) ex);
+            } else if (ex instanceof AuthenticationException) {
+                // 直接处理AuthenticationException异常，返回具体的错误信息
+                return handleAuthenticationException(exchange, (AuthenticationException) ex);
+            } else if (ex instanceof org.springframework.security.core.AuthenticationException) {
+                // issue #205：Spring Security 的认证异常此前不匹配上面任何分支，落到最后的
+                // 「系统异常 → 500」兜底 —— 于是"未认证"在客户端与 kubelet 探针看来像服务端故障
+                // （真实集群里探针就观测到 500）。放在本仓自定义异常之后，既有行为不变。
+                return handleSpringSecurityAuthenticationException(
+                        exchange, (org.springframework.security.core.AuthenticationException) ex);
+            } else if (ex instanceof org.springframework.security.access.AccessDeniedException) {
+                return handleSpringSecurityAccessDeniedException(
+                        exchange, (org.springframework.security.access.AccessDeniedException) ex);
+            } else {
+                RouterResponse<Void> errorResponse;
+                HttpStatus status;
+                
+                if (ex instanceof ServerWebInputException) {
+                    logger.error("请求体读取异常: {}", ex.getMessage());
+                    errorResponse = RouterResponse.error("请求体无效或缺失: " + ex.getMessage(), "400");
+                    status = HttpStatus.BAD_REQUEST;
+                } else if (ex instanceof ResponseStatusException) {
+                    ResponseStatusException rse = (ResponseStatusException) ex;
+                    logger.error("响应状态异常: status={}, message={}", rse.getStatusCode(), rse.getMessage());
+                    errorResponse = RouterResponse.error("请求处理失败: " + rse.getReason(),
+                            String.valueOf(rse.getStatusCode().value()));
+                    status = HttpStatus.resolve(rse.getStatusCode().value());
+                    if (status == null) {
+                        status = HttpStatus.INTERNAL_SERVER_ERROR;
+                    }
+                } else if (ex instanceof IllegalArgumentException) {
+                    logger.warn("参数验证异常：message={}", ex.getMessage());
+                    errorResponse = RouterResponse.error("参数验证失败：" + ex.getMessage(), "400");
+                    status = HttpStatus.BAD_REQUEST;
+                } else {
+                    logger.error("系统异常", ex);
+                    String errorMessage = ex.getMessage();
+                    if (errorMessage == null) {
+                        errorMessage = ex.getClass().getSimpleName();
+                    }
+                    errorResponse = RouterResponse.error("系统异常: " + errorMessage, "500");
+                    status = HttpStatus.INTERNAL_SERVER_ERROR;
+                }
+                
+                // 安全地设置响应状态和头
+                return setResponse(exchange, errorResponse, status);
+            }
+        } catch (Exception e) {
+            logger.error("异常处理器本身发生异常", e);
+            // 如果异常处理器本身出错，返回最简单的错误响应
+            return setSimpleErrorResponse(exchange);
+        }
+    }
+    
+    /**
+     * 记录错误信息
+     */
+    private void recordError(final Throwable ex) {
+        try {
+            // 不记录认证相关的 401 错误（这是正常的安全机制）
+            if (isAuthenticationError(ex)) {
+                logger.debug("跳过认证错误的记录：{}", ex.getClass().getSimpleName());
+                return;
+            }
+
+            Map<String, Object> additionalInfo = new HashMap<>();
+            additionalInfo.put("handler", "ReactiveGlobalExceptionHandler");
+            
+            TracingContext context = TracingContextHolder.getCurrentContext();
+            if (context != null && context.isActive()) {
+                additionalInfo.put("traceId", context.getTraceId());
+                additionalInfo.put("spanId", context.getSpanId());
+            }
+            
+            // 根据异常类型设置不同的响应状态
+            if (ex instanceof ServerWebInputException) {
+                additionalInfo.put("responseStatus", "400");
+            } else if (ex instanceof ResponseStatusException) {
+                ResponseStatusException rse = (ResponseStatusException) ex;
+                additionalInfo.put("responseStatus", String.valueOf(rse.getStatusCode().value()));
+            } else if (ex instanceof SecurityException) {
+                additionalInfo.put("responseStatus", String.valueOf(((SecurityException) ex).getHttpStatus().value()));
+                additionalInfo.put("errorCode", ((SecurityException) ex).getErrorCode());
+            } else if (ex instanceof SecurityAuthenticationException) {
+                additionalInfo.put("responseStatus", "401");
+                additionalInfo.put("errorCode", ((SecurityAuthenticationException) ex).getErrorCode());
+            } else {
+                additionalInfo.put("responseStatus", "500");
+            }
+            
+            // 添加异常类型信息
+            additionalInfo.put("exceptionType", ex.getClass().getSimpleName());
+            
+            errorTracker.trackError(ex, "reactive_global_exception_handling", additionalInfo);
+        } catch (Exception trackingException) {
+            logger.warn("错误追踪失败: {}", trackingException.getMessage());
+        }
+    }
+    
+    /**
+     * 安全地设置响应
+     */
+    private Mono<Void> setResponse(
+            final ServerWebExchange exchange,
+            final RouterResponse<Void> errorResponse, final HttpStatus status) {
+        try {
+            final ServerHttpResponse response = exchange.getResponse();
+            // 检查响应是否已提交
+            if (response.isCommitted()) {
+                logger.warn("响应已提交，无法设置错误响应");
+                return Mono.empty();
+            }
+            
+            // 设置状态码
+            response.setStatusCode(status);
+            
+            // 安全地设置响应头，避免重复设置
+            if (!response.getHeaders().containsKey("Content-Type")) {
+                response.getHeaders().add("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+            }
+            
+            // 序列化响应体：/v1/** 按客户端协议形状输出，其余路径沿用 RouterResponse（状态码不变）
+            String jsonResponse = serializeErrorBody(exchange, errorResponse, status);
+            DataBuffer buffer = response.bufferFactory().wrap(jsonResponse.getBytes(StandardCharsets.UTF_8));
+            
+            // 再次检查响应是否已提交
+            if (response.isCommitted()) {
+                logger.warn("响应已提交，无法写入错误信息");
+                DataBufferUtils.release(buffer);
+                return Mono.empty();
+            }
+            
+            return response.writeWith(Mono.just(buffer));
+            
+        } catch (Exception e) {
+            logger.error("设置错误响应失败", e);
+            return setSimpleErrorResponse(exchange);
+        }
+    }
+
+    /**
+     * 序列化错误体：{@code /v1/**} 按客户端协议形状（Anthropic / OpenAI）输出，其余路径沿用
+     * {@link RouterResponse} 形状（v3.1 PR-4d）.
+     *
+     * @param exchange      当前交换对象（仅用于取路径）
+     * @param errorResponse 既有错误响应载体（消息与 errorCode 原样透出）
+     * @param status        已确定的状态码
+     * @return JSON 文本
+     * @throws Exception 序列化异常（由调用方捕获并降级）
+     */
+    private String serializeErrorBody(final ServerWebExchange exchange, final RouterResponse<Void> errorResponse,
+                                      final HttpStatus status) throws Exception {
+        final Map<String, Object> clientBody = V1ErrorBodyMapper.toErrorBody(
+                V1ErrorBodyMapper.requestPathOf(exchange), status.value(),
+                errorResponse.getMessage(), errorResponse.getErrorCode());
+        if (clientBody != null) {
+            return objectMapper.writeValueAsString(clientBody);
+        }
+        return objectMapper.writeValueAsString(errorResponse);
+    }
+    
+    /**
+     * 处理安全异常
+     */
+    private Mono<Void> handleSecurityException(final ServerWebExchange exchange, final SecurityException ex) {
+        // 根据异常类型进行不同的处理
+        if (ex instanceof AuthenticationException) {
+            return handleAuthenticationException(exchange, (AuthenticationException) ex);
+        } else if (ex instanceof AuthorizationException) {
+            return handleAuthorizationException(exchange, (AuthorizationException) ex);
+        } else if (ex instanceof SanitizationException) {
+            return handleSanitizationException(exchange, (SanitizationException) ex);
+        } else {
+            return handleGenericSecurityException(exchange, ex);
+        }
+    }
+
+    /**
+     * 处理认证异常
+     */
+    private Mono<Void> handleAuthenticationException(
+            final ServerWebExchange exchange, final AuthenticationException ex) {
+        logger.warn("认证失败: {} - {}", ex.getErrorCode(), ex.getMessage(), ex);
+        
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), ex.getErrorCode());
+        return setResponse(exchange, errorResponse, ex.getHttpStatus());
+    }
+
+    /**
+     * 处理授权异常
+     */
+    private Mono<Void> handleAuthorizationException(final ServerWebExchange exchange, final AuthorizationException ex) {
+        logger.warn("授权失败: {} - {}", ex.getErrorCode(), ex.getMessage(), ex);
+        
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), ex.getErrorCode());
+        return setResponse(exchange, errorResponse, ex.getHttpStatus());
+    }
+
+    /**
+     * 处理数据脱敏异常
+     */
+    private Mono<Void> handleSanitizationException(final ServerWebExchange exchange, final SanitizationException ex) {
+        // 记录完整的异常堆栈信息
+        logger.error("数据脱敏异常: {} - {}\n{}", ex.getErrorCode(), ex.getMessage(), getStackTraceAsString(ex), ex);
+        
+        RouterResponse<Void> errorResponse = RouterResponse.error("数据处理失败", ex.getErrorCode());
+        return setResponse(exchange, errorResponse, ex.getHttpStatus());
+    }
+
+    /**
+     * 处理通用安全异常
+     */
+    private Mono<Void> handleGenericSecurityException(final ServerWebExchange exchange, final SecurityException ex) {
+        // 记录完整的异常堆栈信息
+        logger.error("安全异常: {} - {}\n{}", ex.getErrorCode(), ex.getMessage(), getStackTraceAsString(ex), ex);
+        
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), ex.getErrorCode());
+        return setResponse(exchange, errorResponse, ex.getHttpStatus());
+    }
+
+    /**
+     * 将异常堆栈转换为字符串
+     */
+    private String getStackTraceAsString(final Throwable throwable) {
+        StringBuilder sb = new StringBuilder();
+        for (StackTraceElement element : throwable.getStackTrace()) {
+            sb.append(element.toString()).append("\n");
+        }
+        return sb.toString();
+    }
+    
+    /**
+     * 处理Spring Security认证异常
+     */
+    private Mono<Void> handleSecurityAuthenticationException(
+            final ServerWebExchange exchange,
+            final SecurityAuthenticationException ex) {
+        logger.warn("认证失败: {} - {}", ex.getErrorCode(), ex.getMessage(), ex);
+        
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), ex.getErrorCode());
+        return setResponse(exchange, errorResponse, HttpStatus.UNAUTHORIZED);
+    }
+    
+    /**
+     * 处理 Spring Security 的认证异常（issue #205）
+     *
+     * <p>这类异常不属于本仓的 {@code AuthenticationException}/{@code SecurityAuthenticationException}，
+     * 此前落到「系统异常 → 500」兜底；现按语义回 401（并降为 WARN 日志：这是客户端的认证失败，
+     * 不是服务端故障）。</p>
+     *
+     * <p><b>为何此处保持硬编码 401、而不做「携带状态就透传」（issue #420 取证结论）</b>：
+     * 本分支的入参类型是 {@link org.springframework.security.core.AuthenticationException}，而本仓自有的
+     * {@code common.exception.AuthenticationException}（携带 {@code getHttpStatus()}，认证链上唯一非 401
+     * 的取值是 429）继承的是本仓 {@code SecurityException}，<b>不</b>属于 Spring Security 的异常体系 ——
+     * 且 {@link #handle} 的分派顺序把它先交给 {@code ex instanceof SecurityException} 分支，最终由
+     * {@link #handleAuthenticationException} 用 {@code ex.getHttpStatus()} 渲染。因此：</p>
+     * <ul>
+     *   <li>本仓异常<b>即使</b>经 entryPoint（{@code SecurityConfiguration#securityWebFilterChain} 的
+     *       {@code authenticationEntryPoint} → {@link #handle}，唯一装配点）进来，也会透出自己携带的状态，
+     *       <b>不可能</b>被这里的 401 压回；</li>
+     *   <li>Spring Security 自身的认证异常没有任何 HTTP 状态载体（{@code InsufficientAuthenticationException}
+     *       之类只有消息），故本分支<b>没有</b>可透传的状态，401 是唯一有依据的取值；在此加透传判断只会
+     *       引入一个恒不成立的分支。</li>
+     * </ul>
+     * <p>回归守卫见 {@code AuthenticationEntryPointStatusTest}（本仓异常携带 429 经 entryPoint 仍为 429、
+     * Spring Security 异常仍为 401）。</p>
+     */
+    private Mono<Void> handleSpringSecurityAuthenticationException(
+            final ServerWebExchange exchange,
+            final org.springframework.security.core.AuthenticationException ex) {
+        logger.warn("认证失败: {}", ex.getMessage());
+
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), "401");
+        return setResponse(exchange, errorResponse, HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * 处理 Spring Security 的授权异常（issue #205）：回 403。
+     */
+    private Mono<Void> handleSpringSecurityAccessDeniedException(
+            final ServerWebExchange exchange,
+            final org.springframework.security.access.AccessDeniedException ex) {
+        logger.warn("授权失败: {}", ex.getMessage());
+
+        RouterResponse<Void> errorResponse = RouterResponse.error(ex.getMessage(), "403");
+        return setResponse(exchange, errorResponse, HttpStatus.FORBIDDEN);
+    }
+
+    /**
+     * 设置最简单的错误响应
+     */
+    /**
+     * 判断是否为认证相关的错误（不记录到数据库）
+     */
+    private boolean isAuthenticationError(final Throwable ex) {
+        String className = ex.getClass().getSimpleName();
+        // Spring Security 的认证异常
+        if ("AuthenticationCredentialsNotFoundException".equals(className)) {
+            return true;
+        }
+        if ("AccessDeniedException".equals(className)) {
+            return true;
+        }
+        if ("InsufficientAuthenticationException".equals(className)) {
+            return true;
+        }
+        // 自定义认证异常
+        if (ex instanceof org.springframework.security.core.AuthenticationException) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 设置最简单的错误响应（异常处理器自身失败时的兜底）.
+     *
+     * <p>{@code /v1/**} 场景下同样按客户端协议形状输出，避免客户端拿到无法解析的兜底体；
+     * 其余路径的兜底体保持原样。</p>
+     *
+     * @param exchange 当前交换对象
+     * @return 写入结果
+     */
+    private Mono<Void> setSimpleErrorResponse(final ServerWebExchange exchange) {
+        final ServerHttpResponse response = exchange.getResponse();
+        // 检查响应是否已提交，避免递归
+        if (response.isCommitted()) {
+            return Mono.empty();
+        }
+        
+        try {
+            response.setStatusCode(HttpStatus.INTERNAL_SERVER_ERROR);
+            
+            // 安全地设置响应头，避免重复设置
+            if (!response.getHeaders().containsKey("Content-Type")) {
+                response.getHeaders().add("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+            }
+            
+            String simpleError = serializeSimpleErrorBody(exchange);
+            DataBuffer buffer = response.bufferFactory().wrap(simpleError.getBytes(StandardCharsets.UTF_8));
+            
+            // 再次检查响应是否已提交
+            if (response.isCommitted()) {
+                logger.warn("响应已提交，无法写入简单错误信息");
+                DataBufferUtils.release(buffer);
+                return Mono.empty();
+            }
+            
+            return response.writeWith(Mono.just(buffer));
+        } catch (Exception e) {
+            logger.error("设置简单错误响应也失败了", e);
+            // 即使设置简单响应失败，也要确保返回Mono.empty()避免递归
+            return Mono.empty();
+        }
+    }
+
+    /**
+     * 序列化兜底错误体.
+     *
+     * @param exchange 当前交换对象（仅用于取路径）
+     * @return {@code /v1/**} 的客户端协议形状 JSON；其余路径返回既有静态兜底体
+     */
+    private String serializeSimpleErrorBody(final ServerWebExchange exchange) {
+        final int status = HttpStatus.INTERNAL_SERVER_ERROR.value();
+        final Map<String, Object> clientBody = V1ErrorBodyMapper.toErrorBody(
+                V1ErrorBodyMapper.requestPathOf(exchange), status, SIMPLE_ERROR_MESSAGE, String.valueOf(status));
+        if (clientBody != null) {
+            try {
+                return objectMapper.writeValueAsString(clientBody);
+            } catch (Exception e) {
+                logger.warn("序列化 /v1 兜底错误体失败，回退静态兜底体: {}", e.getMessage());
+            }
+        }
+        return SIMPLE_ERROR_BODY;
+    }
+}

@@ -1,0 +1,346 @@
+package org.unreal.modelrouter.common.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Chat DTO - 核心字段 + 扩展选项
+ */
+public final class ChatDTO {
+
+    /**
+     * Chat 请求
+     * 只保留核心字段，扩展参数放入 Options 中
+     */
+    public record Request(
+            String model,
+            List<Message> messages,
+            Boolean stream,
+            @JsonProperty("max_tokens") Integer maxTokens,
+            Double temperature,
+            @JsonProperty("top_p") Double topP,
+            @JsonProperty("top_k") Integer topK,
+            @JsonProperty("frequency_penalty") Double frequencyPenalty,
+            @JsonProperty("presence_penalty") Double presencePenalty,
+            Object stop,
+            String user,
+            // 扩展选项（包含所有适配器特定参数）
+            Options options
+    ) {
+        /**
+         * 获取扩展参数的便捷方法
+         */
+        public Integer n() {
+            return options != null ? options.n : null;
+        }
+
+        public Boolean logprobs() {
+            return options != null ? options.logprobs : null;
+        }
+
+        public Integer topLogprobs() {
+            return options != null ? options.topLogprobs : null;
+        }
+
+        public Boolean useBeamSearch() {
+            return options != null ? options.useBeamSearch : null;
+        }
+
+        public Double minP() {
+            return options != null ? options.minP : null;
+        }
+
+        public Double repetitionPenalty() {
+            return options != null ? options.repetitionPenalty : null;
+        }
+
+        public Double lengthPenalty() {
+            return options != null ? options.lengthPenalty : null;
+        }
+
+        public Boolean includeStopStrInOutput() {
+            return options != null ? options.includeStopStrInOutput : null;
+        }
+
+        public Boolean ignoreEos() {
+            return options != null ? options.ignoreEos : null;
+        }
+
+        public Integer minTokens() {
+            return options != null ? options.minTokens : null;
+        }
+
+        public Boolean skipSpecialTokens() {
+            return options != null ? options.skipSpecialTokens : null;
+        }
+
+        public Boolean spacesBetweenSpecialTokens() {
+            return options != null ? options.spacesBetweenSpecialTokens : null;
+        }
+
+        public Boolean truncatePromptTokens() {
+            return options != null ? options.truncatePromptTokens : null;
+        }
+
+        public Boolean echo() {
+            return options != null ? options.echo : null;
+        }
+
+        public Boolean addGenerationPrompt() {
+            return options != null ? options.addGenerationPrompt : null;
+        }
+
+        public Boolean continueFinalMessage() {
+            return options != null ? options.continueFinalMessage : null;
+        }
+
+        public Boolean addSpecialTokens() {
+            return options != null ? options.addSpecialTokens : null;
+        }
+
+        public List<String> documents() {
+            return options != null ? options.documents : null;
+        }
+
+        public String chatTemplate() {
+            return options != null ? options.chatTemplate : null;
+        }
+
+        public Map<String, Object> chatTemplateKwargs() {
+            return options != null ? options.chatTemplateKwargs : null;
+        }
+
+        public Object structuredOutputs() {
+            return options != null ? options.structuredOutputs : null;
+        }
+
+        public Integer priority() {
+            return options != null ? options.priority : null;
+        }
+
+        public String requestId() {
+            return options != null ? options.requestId : null;
+        }
+
+        public Boolean returnTokensAsTokenIds() {
+            return options != null ? options.returnTokensAsTokenIds : null;
+        }
+
+        public Boolean returnTokenIds() {
+            return options != null ? options.returnTokenIds : null;
+        }
+
+        public String cacheSalt() {
+            return options != null ? options.cacheSalt : null;
+        }
+
+        public Object repetitionDetection() {
+            return options != null ? options.repetitionDetection : null;
+        }
+
+        // v2.9.0: vLLM 前缀缓存参数
+        public String prefixCacheHash() {
+            return options != null ? options.prefixCacheHash : null;
+        }
+
+        public Boolean enablePrefixCaching() {
+            return options != null ? options.enablePrefixCaching : null;
+        }
+
+        // Ollama 特定参数
+        public Double repeatPenalty() {
+            return options != null ? options.repeatPenalty : null;
+        }
+
+        public Integer seed() {
+            return options != null ? options.seed : null;
+        }
+
+        public Integer numKeep() {
+            return options != null ? options.numKeep : null;
+        }
+
+        public Double tfsZ() {
+            return options != null ? options.tfsZ : null;
+        }
+
+        public Double typicalP() {
+            return options != null ? options.typicalP : null;
+        }
+
+        public Integer repeatLastN() {
+            return options != null ? options.repeatLastN : null;
+        }
+
+        public Boolean penalizeNewline() {
+            return options != null ? options.penalizeNewline : null;
+        }
+
+        // v3.1 PR-5: Anthropic 入口（/v1/messages）工具调用透传
+        /**
+         * OpenAI 顶层 {@code tools} 数组.
+         *
+         * <p>仅 Anthropic 入口（{@code /v1/messages}）填充；其余入口为 {@code null}，
+         * 因此对既有面（{@code /api/v1/**}、原生 OpenAI 面）行为零影响。</p>
+         */
+        public List<Map<String, Object>> tools() {
+            return options != null ? options.tools : null;
+        }
+
+        /**
+         * OpenAI 顶层 {@code tool_choice}（{@code "auto"} / {@code "required"} / 函数对象）.
+         *
+         * @return 工具选择策略；未设置时返回 {@code null}（下游默认 auto）
+         */
+        public Object toolChoice() {
+            return options != null ? options.toolChoice : null;
+        }
+
+        /**
+         * OpenAI 顶层 {@code messages} 覆盖值（含 {@code assistant.tool_calls} / {@code role:"tool"} 消息）.
+         *
+         * <p>{@link #messages()} 是只含 {@code role/content/name} 的文本视图，无法表达 OpenAI 的
+         * 工具调用消息；Anthropic 入口在会话中出现 {@code tool_use} / {@code tool_result} 块时填充本字段，
+         * OpenAI 兼容适配器优先用它构造下游请求体。为 {@code null} 时下游请求体与既有实现逐字节一致。</p>
+         *
+         * @return 覆盖用消息列表；未设置时返回 {@code null}
+         */
+        public List<Map<String, Object>> wireMessages() {
+            return options != null ? options.wireMessages : null;
+        }
+    }
+
+    /**
+     * 扩展选项类 - 包含所有适配器特定的参数
+     * 使用 @Builder 方便构建，所有字段可选
+     */
+    @Data
+    @Builder
+    public static final class Options {
+        // 通用扩展参数
+        private Integer n;
+        private Boolean logprobs;
+        @JsonProperty("top_logprobs")
+        private Integer topLogprobs;
+        @JsonProperty("use_beam_search")
+        private Boolean useBeamSearch;
+        @JsonProperty("min_p")
+        private Double minP;
+        @JsonProperty("repetition_penalty")
+        private Double repetitionPenalty;
+        @JsonProperty("length_penalty")
+        private Double lengthPenalty;
+        @JsonProperty("include_stop_str_in_output")
+        private Boolean includeStopStrInOutput;
+        @JsonProperty("ignore_eos")
+        private Boolean ignoreEos;
+        @JsonProperty("min_tokens")
+        private Integer minTokens;
+        @JsonProperty("skip_special_tokens")
+        private Boolean skipSpecialTokens;
+        @JsonProperty("spaces_between_special_tokens")
+        private Boolean spacesBetweenSpecialTokens;
+        @JsonProperty("truncate_prompt_tokens")
+        private Boolean truncatePromptTokens;
+        private Boolean echo;
+        @JsonProperty("add_generation_prompt")
+        private Boolean addGenerationPrompt;
+        @JsonProperty("continue_final_message")
+        private Boolean continueFinalMessage;
+        @JsonProperty("add_special_tokens")
+        private Boolean addSpecialTokens;
+        private List<String> documents;
+        @JsonProperty("chat_template")
+        private String chatTemplate;
+        @JsonProperty("chat_template_kwargs")
+        private Map<String, Object> chatTemplateKwargs;
+        @JsonProperty("structured_outputs")
+        private Object structuredOutputs;
+        private Integer priority;
+        @JsonProperty("request_id")
+        private String requestId;
+        @JsonProperty("return_tokens_as_token_ids")
+        private Boolean returnTokensAsTokenIds;
+        @JsonProperty("return_token_ids")
+        private Boolean returnTokenIds;
+        @JsonProperty("cache_salt")
+        private String cacheSalt;
+        @JsonProperty("repetition_detection")
+        private Object repetitionDetection;
+        // v2.9.0: vLLM 前缀缓存参数
+        @JsonProperty("prefix_cache_hash")
+        private String prefixCacheHash;
+        @JsonProperty("enable_prefix_caching")
+        private Boolean enablePrefixCaching;
+
+        // Ollama 特定参数
+        @JsonProperty("repeat_penalty")
+        private Double repeatPenalty;
+        private Integer seed;
+        @JsonProperty("num_keep")
+        private Integer numKeep;
+        @JsonProperty("tfs_z")
+        private Double tfsZ;
+        @JsonProperty("typical_p")
+        private Double typicalP;
+        @JsonProperty("repeat_last_n")
+        private Integer repeatLastN;
+        @JsonProperty("penalize_newline")
+        private Boolean penalizeNewline;
+
+        // v3.1 PR-5: Anthropic 入口工具调用透传（OpenAI wire 形状；其他入口不设置）
+        /**
+         * OpenAI 顶层 {@code tools}（{@code [{type:"function",function:{name,description,parameters}}]}）.
+         */
+        @JsonProperty("tools")
+        private List<Map<String, Object>> tools;
+        /**
+         * OpenAI 顶层 {@code tool_choice}.
+         */
+        @JsonProperty("tool_choice")
+        private Object toolChoice;
+        /**
+         * OpenAI 顶层 {@code messages} 覆盖值（含工具调用/tool 角色消息）.
+         */
+        @JsonProperty("wire_messages")
+        private List<Map<String, Object>> wireMessages;
+    }
+
+    public record Message(
+            String role,
+            String content,
+            String name
+    ) { }
+
+    public record Response(
+            String id,
+            String object,
+            Long created,
+            String model,
+            List<Choice> choices,
+            Usage usage,
+            @JsonProperty("system_fingerprint") String systemFingerprint
+    ) { }
+
+    public record Choice(
+            Integer index,
+            Message message,
+            Delta delta,
+            @JsonProperty("finish_reason") String finishReason
+    ) { }
+
+    public record Delta(
+            String role,
+            String content
+    ) { }
+
+    public record Usage(
+            @JsonProperty("prompt_tokens") Integer promptTokens,
+            @JsonProperty("completion_tokens") Integer completionTokens,
+            @JsonProperty("total_tokens") Integer totalTokens
+    ) { }
+}

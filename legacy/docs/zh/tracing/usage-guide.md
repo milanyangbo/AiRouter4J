@@ -1,0 +1,946 @@
+﻿# 使用指南
+
+<!-- 版本信息 -->
+> **文档版本**: 1.0.0
+> **最后更新**: 2026-06-15
+> **Git 提交**: 933eeadf
+> **作者**: Lincoln
+<!-- /版本信息 -->
+
+本指南详细介绍如何在各种场景下有效使用 JAiRouter 的分布式追踪功能。
+
+## 基本使用
+
+### 查看追踪数据
+
+#### 1. 日志追踪信息
+
+启用追踪后，所有请求都会在日志中包含追踪信息：
+
+```bash
+# 查看包含追踪信息的日志
+tail -f logs/application.log | grep traceId
+
+# 根据 traceId 查找特定请求的所有日志
+grep "4bf92f3577b34da6a3ce929d0e0e4736" logs/application.log
+```
+
+#### 2. 结构化日志查询
+
+```bash
+# 使用 jq 解析 JSON 格式的追踪日志
+tail -f logs/application.log | jq 'select(.traceId != null)'
+
+# 查询特定服务的追踪数据
+tail -f logs/application.log | jq 'select(.service == "jairouter" and .traceId != null)'
+```
+
+#### 3. Actuator 端点查询
+
+🔑 **这些运维端点需要管理员凭据**：下列 `/actuator/**` 调用走**正常认证链** —— 只有 `/actuator/health`（含
+> `liveness` / `readiness` 子路径）、`/actuator/info`、`/actuator/prometheus` 允许匿名（供 k8s 探针与
+> Prometheus 抓取），其余都需要 ADMIN 角色。**不带凭据会得到 `401 AUTH_MISSING`。**
+> （修复前即使带了 ADMIN JWT 也会 401：认证链被整段排除，与 `hasRole("ADMIN")` 互相抵消，见 issue #340。）
+>
+> 取 JWT 与调用示例（本机实测通过）：
+>
+> ```bash
+> TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/jwt/login \
+>   -H 'Content-Type: application/json' \
+>   -d '{"username":"admin","password":"<你的管理员密码>"}' | jq -r .data.token)
+> curl -s -H "Jairouter_Token: $TOKEN" http://localhost:8080/actuator/metrics | jq
+> ```
+
+```bash
+# 查看追踪健康状态
+curl http://localhost:8080/actuator/health/tracing
+
+# 查看追踪配置信息
+curl http://localhost:8080/actuator/info | jq '.tracing'
+
+# 查看追踪指标
+curl http://localhost:8080/actuator/metrics | grep tracing
+```
+
+### 自定义追踪标签
+
+#### 1. 在业务代码中添加标签
+
+```java
+@RestController
+public class CustomController {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    @PostMapping("/api/custom")
+    public ResponseEntity<?> customEndpoint(@RequestBody CustomRequest request) {
+        TracingContext context = tracingContextHolder.getCurrentContext();
+        if (context != null && context.isActive()) {
+            Span span = context.getCurrentSpan();
+            // 添加业务标签
+            span.setAttribute("user.id", request.getUserId());
+            span.setAttribute("business.type", request.getType());
+            span.setAttribute("custom.operation", "data-processing");
+
+            // 记录业务事件
+            span.addEvent("business.started");
+        }
+
+        // 业务逻辑处理
+        CustomResponse response = processRequest(request);
+
+        // 记录处理结果
+        if (context != null && context.isActive()) {
+            Span span = context.getCurrentSpan();
+            span.setAttribute("result.status", response.getStatus());
+            span.addEvent("business.completed");
+        }
+
+        return ResponseEntity.ok(response);
+    }
+}
+```
+
+#### 2. 手动创建 Span 添加追踪
+
+```java
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+
+@Component
+public class BusinessService {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public Mono<ProcessResult> processUserData(UserData data) {
+        TracingContext context = tracingContextHolder.getCurrentContext();
+        if (context != null && context.isActive()) {
+            Span parentSpan = context.getCurrentSpan();
+            Span span = context.createChildSpan("user-data-processing", SpanKind.INTERNAL, parentSpan);
+            try {
+                return Mono.fromCallable(() -> {
+                    // 业务逻辑
+                    return new ProcessResult();
+                }).doFinally(signal -> span.end());
+            } catch (Exception e) {
+                span.recordException(e);
+                span.end();
+                throw e;
+            }
+        }
+        return Mono.fromCallable(() -> {
+            // 业务逻辑
+            return new ProcessResult();
+        });
+    }
+
+    public List<Entity> queryDatabase(String condition) {
+        TracingContext context = tracingContextHolder.getCurrentContext();
+        if (context != null && context.isActive()) {
+            Span parentSpan = context.getCurrentSpan();
+            Span span = context.createChildSpan("database-query", SpanKind.CLIENT, parentSpan);
+            span.setAttribute("operation", "query");
+            try {
+                // 数据库查询逻辑
+                return entityRepository.findByCondition(condition);
+            } finally {
+                span.end();
+            }
+        }
+        // 数据库查询逻辑
+        return entityRepository.findByCondition(condition);
+    }
+}
+```
+
+## 高级场景
+
+### 分布式服务链追踪
+
+#### 1. 服务间调用追踪
+
+```java
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+
+@Service
+public class ExternalServiceClient {
+
+    @Autowired
+    private WebClient webClient;
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public Mono<ExternalResponse> callExternalService(ExternalRequest request) {
+        TracingContext context = tracingContextHolder.getCurrentContext();
+        if (context == null || !context.isActive()) {
+            return callExternalServiceInternal(request, null);
+        }
+
+        // 创建子 Span 用于外部服务调用
+        Span parentSpan = context.getCurrentSpan();
+        Span span = context.createChildSpan("external-service-call", SpanKind.CLIENT, parentSpan);
+        // 添加服务信息
+        span.setAttribute("external.service", "ai-model-service");
+        span.setAttribute("external.endpoint", "/v1/chat/completions");
+        span.setAttribute("request.model", request.getModel());
+
+        return callExternalServiceInternal(request, span)
+            .doFinally(signal -> span.end());
+    }
+
+    private Mono<ExternalResponse> callExternalServiceInternal(ExternalRequest request, Span span) {
+        return webClient.post()
+            .uri("/v1/chat/completions")
+            .body(BodyInserters.fromValue(request))
+            .retrieve()
+            .bodyToMono(ExternalResponse.class)
+            .doOnSuccess(response -> {
+                if (span != null) {
+                    span.setAttribute("response.status", "success");
+                    span.setAttribute("response.tokens", response.getUsage().getTotalTokens());
+                }
+            })
+            .doOnError(error -> {
+                if (span != null) {
+                    span.setAttribute("error.type", error.getClass().getSimpleName());
+                    span.setAttribute("error.message", error.getMessage());
+                    span.recordException(error);
+                }
+            });
+    }
+}
+```
+
+#### 2. 响应式流中的上下文传播
+
+```java
+@Component
+public class ReactiveProcessor {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public Mono<ProcessedData> processDataPipeline(InputData input) {
+        return Mono.just(input)
+            // 第一阶段：验证
+            .flatMap(this::validateInput)
+            .contextWrite(ctx ->
+                tracingContextHolder.getCurrentContext()
+                    .map(tracing -> ctx.put("tracing", tracing))
+                    .orElse(ctx))
+
+            // 第二阶段：转换
+            .flatMap(this::transformData)
+            .contextWrite(ctx -> {
+                // 在每个阶段更新追踪信息
+                TracingContext context = tracingContextHolder.getCurrentContext();
+                if (context != null && context.isActive()) {
+                    Span span = context.getCurrentSpan();
+                    span.addEvent("pipeline.stage.transform");
+                }
+                return ctx;
+            })
+
+            // 第三阶段：存储
+            .flatMap(this::saveData)
+            .doOnSuccess(result -> {
+                TracingContext context = tracingContextHolder.getCurrentContext();
+                if (context != null && context.isActive()) {
+                    Span span = context.getCurrentSpan();
+                    span.setAttribute("pipeline.result", "success");
+                }
+            });
+    }
+}
+```
+
+### 慢查询检测
+
+#### 1. 自动慢查询检测
+
+系统会自动检测超过阈值的请求：
+
+```yaml
+jairouter:
+  tracing:
+    sampling:
+      # 核对（issue #159）：没有 strategy 键，也没有 slow-request-threshold /
+      # slow-request-sample-rate 两个旋钮；自适应采样只有下面 5 个字段。
+      adaptive:
+        enabled: true
+        target-spans-per-second: 1000  # 目标每秒 Span 数
+        min-ratio: 0.1                 # 采样率下限
+        max-ratio: 1.0                 # 采样率上限
+        adjustment-interval: 30        # 调整间隔（秒）
+```
+
+#### 2. 手动慢查询分析
+
+```java
+@Component
+public class SlowQueryAnalyzer {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public void analyzeSlowOperation() {
+        long startTime = System.currentTimeMillis();
+
+        try {
+            // 执行可能较慢的操作
+            performComplexOperation();
+        } finally {
+            long duration = System.currentTimeMillis() - startTime;
+
+            if (duration > 5000) { // 5秒阈值
+                TracingContext context = tracingContextHolder.getCurrentContext();
+                if (context != null && context.isActive()) {
+                    Span span = context.getCurrentSpan();
+                    // 标记为慢查询
+                    span.setAttribute("performance.slow", "true");
+                    span.setAttribute("performance.duration", String.valueOf(duration));
+                    span.addEvent("slow.query.detected");
+                }
+
+                // 记录详细的性能信息
+                recordPerformanceDetails();
+            }
+        }
+    }
+}
+```
+
+### 错误追踪和分析
+
+#### 1. 异常自动追踪
+
+```java
+@Component
+public class ErrorHandlingService {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public Mono<Result> processWithErrorHandling(Request request) {
+        return Mono.fromCallable(() -> processRequest(request))
+            .onErrorResume(BusinessException.class, ex -> {
+                // 业务异常处理
+                TracingContext context = tracingContextHolder.getCurrentContext();
+                if (context != null && context.isActive()) {
+                    Span span = context.getCurrentSpan();
+                    span.setAttribute("error.type", "business");
+                    span.setAttribute("error.code", ex.getErrorCode());
+                    span.recordException(ex);
+                }
+                return Mono.just(createErrorResult(ex));
+            })
+            .onErrorResume(Exception.class, ex -> {
+                // 系统异常处理
+                TracingContext context = tracingContextHolder.getCurrentContext();
+                if (context != null && context.isActive()) {
+                    Span span = context.getCurrentSpan();
+                    span.setAttribute("error.type", "system");
+                    span.setAttribute("error.severity", "high");
+                    span.recordException(ex);
+                }
+                return Mono.error(new SystemException("系统处理失败", ex));
+            });
+    }
+}
+```
+
+#### 2. 自定义错误追踪
+
+```java
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+
+@Component
+public class CustomErrorTracker {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public void trackCustomError(String operation, Throwable error, Map<String, Object> context) {
+        TracingContext tracingContext = tracingContextHolder.getCurrentContext();
+        if (tracingContext == null || !tracingContext.isActive()) {
+            return;
+        }
+
+        Span parentSpan = tracingContext.getCurrentSpan();
+        Span span = tracingContext.createChildSpan("error-analysis", SpanKind.INTERNAL, parentSpan);
+        try {
+            // 记录错误基本信息
+            span.setAttribute("error.operation", operation);
+            span.setAttribute("error.class", error.getClass().getSimpleName());
+            span.setAttribute("error.message", error.getMessage());
+
+            // 记录上下文信息
+            context.forEach((key, value) ->
+                span.setAttribute("context." + key, String.valueOf(value)));
+
+            // 记录堆栈跟踪（脱敏处理）
+            String sanitizedStackTrace = sanitizeStackTrace(error);
+            span.addEvent("error.stacktrace");
+
+            // 分析错误严重程度
+            String severity = analyzeSeverity(error);
+            span.setAttribute("error.severity", severity);
+        } finally {
+            span.end();
+        }
+    }
+
+    private String sanitizeStackTrace(Throwable error) {
+        // 实现堆栈跟踪脱敏逻辑
+        return error.getStackTrace()[0].toString();
+    }
+}
+```
+
+## 性能监控
+
+### 实时性能指标
+
+#### 1. 查看关键指标
+
+```bash
+# 查看追踪相关的 Prometheus 指标
+curl -s http://localhost:8080/actuator/prometheus | grep jairouter_tracing
+
+# 查看采样率指标
+curl -s http://localhost:8080/actuator/metrics/jairouter.tracing.sampling.rate
+
+# 查看 Span 创建和导出统计
+curl -s http://localhost:8080/actuator/metrics/jairouter.tracing.spans.created
+curl -s http://localhost:8080/actuator/metrics/jairouter.tracing.spans.exported
+```
+
+#### 2. 性能监控 API
+
+```java
+@RestController
+@RequestMapping("/api/tracing/performance")
+public class TracingPerformanceController {
+    
+    @Autowired
+    private TracingPerformanceMonitor performanceMonitor;
+    
+    @GetMapping("/stats")
+    public ResponseEntity<PerformanceStats> getPerformanceStats() {
+        PerformanceStats stats = performanceMonitor.getStats();
+        return ResponseEntity.ok(stats);
+    }
+    
+    @GetMapping("/slow-requests")
+    public ResponseEntity<List<SlowRequest>> getSlowRequests(
+            @RequestParam(defaultValue = "5000") long thresholdMs) {
+        List<SlowRequest> slowRequests = performanceMonitor
+            .getSlowRequests(thresholdMs);
+        return ResponseEntity.ok(slowRequests);
+    }
+}
+```
+
+### 内存使用监控
+
+#### 1. 监控追踪内存使用
+
+```java
+@Component
+public class TracingMemoryMonitor {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    @Scheduled(fixedRate = 30000) // 每30秒检查一次
+    public void monitorMemoryUsage() {
+        MemoryUsage memoryUsage = tracingMemoryManager.getMemoryUsage();
+
+        if (memoryUsage.getUsedRatio() > 0.8) {
+            // 内存使用率超过80%，触发清理
+            tracingMemoryManager.triggerCleanup();
+
+            // 记录内存压力事件
+            TracingContext context = tracingContextHolder.getCurrentContext();
+            if (context != null && context.isActive()) {
+                Span span = context.getCurrentSpan();
+                span.addEvent("memory.pressure.detected");
+            }
+        }
+    }
+}
+```
+
+#### 2. 内存使用优化
+
+```yaml
+jairouter:
+  tracing:
+    # 核对（issue #159）：真实路径是 performance.memory；没有 cleanup-interval / span-ttl /
+    # memory-threshold 这三个旋钮（内存压力由 memory-limit-mb 决定，检查频率是 gc-interval）。
+    performance:
+      memory:
+        max-spans-in-memory: 50000  # 根据实际内存调整
+        memory-limit-mb: 70         # 收紧内存上限
+        gc-interval: 30s            # 更频繁检查
+```
+
+## 安全和隐私
+
+### 敏感数据脱敏
+
+#### 1. 自动敏感数据检测
+
+```java
+@Component
+public class TracingSanitizer {
+
+    public void sanitizeSpanAttributes(Span span, Map<String, Object> attributes) {
+        attributes.forEach((key, value) -> {
+            if (isSensitiveAttribute(key)) {
+                // 脱敏处理
+                String sanitizedValue = sanitizeValue(String.valueOf(value));
+                span.setAttribute(key, sanitizedValue);
+            } else {
+                span.setAttribute(key, String.valueOf(value));
+            }
+        });
+    }
+
+    private boolean isSensitiveAttribute(String key) {
+        // 检查是否为敏感属性
+        return key.toLowerCase().contains("password") ||
+               key.toLowerCase().contains("token") ||
+               key.toLowerCase().contains("secret") ||
+               key.toLowerCase().contains("api-key");
+    }
+
+    private String sanitizeValue(String value) {
+        if (value.length() <= 4) {
+            return "***";
+        }
+        // 保留前2位和后2位，中间用*代替
+        return value.substring(0, 2) +
+               "*".repeat(value.length() - 4) +
+               value.substring(value.length() - 2);
+    }
+}
+```
+
+#### 2. 配置敏感数据过滤规则
+
+```yaml
+jairouter:
+  tracing:
+    security:
+      # enabled 是条件键（TracingSecurityAutoConfiguration 的 @ConditionalOnProperty，
+      # 类里没有同名字段，缺省即开启），保留有效。
+      enabled: true
+      # 核对（issue #159 / #224）：没有 sensitive-headers / sensitive-params / mask-pattern 三个键；
+      # 真实字段是 sanitization.sensitive-attributes。原先还写过 tracing-rules.default-mask-character，
+      # 那是**零消费方**的字段（掩码字符目前不可配），已随 #224 删除。
+      sanitization:
+        enabled: true
+        inherit-global-rules: true
+        sensitive-attributes:
+          - "authorization"
+          - "cookie"
+          - "x-api-key"
+          - "password"
+          - "token"
+```
+
+### 访问控制
+
+#### 1. 基于角色的追踪数据访问
+
+```java
+@Component
+public class TracingSecurityManager {
+    
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<TraceData> getAllTraces() {
+        return tracingQueryService.findAllTraces();
+    }
+    
+    @PreAuthorize("hasRole('USER')")
+    public List<TraceData> getUserTraces(String userId) {
+        return tracingQueryService.findTracesByUser(userId);
+    }
+    
+    @PreAuthorize("hasRole('VIEWER')")
+    public TraceData getFilteredTrace(String traceId) {
+        TraceData trace = tracingQueryService.findById(traceId);
+        return filterSensitiveData(trace);
+    }
+}
+```
+
+## 故障排除
+
+### 常见问题诊断
+
+#### 1. 追踪数据缺失
+
+**诊断步骤：**
+
+```bash
+# 1. 检查追踪是否启用
+curl http://localhost:8080/actuator/health/tracing
+
+# 2. 检查采样配置
+curl http://localhost:8080/actuator/configprops | jq '.jairouter.tracing.sampling'
+
+# 3. 检查导出器状态
+curl http://localhost:8080/actuator/metrics/jairouter.tracing.export.errors
+```
+
+**解决方案：**
+
+```yaml
+# 临时提高采样率进行调试
+jairouter:
+  tracing:
+    sampling:
+      strategy: "ratio"
+      ratio: 1.0  # 100% 采样
+```
+
+#### 2. 性能影响过大
+
+**诊断指标：**
+
+```bash
+# 查看追踪处理延迟
+curl http://localhost:8080/actuator/metrics/jairouter.tracing.processing.duration
+
+# 查看内存使用情况
+curl http://localhost:8080/actuator/metrics/jvm.memory.used
+```
+
+**优化建议：**
+
+```yaml
+jairouter:
+  tracing:
+    # 降低采样率
+    sampling:
+      ratio: 0.1
+    
+    # 启用异步处理
+    # 核对（issue #159）：没有 async 段（总开关是 performance.async-processing，
+    # 线程池在 performance.thread-pool 下），memory 的真实路径是 performance.memory。
+    performance:
+      async-processing: true
+      thread-pool:
+        core-size: 4
+      memory:
+        max-spans-in-memory: 5000
+        gc-interval: 15s
+```
+
+#### 3. 上下文传播问题
+
+**检查响应式流上下文：**
+
+```java
+@Component
+public class ContextDiagnostic {
+
+    @Autowired
+    private TracingContextHolder tracingContextHolder;
+
+    public Mono<String> diagnoseContext() {
+        return Mono.deferContextual(ctx -> {
+            boolean hasTracing = ctx.hasKey("tracing");
+            TracingContext context = tracingContextHolder.getCurrentContext();
+            String traceId = context != null ? context.getTraceId() : "null";
+
+            return Mono.just(String.format(
+                "Context有追踪: %s, 当前TraceId: %s",
+                hasTracing, traceId));
+        });
+    }
+}
+```
+
+## API 参考
+
+### TracingService
+
+追踪服务的核心接口，提供 Span 管理和追踪上下文操作。
+
+```java
+@Component
+public class TracingService {
+
+    /**
+     * 为 HTTP 请求创建根追踪上下文
+     */
+    public Mono<TracingContext> createRootSpan(ServerWebExchange exchange);
+
+    /**
+     * 创建业务操作的追踪上下文
+     */
+    public TracingContext createOperationSpan(String operationName, SpanKind kind);
+
+    /**
+     * 完成 HTTP 请求的追踪
+     */
+    public void finishHttpSpan(ServerWebExchange exchange, TracingContext context, long duration);
+
+    /**
+     * 记录错误到追踪上下文
+     */
+    public void recordError(TracingContext context, Throwable error);
+
+    /**
+     * 获取性能统计信息
+     */
+    public Mono<Map<String, Object>> getPerformanceStats();
+
+    /**
+     * 触发性能优化
+     */
+    public Mono<Void> triggerPerformanceOptimization();
+}
+```
+
+### TracingContext
+
+追踪上下文接口，提供分布式追踪的核心功能。
+
+```java
+public interface TracingContext {
+
+    // Span 管理
+    Span createSpan(String operationName, SpanKind kind);
+    Span createChildSpan(String operationName, SpanKind kind, Span parentSpan);
+    Span getCurrentSpan();
+    void setCurrentSpan(Span span);
+    void finishSpan(Span span);
+    void finishSpan(Span span, Throwable error);
+
+    // 属性管理
+    void setTag(String key, String value);
+    void setTag(String key, Number value);
+    void setTag(String key, Boolean value);
+    void addEvent(String name);
+    void addEvent(String name, Map<String, Object> attributes);
+
+    // 上下文传播
+    void injectContext(Map<String, String> headers);
+    TracingContext extractContext(Map<String, String> headers);
+    TracingContext copy();
+
+    // 日志关联
+    String getTraceId();
+    String getSpanId();
+    Map<String, String> getLogContext();
+
+    // 状态管理
+    boolean isActive();
+    boolean isSampled();
+    void clear();
+}
+```
+
+### TracingContextHolder
+
+追踪上下文持有者，提供线程本地的追踪上下文存储。
+
+```java
+public class TracingContextHolder {
+
+    /**
+     * 获取当前线程的追踪上下文
+     */
+    public static TracingContext getCurrentContext();
+
+    /**
+     * 设置当前线程的追踪上下文
+     */
+    public static void setCurrentContext(TracingContext context);
+
+    /**
+     * 清理当前线程的追踪上下文（重要：防止内存泄漏）
+     */
+    public static void clearCurrentContext();
+
+    /**
+     * 检查当前线程是否有追踪上下文
+     */
+    public static boolean hasCurrentContext();
+
+    /**
+     * 获取当前追踪 ID
+     */
+    public static String getCurrentTraceId();
+
+    /**
+     * 获取当前 Span ID
+     */
+    public static String getCurrentSpanId();
+}
+```
+
+## 测试支持
+
+### 单元测试
+
+```java
+@ExtendWith(MockitoExtension.class)
+class TracingServiceTest {
+
+    @Mock
+    private SpanExporter spanExporter;
+
+    @Mock
+    private Tracer tracer;
+
+    @InjectMocks
+    private TracingService tracingService;
+
+    @Test
+    void testCreateRootSpan() {
+        // Given
+        String operation = "test-operation";
+        ServerWebExchange exchange = mock(ServerWebExchange.class);
+
+        // When
+        StepVerifier.create(tracingService.createRootSpan(exchange))
+            .assertNext(context -> {
+                assertThat(context).isNotNull();
+                assertThat(context.isActive()).isTrue();
+            })
+            .verifyComplete();
+    }
+
+    @Test
+    void testContextAttributeSetting() {
+        // Given
+        TracingContext context = new DefaultTracingContext(tracer);
+        Span span = context.createSpan("test", SpanKind.INTERNAL);
+
+        // When
+        context.setTag("test.key", "test.value");
+
+        // Then
+        assertThat(context.isActive()).isTrue();
+    }
+}
+```
+
+### 集成测试
+
+```java
+@SpringBootTest
+@AutoConfigureTestDatabase
+class TracingIntegrationTest {
+
+    @Autowired
+    private TestRestTemplate restTemplate;
+
+    @Autowired
+    private TracingService tracingService;
+
+    @Test
+    void testTracingIntegration() {
+        // Given
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Trace-Debug", "true");
+
+        HttpEntity<String> entity = new HttpEntity<>("{}", headers);
+
+        // When
+        ResponseEntity<String> response = restTemplate.exchange(
+            "/api/test", HttpMethod.POST, entity, String.class);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // 验证追踪上下文已清理
+        assertThat(TracingContextHolder.getCurrentContext()).isNull();
+    }
+}
+```
+
+## 最佳实践
+
+### 1. 采样策略选择
+
+- **开发环境**：使用 100% 采样率便于调试
+- **测试环境**：使用规则采样，重点关注关键接口
+- **生产环境**：使用自适应采样，平衡性能和可观测性
+
+### 2. Span 命名规范
+
+```java
+// ✅ 好的命名
+context.createSpan("user-authentication", SpanKind.INTERNAL);
+context.createSpan("database-query", SpanKind.CLIENT);
+context.createSpan("external-api-call", SpanKind.CLIENT);
+
+// ❌ 避免的命名
+context.createSpan("op1", SpanKind.INTERNAL);
+context.createSpan("doSomething", SpanKind.INTERNAL);
+```
+
+### 3. 标签使用规范
+
+```java
+// ✅ 有意义的标签
+span.setAttribute("http.method", "POST");
+span.setAttribute("user.id", userId);
+span.setAttribute("business.operation", "payment");
+
+// ❌ 避免的标签
+span.setAttribute("tag1", "value");  // 不明确的命名
+span.setAttribute("user_data", largeObject.toString());  // 过大的值
+```
+
+### 4. 错误处理
+
+```java
+// ✅ 正确的错误记录
+span.setAttribute("error", "true");
+span.setAttribute("error.type", "validation");
+span.recordException(exception);
+
+// ❌ 避免记录敏感错误信息
+span.setAttribute("error.details", exception.getMessage());  // 可能包含敏感信息
+```
+
+### 5. 性能考虑
+
+- 避免在高频调用路径中添加过多标签
+- 使用异步导出避免影响请求性能
+- 定期清理过期的追踪数据
+- 监控追踪系统自身的资源使用
+
+### 6. 上下文清理
+
+```java
+// ✅ 确保上下文被清理
+try {
+    TracingContextHolder.setCurrentContext(context);
+    // 业务逻辑
+} finally {
+    TracingContextHolder.clearCurrentContext();
+}
+
+// ❌ 忘记清理会导致内存泄漏
+TracingContextHolder.setCurrentContext(context);
+// 业务逻辑后忘记清理
+```
+
+## 下一步
+
+- [性能调优](performance-tuning.md) - 深入的性能优化指南
+- [故障排除](troubleshooting.md) - 详细的故障排除手册
+- [运维指南](operations-guide.md) - 生产环境运维最佳实践

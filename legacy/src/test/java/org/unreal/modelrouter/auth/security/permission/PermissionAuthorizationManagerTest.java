@@ -1,0 +1,348 @@
+package org.unreal.modelrouter.auth.security.permission;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.server.RequestPath;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.web.server.authorization.AuthorizationContext;
+import org.springframework.web.server.ServerWebExchange;
+import org.unreal.modelrouter.auth.security.model.JwtAuthentication;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
+
+import java.util.List;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * PermissionAuthorizationManager 单元测试（v2.9.8 RBAC）
+ *
+ * 覆盖：规则命中授权、权限码缺失拒绝、ADMIN 直通、无规则按姿态回退/拒绝、方法感知、未认证拒绝。
+ *
+ * @author JAiRouter Team
+ * @since 2.9.8
+ */
+@DisplayName("PermissionAuthorizationManager 测试")
+class PermissionAuthorizationManagerTest {
+
+    private PermissionAuthorizationManager manager;
+
+    @BeforeEach
+    void setUp() {
+        manager = new PermissionAuthorizationManager(new PermissionRuleRegistry());
+    }
+
+    @Nested
+    @DisplayName("规则命中授权")
+    class RuleMatchTests {
+
+        @Test
+        @DisplayName("命中规则且携带权限码 -> 放行")
+        void ruleMatchedWithPermissionGranted() {
+            // /api/services 本身未登记规则（仅子路径 circuitbreaker/ratelimit 有规则），
+            // 此处改用真实命中规则的端点，避免依赖 fail-open 误判「规则命中」
+            AuthorizationContext context = context(HttpMethod.GET, "/api/config/instance/chat");
+            JwtAuthentication auth = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CONFIG_INSTANCES_READ));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("命中规则但缺少权限码 -> 拒绝(403)")
+        void ruleMatchedWithoutPermissionDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/config/version/test");
+            JwtAuthentication auth = authenticated("user", List.of("USER"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("命中规则但拥有其他权限码 -> 拒绝")
+        void ruleMatchedWithWrongPermissionDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/config/version/test");
+            JwtAuthentication auth = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CONFIG_POOLS_READ));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("ADMIN 角色直通（即使无权限码）")
+        void adminRoleBypassesPermissionCheck() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/config/instance/chat");
+            JwtAuthentication auth = authenticated("admin", List.of("ADMIN"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("写方法规则：POST 需 write 权限码，GET 规则不适用")
+        void writeMethodRequiresWriteCode() {
+            AuthorizationContext context = context(HttpMethod.POST, "/api/config/version/test");
+            JwtAuthentication reader = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CONFIG_VERSIONS_READ));
+
+            // 只有 read 权限码，POST /api/config/version/test 应被拒绝（需要 write 权限码）
+            StepVerifier.create(manager.check(Mono.just(reader), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("未认证请求命中规则 -> 拒绝")
+        void unauthenticatedOnRuleDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/config/instance/chat");
+
+            StepVerifier.create(manager.check(Mono.empty(), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+    }
+
+    @Nested
+    @DisplayName("无规则回退")
+    class NoRuleFallbackTests {
+
+        @Test
+        @DisplayName("Phase 3 默认 DENY_ALL：未登记路径 + 已认证非管理员 -> 拒绝")
+        void noRuleAuthenticatedDeniedByDefault() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/unregistered-endpoint");
+            JwtAuthentication auth = authenticated("user", List.of("USER"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("AUTHENTICATED 姿态：未登记路径 + 已认证 -> 放行(遗留 fail-open)")
+        void noRuleAuthenticatedGrantedInAuthenticatedMode() {
+            PermissionAuthorizationManager legacy = new PermissionAuthorizationManager(
+                    new PermissionRuleRegistry(), RbacUnmatchedPolicy.AUTHENTICATED);
+            AuthorizationContext context = context(HttpMethod.GET, "/api/unregistered-endpoint");
+            JwtAuthentication auth = authenticated("user", List.of("USER"), List.of());
+
+            StepVerifier.create(legacy.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("未登记路径 + 未认证 -> 拒绝(401)")
+        void noRuleUnauthenticatedDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/unregistered-endpoint");
+
+            StepVerifier.create(manager.check(Mono.empty(), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+    }
+
+    @Nested
+    @DisplayName("规则匹配语义")
+    class RuleSemanticsTests {
+
+        @Test
+        @DisplayName("call-history 读 -> callhistory:view 放行（issue #514 后仅 GET 有规则）")
+        void callHistoryReadRule() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/call-history/recent");
+            JwtAuthentication auth = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CALLHISTORY_VIEW));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("call-history 写/删 -> 不再由 callhistory:view 放行（issue #514 的回归点）")
+        void callHistoryWriteIsNotGuardedByViewCode() {
+            // 修复前：any(...) 规则让「查看」权限码同时放行 DELETE 与 POST。
+            // 修复后：该前缀只有 GET 规则 ⇒ 写/删不匹配任何规则，落到 RbacUnmatchedPolicy
+            // （本测试用默认 manager，即 DENY_ALL）⇒ 仅持 CALLHISTORY_VIEW 的用户被拒。
+            for (HttpMethod method : new HttpMethod[]{HttpMethod.DELETE, HttpMethod.POST}) {
+                AuthorizationContext context = context(method, "/api/call-history/cleanup");
+                JwtAuthentication auth = authenticated(
+                        "user", List.of("USER"), List.of(PermissionCodes.CALLHISTORY_VIEW));
+
+                StepVerifier.create(manager.check(Mono.just(auth), context))
+                        .expectNextMatches(decision -> !decision.isGranted())
+                        .verifyComplete();
+            }
+        }
+
+        @Test
+        @DisplayName("services 子路径规则优先：/api/services/chat/circuitbreaker 不套用 services 规则")
+        void serviceSubPathRuleTakesPrecedence() {
+            // 只有 config:services:read，无 config:circuitbreaker:read -> 拒绝
+            AuthorizationContext context = context(HttpMethod.GET, "/api/services/chat/circuitbreaker");
+            JwtAuthentication auth = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CONFIG_SERVICES_READ));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("services 子路径规则优先：携带 circuitbreaker 权限码 -> 放行")
+        void serviceSubPathRuleGrantsWithCircuitBreakerCode() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/services/chat/circuitbreaker");
+            JwtAuthentication auth = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.CONFIG_CIRCUITBREAKER_READ));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("账户读面规则：GET /api/security/jwt/accounts/** 需 system:accounts:read（#567）")
+        void jwtAccountsGetRuleRequiresSystemAccountsRead() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/security/jwt/accounts");
+            JwtAuthentication reader = authenticated(
+                    "operator", List.of("OPERATOR"), List.of(PermissionCodes.SYSTEM_ACCOUNTS_READ));
+            JwtAuthentication manageOnly = authenticated(
+                    "manager", List.of("OPERATOR"), List.of(PermissionCodes.SYSTEM_ACCOUNTS_MANAGE));
+            JwtAuthentication tokenManager = authenticated(
+                    "user", List.of("USER"), List.of(PermissionCodes.SECURITY_JWTTOKENS_MANAGE));
+
+            // 携带 system:accounts:read -> 放行（#567 之前这里要的是 :manage）
+            StepVerifier.create(manager.check(Mono.just(reader), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+            // 仅携带 system:accounts:manage -> 拒绝：URL 层按方法拆分，读面只认 :read
+            // （B11 由角色模板保证「持 manage 者同时持 read」，因此内置角色不会因此失去读能力）
+            StepVerifier.create(manager.check(Mono.just(manageOnly), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+            // 仅携带 security:jwttokens:manage -> 拒绝（账户管理不归 JWT 令牌管理）
+            StepVerifier.create(manager.check(Mono.just(tokenManager), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("账户写面规则：写方法仍需 system:accounts:manage（#567 不放松写语义）")
+        void jwtAccountsWriteStillRequiresSystemAccountsManage() {
+            JwtAuthentication reader = authenticated(
+                    "operator", List.of("OPERATOR"), List.of(PermissionCodes.SYSTEM_ACCOUNTS_READ));
+            JwtAuthentication accountManager = authenticated(
+                    "manager", List.of("OPERATOR"), List.of(PermissionCodes.SYSTEM_ACCOUNTS_MANAGE));
+
+            for (HttpMethod method : List.of(HttpMethod.POST, HttpMethod.PUT, HttpMethod.DELETE)) {
+                AuthorizationContext context = context(method, "/api/security/jwt/accounts");
+                StepVerifier.create(manager.check(Mono.just(reader), context))
+                        .expectNextMatches(decision -> !decision.isGranted())
+                        .verifyComplete();
+                StepVerifier.create(manager.check(Mono.just(accountManager), context))
+                        .expectNextMatches(AuthorizationDecision::isGranted)
+                        .verifyComplete();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("权限管理 URL 规则（v2.9.8 Phase 2）")
+    class PermissionManagementRuleTests {
+
+        @Test
+        @DisplayName("ADMIN 访问 /api/security/permissions -> 放行(200)")
+        void adminGrantedOnPermissionManagement() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/security/permissions");
+            JwtAuthentication auth = authenticated("admin", List.of("ADMIN"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("携带 system:permissions:manage -> 放行")
+        void permissionCodeHolderGranted() {
+            AuthorizationContext context = context(HttpMethod.PUT, "/api/security/permissions/roles/USER");
+            JwtAuthentication auth = authenticated(
+                    "operator", List.of("USER"), List.of(PermissionCodes.SYSTEM_PERMISSIONS_MANAGE));
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("无 token -> 拒绝(401)")
+        void unauthenticatedDeniedOnPermissionManagement() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/security/permissions");
+
+            StepVerifier.create(manager.check(Mono.empty(), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("已认证但无 system:permissions:manage -> 拒绝(403)")
+        void authenticatedWithoutPermissionDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/security/permissions");
+            JwtAuthentication auth = authenticated("user", List.of("USER"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("GET /api/auth/permissions 未登记规则 -> 已认证放行(200)")
+        void currentUserPermissionsRequiresAuthenticatedOnly() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/auth/permissions");
+            JwtAuthentication auth = authenticated("user", List.of("USER"), List.of());
+
+            StepVerifier.create(manager.check(Mono.just(auth), context))
+                    .expectNextMatches(AuthorizationDecision::isGranted)
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("GET /api/auth/permissions 无 token -> 拒绝(401)")
+        void currentUserPermissionsUnauthenticatedDenied() {
+            AuthorizationContext context = context(HttpMethod.GET, "/api/auth/permissions");
+
+            StepVerifier.create(manager.check(Mono.empty(), context))
+                    .expectNextMatches(decision -> !decision.isGranted())
+                    .verifyComplete();
+        }
+    }
+
+    /** 构造已认证（authenticated=true）的 JwtAuthentication（与生产代码 DefaultJwtTokenValidator 一致） */
+    private static JwtAuthentication authenticated(final String subject,
+                                                   final List<String> roles,
+                                                   final List<String> permissions) {
+        JwtAuthentication auth = new JwtAuthentication(subject, "token", roles, permissions);
+        auth.setAuthenticated(true);
+        return auth;
+    }
+
+    private static AuthorizationContext context(final HttpMethod method, final String path) {
+        ServerWebExchange exchange = mock(ServerWebExchange.class);
+        ServerHttpRequest request = mock(ServerHttpRequest.class);
+        RequestPath requestPath = mock(RequestPath.class);
+        when(exchange.getRequest()).thenReturn(request);
+        when(request.getMethod()).thenReturn(method);
+        when(request.getPath()).thenReturn(requestPath);
+        when(requestPath.value()).thenReturn(path);
+        return new AuthorizationContext(exchange);
+    }
+}

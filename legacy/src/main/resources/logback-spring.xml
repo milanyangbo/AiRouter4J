@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 定义日志文件路径 -->
+    <property name="LOG_PATH" value="logs"/>
+    <property name="APP_NAME" value="jairouter"/>
+
+    <!-- 副本标识（容器里由 Downward API 注入 POD_NAME / INSTANCE_ID），为空时不写入 JSON（issue #211） -->
+    <springProperty scope="context" name="INSTANCE_ID" source="INSTANCE_ID" defaultValue=""/>
+    
+    <!-- 定义日志格式 -->
+    <property name="CONSOLE_LOG_PATTERN" 
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-}] %logger{36} - %msg%n"/>
+    <property name="FILE_LOG_PATTERN" 
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-}] %logger{50} - %msg%n"/>
+
+    <!-- 控制台输出 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 文件输出 - 所有日志 -->
+    <appender name="FILE_ALL" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${APP_NAME}-all.log</file>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${APP_NAME}-all.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 文件输出 - 错误日志 -->
+    <appender name="FILE_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${APP_NAME}-error.log</file>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ERROR</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${APP_NAME}-error.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>60</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 结构化日志Appender -->
+    <appender name="STRUCTURED_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${APP_NAME}-structured.log</file>
+        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+            <layout class="ch.qos.logback.classic.PatternLayout">
+                <pattern>%msg%n</pattern>
+            </layout>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${APP_NAME}-structured.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 自定义追踪Appender -->
+    <appender name="TRACING_APPENDER" class="org.unreal.modelrouter.monitor.tracing.logger.TracingLogbackAppender">
+        <jsonFormat>true</jsonFormat>
+        <includeTraceContext>true</includeTraceContext>
+        <!-- 多副本下便于按副本检索日志；未注入时为空字符串，JSON 里不出现该字段 -->
+        <instanceId>${INSTANCE_ID}</instanceId>
+    </appender>
+
+    <!-- 异步文件输出 -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_ALL"/>
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <includeCallerData>false</includeCallerData>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <!-- 异步错误日志输出 -->
+    <appender name="ASYNC_ERROR" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_ERROR"/>
+        <queueSize>256</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <includeCallerData>true</includeCallerData>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <!-- 异步结构化日志输出 -->
+    <appender name="ASYNC_STRUCTURED" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="STRUCTURED_FILE"/>
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <includeCallerData>false</includeCallerData>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <!-- 自定义追踪 Appender 的异步包装（issue #264）。
+         TracingLogbackAppender 内部同步做 JSON 序列化并直接写 System.out，裸挂在
+         logger/root 上会让产生日志的线程（含请求线程）承担该开销。这里与上面三个文件
+         appender 采用同一套参数：neverBlock=true（队列满时丢弃而不阻塞），
+         discardingThreshold=0（不按级别丢弃）。 -->
+    <appender name="ASYNC_TRACING" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="TRACING_APPENDER"/>
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <includeCallerData>false</includeCallerData>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <!-- 开发环境配置 -->
+    <springProfile name="(dev | default) &amp; !json-logs">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+        </root>
+        
+        <!-- 应用日志详细输出 -->
+        <logger name="org.unreal.modelrouter" level="DEBUG" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </logger>
+        
+        <!-- 框架日志适当降级 -->
+        <logger name="org.springframework" level="INFO"/>
+        <logger name="org.apache.http" level="INFO"/>
+        <logger name="io.netty" level="INFO"/>
+        <logger name="reactor.netty" level="INFO"/>
+    </springProfile>
+
+    <!-- 测试环境配置 -->
+    <springProfile name="test &amp; !json-logs">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </root>
+        
+        <!-- 关键业务日志 -->
+        <logger name="org.unreal.modelrouter.controller" level="INFO"/>
+        <logger name="org.unreal.modelrouter.config" level="INFO"/>
+        <logger name="org.unreal.modelrouter.checker" level="INFO"/>
+        <logger name="org.unreal.modelrouter.store" level="INFO"/>
+        
+        <!-- 调试日志降级 -->
+        <logger name="org.unreal.modelrouter.loadbalancer" level="WARN"/>
+        <logger name="org.unreal.modelrouter.ratelimit" level="WARN"/>
+        <logger name="org.unreal.modelrouter.circuitbreaker" level="WARN"/>
+        
+        <!-- 框架日志降级 -->
+        <logger name="org.springframework" level="WARN"/>
+        <logger name="org.apache.http" level="WARN"/>
+    </springProfile>
+
+    <!-- 生产环境配置 -->
+    <springProfile name="prod &amp; !json-logs">
+        <root level="WARN">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </root>
+        
+        <!-- 只记录关键业务日志 -->
+        <logger name="org.unreal.modelrouter.controller" level="INFO" additivity="false">
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </logger>
+        
+        <logger name="org.unreal.modelrouter.config.ConfigurationService" level="INFO" additivity="false">
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </logger>
+        
+        <logger name="org.unreal.modelrouter.checker.RateLimiterCleanupChecker" level="WARN" additivity="false">
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </logger>
+        
+        <!-- 其他组件只记录警告和错误 -->
+        <logger name="org.unreal.modelrouter" level="WARN" additivity="false">
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+            <appender-ref ref="ASYNC_TRACING"/>
+        </logger>
+        
+        <!-- 框架日志最小化 -->
+        <logger name="org.springframework" level="ERROR"/>
+        <logger name="org.apache.http" level="ERROR"/>
+        <logger name="io.netty" level="ERROR"/>
+        <logger name="reactor.netty" level="ERROR"/>
+    </springProfile>
+    
+    <!-- 限流器日志 - 生产环境降级 -->
+    <springProfile name="prod &amp; !json-logs">
+        <logger name="org.unreal.modelrouter.ratelimit" level="ERROR"/>
+    </springProfile>
+    <springProfile name="!prod">
+        <logger name="org.unreal.modelrouter.ratelimit" level="DEBUG"/>
+    </springProfile>
+    
+    <!-- 负载均衡器日志 - 生产环境降级 -->
+    <springProfile name="prod &amp; !json-logs">
+        <logger name="org.unreal.modelrouter.loadbalancer" level="ERROR"/>
+    </springProfile>
+    <springProfile name="!prod">
+        <logger name="org.unreal.modelrouter.loadbalancer" level="DEBUG"/>
+    </springProfile>
+    
+    <!-- 熔断器日志 - 保持警告级别用于监控 -->
+    <logger name="org.unreal.modelrouter.circuitbreaker" level="WARN"/>
+    
+    <!--
+      容器 / 多副本部署（issue #211）：stdout 只输出结构化 JSON，一条事件一行。
+
+      背景：CONSOLE（文本）与 TRACING_APPENDER（JSON，直接写 System.out）此前同时挂在 root 上，
+      同一条事件会在 stdout 出现两行；本 profile 只挂 TRACING_APPENDER，文本行不再重复。文件
+      appender 保留（容器里挂的是 emptyDir，按需采集）。
+
+      用法：SPRING_PROFILES_ACTIVE=prod,json-logs（deploy/k8s/base 的清单已开启）。
+      不带本 profile 时行为与引入前逐字一致。
+
+      级别取 INFO：容器日志本就应被采集；需要更安静时用 logging.level.* 覆盖（Spring Boot 最后应用）。
+    -->
+    <springProfile name="json-logs">
+        <root level="INFO">
+            <appender-ref ref="ASYNC_TRACING"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+        </root>
+
+        <logger name="org.unreal.modelrouter" level="INFO" additivity="false">
+            <appender-ref ref="ASYNC_TRACING"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ASYNC_ERROR"/>
+            <appender-ref ref="ASYNC_STRUCTURED"/>
+        </logger>
+
+        <logger name="org.springframework" level="WARN"/>
+        <logger name="io.netty" level="WARN"/>
+        <logger name="reactor.netty" level="WARN"/>
+    </springProfile>
+
+</configuration>

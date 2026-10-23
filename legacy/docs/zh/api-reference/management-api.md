@@ -1,0 +1,1119 @@
+# 管理 API
+
+<!-- 版本信息 -->
+> **文档版本**: 2.0.0
+> **最后更新**: 2026-05-21
+> **Git 提交**: 61384b4a
+> **作者**: Lincoln
+<!-- /版本信息 -->
+
+JAiRouter 提供完整的管理 API，用于动态配置管理、服务实例管理、监控配置等。所有管理 API 使用 `/api` 前缀。
+
+## 目录
+
+- [服务类型管理](#service-type-mgmt)
+- [认证管理](#auth-mgmt)
+- [安全管理](#security-mgmt)
+- [监控管理](#monitoring-mgmt)
+- [追踪管理](#tracing-mgmt)
+- [负载均衡管理](#loadbalancer-mgmt)
+- [熔断器与限流](#circuit-breaker-rate-limit)
+- [模型统计](#model-stats)
+- [令牌使用](#token-usage)
+- [配置版本管理](#config-version-mgmt)
+- [配额管理](#quota-mgmt)
+- [API Key 配额操作](#apikey-quota-ops)
+- [PII / 数据脱敏管理](#sanitization-mgmt)
+
+---
+
+## 服务类型管理 {#service-type-mgmt}
+
+### 基础路径: `/api/config/type`
+
+管理服务类型及其模型。
+
+#### `GET /api/config/type`
+获取所有服务类型配置。
+
+#### `GET /api/config/type/services`
+获取所有可用的服务类型。
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "操作成功",
+  "data": ["chat", "embedding", "rerank", "tts", "stt", "imgGen", "imgEdit"]
+}
+```
+
+> 该接口返回 `RouterResponse<Set<String>>` 包装，**不是**裸数组（`ServiceTypeController.java:187-189`）。
+
+#### `GET /api/config/type/services/{serviceType}`
+获取指定服务类型的配置。
+
+#### `POST /api/config/type/services/{serviceType}`
+创建新的服务类型配置。
+
+#### `PUT /api/config/type/services/{serviceType}`
+更新服务类型配置。
+
+#### `DELETE /api/config/type/services/{serviceType}`
+删除服务类型配置。
+
+#### `GET /api/config/type/{serviceType}/models`
+获取服务类型下的所有模型。
+
+#### `POST /api/config/type/reset`
+重置所有配置为默认值。
+
+---
+
+## 认证管理 {#auth-mgmt}
+
+### JWT 令牌管理
+
+#### 基础路径: `/api/auth/jwt`
+
+#### `POST /api/auth/jwt/login`
+登录并获取 JWT 令牌。
+
+**请求体示例:**
+```json
+{
+  "username": "admin",
+  "password": "your-password"
+}
+```
+
+**响应示例:**
+```json
+{
+  "token": "eyJhbGciOiJIUzM4NCJ9...",
+  "tokenType": "Bearer",
+  "expiresIn": 3600
+}
+```
+
+#### `POST /api/auth/jwt/refresh`
+使用刷新令牌刷新访问令牌。
+
+#### `POST /api/auth/jwt/revoke`
+撤销当前令牌。
+
+#### `POST /api/auth/jwt/revoke/batch`
+批量撤销多个令牌。
+
+#### `POST /api/auth/jwt/validate`
+验证 JWT 令牌。
+
+#### `GET /api/auth/jwt/blacklist/stats`
+获取 JWT 黑名单统计。
+
+#### `GET /api/auth/jwt/tokens`
+分页获取所有 JWT 令牌。
+
+#### `GET /api/auth/jwt/tokens/{tokenId}`
+获取指定令牌的详情。
+
+#### `POST /api/auth/jwt/cleanup`
+触发过期令牌清理。
+
+#### `GET /api/auth/jwt/cleanup/stats`
+获取清理统计。
+
+### API 密钥管理
+
+#### 基础路径: `/api/auth/api-keys`
+
+#### `GET /api/auth/api-keys`
+列出所有 API 密钥。
+
+#### `GET /api/auth/api-keys/{keyId}`
+获取指定 API 密钥的详情。
+
+#### `POST /api/auth/api-keys`
+创建新的 API 密钥。
+
+**请求体示例:**
+```json
+{
+  "keyId": "my-api-key",
+  "description": "用于本地调试",
+  "permissions": ["read", "write"],
+  "expiresAt": "2026-12-31 23:59:59"
+}
+```
+
+> `ApiKeyCreateRequest` **没有 `name` 字段**（用 `description` / `keyId`）；`expiresAt` 的格式是
+> `yyyy-MM-dd HH:mm:ss`（DTO 上的 `@JsonFormat`），**不接受** ISO-8601 或 `Z` 后缀
+> （`ApiKeyCreateRequest.java:32-58`）。
+
+#### `PUT /api/auth/api-keys/{keyId}`
+更新 API 密钥。
+
+#### `DELETE /api/auth/api-keys/{keyId}`
+删除 API 密钥。
+
+#### `PATCH /api/auth/api-keys/{keyId}/disable`
+禁用 API 密钥。
+
+#### `PATCH /api/auth/api-keys/{keyId}/enable`
+启用 API 密钥。
+
+#### `POST /api/auth/api-keys/{keyId}/reset`
+重置 API 密钥（生成新密钥值）。
+
+#### `POST /api/auth/api-keys/{keyId}/rotate`
+轮换 API 密钥。
+
+#### `GET /api/auth/api-keys/export`
+导出 API 密钥。
+
+#### `POST /api/auth/api-keys/import`
+导入 API 密钥。
+
+### JWT 账户管理
+
+#### 基础路径: `/api/security/jwt/accounts`
+
+#### `GET /api/security/jwt/accounts`
+列出所有 JWT 账户。
+
+#### `GET /api/security/jwt/accounts/{username}`
+获取指定账户的详情。
+
+#### `POST /api/security/jwt/accounts`
+创建新的 JWT 账户。
+
+#### `PUT /api/security/jwt/accounts/{username}`
+更新 JWT 账户。
+
+#### `DELETE /api/security/jwt/accounts/{username}`
+删除 JWT 账户。
+
+#### `POST /api/security/jwt/accounts/{username}/verify`
+验证账户凭据。
+
+#### `PATCH /api/security/jwt/accounts/{username}/status`
+更新账户状态。
+
+---
+
+## 安全管理 {#security-mgmt}
+
+### 扩展安全审计
+
+#### 基础路径: `/api/security/audit/extended`
+
+#### `GET /api/security/audit/extended/jwt-tokens`
+获取 JWT 令牌审计记录。
+
+#### `GET /api/security/audit/extended/api-keys`
+获取 API 密钥审计记录。
+
+#### `GET /api/security/audit/extended/security-events`
+获取安全事件。
+
+#### `POST /api/security/audit/extended/query`
+查询扩展审计数据。
+
+#### `GET /api/security/audit/extended/reports/security`
+获取安全报告。
+
+#### `GET /api/security/audit/extended/users/{userId}/events`
+获取指定用户的事件。
+
+#### `GET /api/security/audit/extended/ip-addresses/{ipAddress}/events`
+获取指定 IP 地址的事件。
+
+#### `POST /api/security/audit/extended/events/batch`
+批量查询事件。
+
+#### `POST /api/security/audit/extended/test-data/generate`
+生成测试审计数据。
+
+#### `GET /api/security/audit/extended/statistics/extended`
+获取扩展统计。
+
+### 安全黑名单
+
+#### 基础路径: `/api/security/blacklist`
+
+#### `GET /api/security/blacklist/list`
+获取黑名单条目。
+
+#### `GET /api/security/blacklist/stats`
+获取黑名单统计。
+
+#### `GET /api/security/blacklist/{id}`
+获取指定黑名单条目。
+
+#### `POST /api/security/blacklist/add`
+添加条目到黑名单。
+
+#### `POST /api/security/blacklist/batch-add`
+批量添加条目到黑名单。
+
+#### `DELETE /api/security/blacklist/{id}`
+从黑名单移除条目。
+
+#### `GET /api/security/blacklist/check`
+检查条目是否在黑名单中。
+
+#### `POST /api/security/blacklist/cleanup`
+清理过期黑名单条目。
+
+---
+
+## 监控管理 {#monitoring-mgmt}
+
+### 基础路径: `/api/monitoring`
+
+#### `GET /api/monitoring/config`
+获取当前监控配置。
+
+**响应示例:**
+```json
+{
+  "enabled": true,
+  "prefix": "jairouter",
+  "collectionInterval": "PT30S",
+  "enabledCategories": ["request", "system", "custom"],
+  "sampling": {
+    "enabled": true,
+    "rate": 0.1
+  }
+}
+```
+
+#### `PUT /api/monitoring/config/enabled`
+启用或禁用监控。
+
+#### `PUT /api/monitoring/config/prefix`
+更新指标前缀。
+
+#### `PUT /api/monitoring/config/collection-interval`
+更新采集间隔。
+
+#### `PUT /api/monitoring/config/categories`
+更新启用的类别。
+
+#### `GET /api/monitoring/config/snapshot`
+获取配置快照。
+
+#### `GET /api/monitoring/health`
+获取监控系统健康状态。
+
+#### `GET /api/monitoring/errors/stats`
+获取错误统计。
+
+#### `POST /api/monitoring/errors/reset`
+重置错误状态。
+
+#### `GET /api/monitoring/degradation/status`
+获取降级状态。
+
+#### `POST /api/monitoring/degradation/level`
+设置降级级别。
+
+**请求体示例:**
+```json
+{
+  "level": "MODERATE"
+}
+```
+
+**可用级别:** `NONE`, `LIGHT`, `MODERATE`, `HEAVY`, `EMERGENCY`
+
+> 枚举定义见 `MetricsDegradationStrategy.java:34-39`；传旧文档里的 `PARTIAL` / `NORMAL` 会
+> 返回 `INVALID_REQUEST`（`MonitoringController.java:341-346`）。
+
+#### `POST /api/monitoring/degradation/auto-mode`
+启用/禁用自动降级模式。
+
+#### `POST /api/monitoring/degradation/force-recovery`
+强制恢复到正常模式。
+
+#### `GET /api/monitoring/cache/stats`
+获取缓存统计。
+
+#### `POST /api/monitoring/cache/clear`
+清空缓存。
+
+#### `GET /api/monitoring/metrics-pipeline/circuit-breaker/stats`
+获取**指标处理链路**熔断器（`MetricsCircuitBreaker`）的统计。
+
+> 旧路径 `GET /api/monitoring/circuit-breaker/stats` 为兼容别名。
+
+#### `POST /api/monitoring/metrics-pipeline/circuit-breaker/force-open`
+强制打开**指标处理链路**熔断器。
+
+> 作用域：仅作用于监控指标处理链路，**不影响**实例路由熔断器（`CircuitBreakerManager`），
+> 不会让任何实例进入熔断状态；响应 message 已写明作用域。
+> 旧路径 `POST /api/monitoring/circuit-breaker/force-open` 为兼容别名。
+
+#### `POST /api/monitoring/metrics-pipeline/circuit-breaker/force-close`
+强制关闭**指标处理链路**熔断器。
+
+> 作用域：同上，仅作用于监控指标处理链路。
+> 旧路径 `POST /api/monitoring/circuit-breaker/force-close` 为兼容别名。
+
+---
+
+## 追踪管理 {#tracing-mgmt}
+
+### 追踪执行器
+
+#### 基础路径: `/api/tracing/actuator`
+
+#### `GET /api/tracing/actuator/status`
+获取追踪状态。
+
+#### `GET /api/tracing/actuator/health`
+获取追踪健康状态。
+
+#### `GET /api/tracing/actuator/config`
+获取追踪配置。
+
+#### `PUT /api/tracing/actuator/config`
+更新追踪配置。
+
+#### `POST /api/tracing/actuator/sampling/refresh`
+刷新采样配置。
+
+#### `GET /api/tracing/actuator/stats`
+获取追踪统计。
+
+#### `POST /api/tracing/actuator/enable`
+启用追踪。
+
+#### `POST /api/tracing/actuator/disable`
+禁用追踪。
+
+#### `GET /api/tracing/actuator/export`
+导出追踪数据。
+
+#### `POST /api/tracing/actuator/clear-cache`
+清空追踪缓存。
+
+### 追踪查询
+
+#### 基础路径: `/api/tracing/query`
+
+#### `GET /api/tracing/query/trace/{traceId}`
+根据 ID 获取追踪。
+
+#### `GET /api/tracing/query/search`
+搜索追踪。
+
+#### `GET /api/tracing/query/recent`
+获取最近追踪。
+
+#### `GET /api/tracing/query/services`
+获取被追踪的服务。
+
+#### `GET /api/tracing/query/statistics`
+获取追踪统计。
+
+#### `POST /api/tracing/query/export`
+导出追踪数据。
+
+#### `POST /api/tracing/query/cleanup`
+清理旧追踪。
+
+#### `GET /api/tracing/query/operations`
+获取操作列表。
+
+#### `GET /api/tracing/query/health`
+获取查询健康状态。
+
+#### `GET /api/tracing/query/performance/stats`
+获取性能统计。
+
+#### `GET /api/tracing/query/performance/latency`
+获取延迟指标。
+
+#### `GET /api/tracing/query/performance/errors`
+获取错误指标。
+
+#### `GET /api/tracing/query/performance/throughput`
+获取吞吐量指标。
+
+### 追踪性能
+
+#### 基础路径: `/api/tracing/performance`
+
+#### `GET /api/tracing/performance/stats`
+获取性能统计。
+
+#### `GET /api/tracing/performance/processing-stats`
+获取处理统计。
+
+#### `GET /api/tracing/performance/memory-stats`
+获取内存统计。
+
+#### `GET /api/tracing/performance/health`
+获取性能健康状态。
+
+#### `GET /api/tracing/performance/bottlenecks`
+识别瓶颈。
+
+#### `GET /api/tracing/performance/suggestions`
+获取优化建议。
+
+#### `GET /api/tracing/performance/report`
+获取性能报告。
+
+#### `POST /api/tracing/performance/optimize`
+触发优化。
+
+#### `POST /api/tracing/performance/tuning`
+应用性能调优。
+
+#### `POST /api/tracing/performance/memory/gc`
+触发垃圾回收。
+
+#### `POST /api/tracing/performance/memory/check`
+检查内存状态。
+
+#### `POST /api/tracing/performance/processing/flush`
+刷新处理缓冲区。
+
+#### `GET /api/tracing/performance/metrics/dashboard`
+获取仪表板指标。
+
+#### `GET /api/tracing/performance/alerts/active`
+获取活动告警。
+
+### 追踪安全
+
+#### 基础路径: `/api/config/tracing/security`
+
+#### `GET /api/config/tracing/security/sanitization/sensitive-fields`
+获取敏感字段脱敏配置。
+
+#### `POST /api/config/tracing/security/sanitization/sensitive-fields`
+添加敏感字段。
+
+#### `DELETE /api/config/tracing/security/sanitization/sensitive-fields`
+移除敏感字段。
+
+#### `GET /api/config/tracing/security/access/history/{username}`
+获取用户访问历史。
+
+#### `DELETE /api/config/tracing/security/access/cache/{username}`
+清除用户访问缓存。
+
+#### `DELETE /api/config/tracing/security/access/cache`
+清除所有访问缓存。
+
+#### `POST /api/config/tracing/security/encryption/rotate-key/{traceId}`
+轮换追踪的加密密钥。
+
+#### `POST /api/config/tracing/security/encryption/cleanup`
+清理加密数据。
+
+#### `DELETE /api/config/tracing/security/encryption/data/{traceId}`
+删除追踪的加密数据。
+
+#### `GET /api/config/tracing/security/overview`
+获取安全概览。
+
+---
+
+## 负载均衡管理 {#loadbalancer-mgmt}
+
+### 基础路径: `/api/loadbalancer`
+
+#### `GET /api/loadbalancer/status`
+获取所有服务的负载均衡状态。
+
+#### `GET /api/loadbalancer/status/{serviceType}`
+获取指定服务的负载均衡状态。
+
+#### `GET /api/loadbalancer/config/global`
+获取全局负载均衡配置。
+
+#### `GET /api/loadbalancer/config/{serviceType}`
+获取服务的负载均衡配置。
+
+#### `PUT /api/loadbalancer/config/{serviceType}`
+更新负载均衡配置。
+
+**请求体示例:**
+```json
+{
+  "type": "round-robin",
+  "hashAlgorithm": "md5",
+  "virtualNodes": 160,
+  "ewmaAlpha": 0.2
+}
+```
+
+> `LoadBalanceConfigRequest` 的字段是 `type` / `hashAlgorithm` / `virtualNodes` / `ewmaAlpha`，
+> **没有** `strategy` / `weights`（`LoadBalancerManagementController.java:225-230,344-349`）。
+
+#### `GET /api/loadbalancer/strategies`
+获取可用的负载均衡策略。
+
+**响应示例:**
+```json
+[
+  { "name": "random" },
+  { "name": "round-robin" },
+  { "name": "least-connections" },
+  { "name": "ip-hash" },
+  { "name": "consistent-hash" },
+  { "name": "latency" }
+]
+```
+
+> 实际返回 `StrategyInfo` **对象数组**，名称用连字符、且**没有 `weighted`**
+> （`LoadBalancerManagementController.java:250-259,363-372`）。
+
+#### `GET /api/loadbalancer/stats`
+获取负载均衡统计。
+
+---
+
+## 熔断器与限流 {#circuit-breaker-rate-limit}
+
+### 熔断器
+
+#### 基础路径: `/api/services/{serviceType}/circuitbreaker`
+
+#### `GET /api/services/{serviceType}/circuitbreaker`
+获取服务的熔断器配置。
+
+**响应示例:**
+```json
+{
+  "enabled": true,
+  "failureThreshold": 5,
+  "successThreshold": 3,
+  "timeout": 30000
+}
+```
+
+> `CircuitBreakerConfiguration.toMap()` 只输出 `failureThreshold` / `timeout` /
+> `successThreshold` / `enabled`，**没有 `state`**
+> （`config/core/dto/CircuitBreakerConfiguration.java:53-67`）。
+
+#### `PUT /api/services/{serviceType}/circuitbreaker`
+更新熔断器配置。
+
+#### 实例级熔断状态与手动重置
+
+```
+GET|PUT /api/config/instance/{serviceType}/{instanceId}/rate-limit
+GET|PUT /api/config/instance/{serviceType}/{instanceId}/circuit-breaker
+GET     /api/config/instance/circuit-breaker/states        （已弃用）
+POST    /api/config/instance/circuit-breaker/reset         （兼容别名）
+POST    /api/config/instance/circuit-breaker/clear-all     （已弃用）
+```
+
+熔断器的**运行时状态**改由监控接口提供：它把运行时熔断器快照与实例元数据（名称、服务类型、
+上游地址、阈值、最近失败时间）合并返回，不再让前端从字符串键里拆字段：
+
+```
+GET  /api/v1/circuit-breaker-monitor/instances                    # cb:monitoring:read
+POST /api/v1/circuit-breaker-monitor/instances/{instanceId}/reset # config:circuitbreaker:write
+POST /api/v1/circuit-breaker-monitor/instances/reset              # config:circuitbreaker:write
+```
+
+这里的 `{instanceId}` 是**运行时实例 UUID**（`instanceId` 列），不是上文更新/删除所用的数据库
+`Long` 主键。重置会把状态机置为 `CLOSED`、计数清零、写入一条 `MANUAL_RESET` 历史，并删除
+持久化状态，避免重启后恢复回 `OPEN`。单个重置返回
+`{previousState, currentState, persistedStateDeleted, triggerReason}`；批量重置接受
+`{instanceIds}` 或 `{serviceType, states}`，返回 `{matched, reset[]}`。实例不存在时返回
+`404 NOT_FOUND`，不再静默成功。
+
+> 迁移说明：`GET .../states` 返回扁平 `Map<key, state>`、没有计数与名称，仅为兼容保留；
+> `POST .../clear-all` 没有作用域，已由 `POST /api/v1/circuit-breaker-monitor/instances/reset`
+> 取代；原 `POST /api/config/instance/{serviceType}/{instanceId}/circuit-breaker/reset` 已删除——
+> 它把数据库 `Long` 主键当成运行时 UUID 去查表，永远命中不了。
+
+### 限流
+
+#### 基础路径: `/api/services/{serviceType}/ratelimit`
+
+#### `GET /api/services/{serviceType}/ratelimit`
+获取服务的限流配置。
+
+**响应示例:**
+```json
+{
+  "enabled": true,
+  "algorithm": "token_bucket",
+  "capacity": 100,
+  "rate": 10,
+  "scope": "global"
+}
+```
+
+> 规范键是 `enabled` / `algorithm` / `capacity` / `rate` / `scope` / `key` / `warmUpPeriod`，
+> **没有 `refillRate`**（`router/ratelimit/RateLimitConfig.java:132,137-161`）。
+
+#### `PUT /api/services/{serviceType}/ratelimit`
+更新限流配置。
+
+---
+
+## 模型统计 {#model-stats}
+
+### 基础路径: `/api/model-stats`
+
+#### `GET /api/model-stats/summary`
+获取模型统计摘要。
+
+#### `GET /api/model-stats/models`
+获取所有模型统计。
+
+#### `GET /api/model-stats/service-types/{serviceType}`
+获取服务类型的统计。
+
+#### `GET /api/model-stats/models/{serviceType}/{modelName}`
+获取指定模型的统计。
+
+#### `GET /api/model-stats/top/active`
+获取最活跃的模型。
+
+#### `GET /api/model-stats/unhealthy`
+获取不健康的模型。
+
+#### `GET /api/model-stats/grouped-by-service-type`
+获取按服务类型分组的统计。
+
+#### `GET /api/model-stats/trend`
+获取使用趋势。
+
+#### `POST /api/model-stats/refresh`
+刷新统计。
+
+#### `DELETE /api/model-stats/clear`
+清除所有统计。
+
+---
+
+## 令牌使用 {#token-usage}
+
+### 基础路径: `/api/token-usage`
+
+#### `POST /api/token-usage/record`
+记录令牌使用。
+
+**请求体示例:**
+```json
+{
+  "modelName": "qwen2:7b",
+  "serviceType": "chat",
+  "promptTokens": 100,
+  "completionTokens": 50,
+  "totalTokens": 150,
+  "traceId": "trace-123"
+}
+```
+
+#### `POST /api/token-usage/record/batch`
+批量记录令牌使用。
+
+#### `GET /api/token-usage/statistics`
+获取令牌使用统计。
+
+#### `GET /api/token-usage/recent`
+获取最近的令牌使用。
+
+---
+
+## 配置版本管理 {#config-version-mgmt}
+
+### 基础路径: `/api/config/version`
+
+#### `GET /api/config/version`
+获取所有配置版本。
+
+#### `GET /api/config/version/{version}`
+获取指定版本。
+
+#### `DELETE /api/config/version/{version}`
+删除版本。
+
+#### `GET /api/config/version/current`
+获取当前版本。
+
+#### `POST /api/config/version/apply/{version}`
+应用指定版本。
+
+#### `GET /api/config/version/info`
+获取版本信息。
+
+#### `GET /api/config/version/compare/{sourceVersion}/{targetVersion}`
+比较两个版本。
+
+#### `GET /api/config/version/compare/{version}`
+与当前版本比较。
+
+---
+
+## 配置验证
+
+### 基础路径: `/api/config`
+
+#### `GET /api/config/sources`
+获取配置源。
+
+#### `GET /api/config/validation-rules`
+获取验证规则。
+
+#### `GET /api/config/environment-variables`
+获取环境变量配置。
+
+---
+
+## 配额管理 {#quota-mgmt}
+
+### 基础路径: `/api/config/quota`、`/api/monitoring/quota`
+
+管理配额账本的运行时配置与观测配额运行状态。
+
+#### `GET /api/config/quota`
+
+获取当前生效的配额配置快照（含运行时覆盖）。
+
+**权限码:** `config:quota:read`
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "failOpen": true,
+    "windows": ["MINUTE", "HOUR", "DAY", "MONTH"],
+    "flushIntervalSeconds": 60,
+    "retention": {
+      "minute": "1d",
+      "hour": "2d",
+      "day": "35d",
+      "month": "13mo"
+    },
+    "distributed": {
+      "enabled": false,
+      "keyPrefix": "jairouter:quota",
+      "timeoutMs": 50,
+      "degradeToLocal": true
+    },
+    "backendName": "local",
+    "hotEditableFields": ["enabled", "failOpen", "windows"],
+    "restartRequiredFields": ["distributed.enabled", "distributed.keyPrefix", "distributed.timeoutMs", "distributed.degradeToLocal", "retention.*", "flushIntervalSeconds"]
+  }
+}
+```
+
+#### `PUT /api/config/quota`
+
+运行时更新配额配置（部分更新，仅非 null 字段生效）。
+
+**权限码:** `config:quota:write`
+
+**请求体:**
+```json
+{
+  "enabled": true,
+  "failOpen": true,
+  "windows": ["MINUTE", "HOUR", "DAY"],
+  "flushIntervalSeconds": null,
+  "distributedEnabled": null,
+  "distributedKeyPrefix": null,
+  "distributedTimeoutMs": null,
+  "distributedDegradeToLocal": null,
+  "retention": null
+}
+```
+
+- 可热改字段：`enabled`、`failOpen`、`windows`
+- 需重启字段（`distributedEnabled` / `distributedKeyPrefix` / `distributedTimeoutMs` / `distributedDegradeToLocal` / `retention` / `flushIntervalSeconds`）：携带非 null 值时返回 HTTP 400 + `errorCode=RESTART_REQUIRED`，message 列出具体字段名
+- 全空请求体 → HTTP 400 + `errorCode=INVALID_REQUEST`
+
+**错误响应示例:**
+```json
+{
+  "success": false,
+  "message": "以下字段需重启生效，不支持热改: distributed.enabled, retention.*；请移除这些字段后重试",
+  "error": {
+    "code": "RESTART_REQUIRED",
+    "details": null
+  }
+}
+```
+
+#### `GET /api/monitoring/quota/status`
+
+查询配额账本运行状态。
+
+**权限码:** `monitoring:quota:read`
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "backendName": "local",
+    "degraded": false,
+    "degradedReason": "",
+    "failOpen": true,
+    "windows": ["MINUTE", "HOUR", "DAY", "MONTH"],
+    "distributed": {
+      "enabled": false,
+      "keyPrefix": "jairouter:quota",
+      "timeoutMs": 50,
+      "degradeToLocal": true
+    }
+  }
+}
+```
+
+`redisProbe` 与 `counterMetrics` 仅在 `distributed.enabled=true` 时存在。
+
+#### `GET /api/monitoring/quota/usage`
+
+查询配额用量（只读，不触发写入）。
+
+**权限码:** `monitoring:quota:read`
+
+**查询参数:** `tenantId`、`apiKeyId`、`userId`、`serviceType`、`model`、`window`（均可选）
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "dimensions": {
+        "tenantId": "",
+        "apiKeyId": "key-abc",
+        "userId": "",
+        "serviceType": "chat",
+        "model": "gpt-4o"
+      },
+      "window": "DAY",
+      "windowStart": "2026-09-06T00:00:00",
+      "requestCount": 42,
+      "tokenCount": 15000
+    }
+  ]
+}
+```
+
+配额未启用时 `data=[]` 且 message=`配额账本未启用`。
+
+---
+
+## API Key 配额操作 {#apikey-quota-ops}
+
+### 基础路径: `/api/auth/api-keys`
+
+**权限:** ADMIN（`security:apikeys:manage`）
+
+限额字段语义：**0 = 不限制**；`quotaAlertThreshold` 为 **0.0–1.0**（如 0.8 = 80%）。
+
+#### `GET /api/auth/api-keys/{keyId}/quota`
+
+获取单 Key 配额详情（含今日用量、百分比、`remainingRequests` / `remainingTokens`；不限制时 remaining = -1）。
+
+#### `PUT /api/auth/api-keys/{keyId}/quota`
+
+**仅更新配额字段**（partial update，null 字段不改）。
+
+**请求体:**
+```json
+{
+  "dailyRequestLimit": 1000,
+  "dailyTokenLimit": 100000,
+  "rateLimitPerMinute": 60,
+  "quotaAlertThreshold": 0.8
+}
+```
+
+**响应:** 更新后的配额详情（同 GET）。
+
+#### `GET /api/auth/api-keys/quota/alerts`
+
+触发告警阈值的 Key 列表。
+
+#### `GET /api/auth/api-keys/quota/overview`
+
+全部 Key 配额概览。
+
+#### `POST /api/auth/api-keys/{keyId}/quota/reset`
+
+重置单 Key 每日计数与速率。
+
+**请求体:** 无 —— 该端点只接路径变量 `{keyId}`，返回空响应体
+（`ApiKeyManagementController.java:303-308`）。
+
+> 带 `keyIds` 请求体、返回 `{ "requested": 2, "reset": 2 }` 的**批量重置**在另一个端点：
+> `POST /api/auth/api-keys/quota/batch-reset`（`ApiKeyManagementController.java:346-364`）。
+
+#### `POST /api/auth/api-keys/quota/reset-all`
+
+重置全部 Key 每日配额与速率。
+
+---
+
+## PII / 数据脱敏管理 {#sanitization-mgmt}
+
+### 基础路径: `/api/config/sanitization`
+
+**权限:** `security:sanitization:manage`（ADMIN）
+
+**语义:** 主路径为聊天调用历史/日志记录侧 `sanitizeForStorage`；网关响应过滤器默认关闭且排除 `/api/**` 与 AI 实时路径。
+
+#### `GET /api/config/sanitization`
+
+返回 request/response 子配置快照、`ruleCount` 与设计说明字段。
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "data": {
+    "request": {
+      "enabled": true,
+      "piiPatterns": ["\\d{11}"],
+      "sensitiveWords": ["password"],
+      "maskingChar": "*",
+      "logSanitization": false,
+      "failOnError": false,
+      "whitelistUsers": []
+    },
+    "response": {
+      "enabled": false,
+      "piiPatterns": [],
+      "sensitiveWords": [],
+      "maskingChar": "*",
+      "preserveJsonStructure": true
+    },
+    "ruleCount": 5,
+    "primaryUseCase": "chat-call-history-logs-and-user-data-records"
+  }
+}
+```
+
+#### `PUT /api/config/sanitization`
+
+热改 request/response（非 null 字段生效），并重建内存规则库。
+
+**请求体示例:**
+```json
+{
+  "request": {
+    "enabled": true,
+    "piiPatterns": ["\\d{11}", "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"],
+    "sensitiveWords": ["password"],
+    "maskingChar": "*"
+  }
+}
+```
+
+非法正则返回 HTTP 400 + `INVALID_REQUEST`。
+
+#### `GET /api/config/sanitization/rules`
+
+列出当前生效规则（ruleId / type / pattern / enabled 等）。
+
+#### `POST /api/config/sanitization/test`
+
+试脱敏。`contentType` 省略或为 `application/json` 但样例**不像 JSON** 时，按 `text/plain` 掩码。
+
+**请求体:**
+```json
+{ "sample": "联系人手机 13800138000", "contentType": "text/plain" }
+```
+
+**响应:**
+```json
+{
+  "success": true,
+  "data": {
+    "before": "联系人手机 13800138000",
+    "after": "联系人手机 ***********",
+    "matchedRuleIds": ["response-pii-pattern-3"],
+    "contentType": "text/plain"
+  }
+}
+```
+
+产品说明见 [数据脱敏规则配置](../security/data-sanitization.md)。
+
+---
+
+## 适配器配置
+
+### 基础路径: `/api/config/adapter`
+
+#### `GET /api/config/adapter`
+获取适配器配置和能力。
+
+---
+
+## 错误响应
+
+所有 API 端点遵循一致的错误响应格式:
+
+```json
+{
+  "success": false,
+  "message": "错误描述",
+  "errorCode": "ERROR_CODE",
+  "data": null
+}
+```
+
+> `/api/**` 用 `RouterResponse` 的**扁平**字段 `errorCode`，**没有** `error` 对象、也
+> **没有** `details` 字段（`RouterResponse.java:15-21`）。
+
+### 常见错误码
+
+> 📖 **完整错误码对照表**: [错误码参考文档](./error-codes.md)
+
+| 错误码 | 描述 | HTTP 状态码 |
+|--------|------|-------------|
+| `NOT_FOUND` | 资源未找到 | 404 |
+| `INVALID_REQUEST` | 请求数据无效 | 400 |
+| `INVALID_API_KEY` | 需要认证 | 401 |
+| `FORBIDDEN` | 权限不足 | 403 |
+| `CONFLICT_STATE` | 资源冲突 | 409 |
+| `RATE_LIMIT_EXCEEDED` | 请求过多 | 429 |
+| `INTERNAL_ERROR` | 服务器错误 | 500 |
+
+**认证相关错误码**:
+| 错误码 | 描述 |
+|--------|------|
+| `INVALID_API_KEY` | 无效的 API Key |
+| `EXPIRED_API_KEY` | API Key 已过期 |
+| `JWT_INVALID` | 无效的 JWT 令牌 |
+| `EXPIRED_JWT_TOKEN` | JWT 令牌已过期 |
+
+---
+
+## 认证
+
+所有管理 API 需要认证。使用以下方式之一:
+
+### JWT 令牌
+```
+请求头: Jairouter_Token: <your-jwt-token>
+```
+
+### API 密钥
+```
+请求头: X-API-Key: <your-api-key>
+```
+
+---
+
+*最后更新: 2026-05-21*

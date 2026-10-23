@@ -1,0 +1,22 @@
+# AGENTS.md
+
+Notes for AI agents working in this repository.
+
+## Project
+
+AiRouter4J — Java (Maven, Spring Boot) backend under `src/`, Vue 3 + TypeScript frontend under `frontend/`.
+Documentation site (mkdocs) lives in `docs/zh` and `docs/en`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage state is recorded as a `Status:` line in each issue file, using the five canonical role names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and one `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -1,0 +1,107 @@
+package org.unreal.modelrouter.router.ratelimit;
+
+import org.unreal.modelrouter.router.model.ModelServiceRegistry;
+
+
+public final class RateLimitContext {
+    private final ModelServiceRegistry.ServiceType serviceType;
+    private final String modelName;
+    private final String clientIp;
+    private final int tokens;
+    private final String instanceId;
+    private final String instanceUrl;
+    private final String ruleId;   // v2.8.8: 规则级限流(scope=rule 时 keyed by ruleId)
+
+    // 带实例信息的构造函数
+    public RateLimitContext(final ModelServiceRegistry.ServiceType serviceType,
+                            final String modelName,
+                            final String clientIp,
+                            final int tokens,
+                            final String instanceId,
+                            final String instanceUrl) {
+        this(serviceType, modelName, clientIp, tokens, instanceId, instanceUrl, null);
+    }
+
+    /**
+     * v2.8.8: 完整构造函数(含规则 ID,规则级限流用)
+     */
+    public RateLimitContext(final ModelServiceRegistry.ServiceType serviceType,
+                            final String modelName,
+                            final String clientIp,
+                            final int tokens,
+                            final String instanceId,
+                            final String instanceUrl,
+                            final String ruleId) {
+        this.serviceType = serviceType;
+        this.modelName = modelName;
+        this.clientIp = clientIp;
+        this.tokens = tokens;
+        this.instanceId = instanceId;
+        this.instanceUrl = instanceUrl;
+        this.ruleId = ruleId;
+    }
+
+    /**
+     * 获取服务类型
+     * @return 服务类型
+     */
+    public ModelServiceRegistry.ServiceType getServiceType() {
+        return serviceType;
+    }
+
+    /**
+     * 获取模型名称
+     * @return 模型名称
+     */
+    public String getModelName() {
+        return modelName;
+    }
+
+    /**
+     * 获取客户端IP
+     * @return 客户端IP
+     */
+    public String getClientIp() {
+        return clientIp;
+    }
+
+    /**
+     * 获取令牌数
+     * @return 令牌数
+     */
+    public int getTokens() {
+        return tokens;
+    }
+
+    /**
+     * 获取实例ID
+     * @return 实例ID
+     */
+    public String getInstanceId() {
+        return instanceId;
+    }
+
+    /**
+     * 获取实例URL
+     * @return 实例URL
+     */
+    public String getInstanceUrl() {
+        return instanceUrl;
+    }
+
+    /**
+     * 检查是否包含实例信息
+     * @return 是否包含实例信息
+     */
+    public boolean hasInstanceInfo() {
+        return instanceId != null && instanceUrl != null;
+    }
+
+    /**
+     * v2.8.8: 获取规则 ID(规则级限流用)
+     * @return 规则 ID
+     */
+    public String getRuleId() {
+        return ruleId;
+    }
+}

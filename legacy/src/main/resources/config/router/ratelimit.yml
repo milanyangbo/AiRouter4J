@@ -1,0 +1,51 @@
+# ========================================
+# 限流配置 (router 模块)
+# ========================================
+# 此文件包含限流策略配置
+# 位置：org.unreal.modelrouter.router.ratelimit
+
+model:
+  # 全局限流配置
+  rate-limit:
+    # 限流功能开关
+    enabled: true
+    
+    # 限流算法（支持: token-bucket, sliding-window）
+    algorithm: "token-bucket"
+    
+    # 令牌桶容量
+    capacity: 1000
+    
+    # 令牌生成速率（每秒）
+    rate: 100
+    
+    # 限流范围（支持: service, instance, global）
+    scope: "service"
+    
+    # 是否启用客户端维度限流（按下方 key-dimension 指定的维度区分被限流对象）
+    client-ip-enable: true
+
+    # 限流键维度（#161）：client-ip（默认，与历史行为一致）/ api-key / tenant
+    #
+    # 集群 + 无 L7 Ingress 时，remoteAddress 是节点 IP 而非真实客户端 IP——按 IP 计数
+    # 等于按垃圾数据计数，此时应改用 api-key 或 tenant 维度。
+    # api-key 维度下请求未携带 API Key 时回退客户端 IP 并告警；tenant 维度同理，
+    # 但其回退属于设计行为（不告警）。无可用的维度值与回退值时跳过该级限流并告警。
+    key-dimension: "client-ip"
+
+# ========================================
+# 跨副本限流（#161）
+# ========================================
+# 客户端维度的限流状态默认在 JVM 内，多副本下同一客户端的实际放行量 ≈ 配置值 × 副本数。
+# 开启后该维度的滑动窗口状态放到 Redis，各副本共享同一份计数——**前提是键维度成立**
+# （见上面的 key-dimension）：键维度不成立时，分布式计数只是在精确地统计垃圾数据。
+jairouter:
+  ratelimit:
+    distributed:
+      # 默认 false。开启前请确认 Redis 可用，并了解 Redis 故障时按 fail-open 放行。
+      enabled: ${JAIROUTER_RATELIMIT_DISTRIBUTED:false}
+      # 单次 Redis 调用超时（毫秒）。超时按 fail-open 放行。
+      # 该调用发生在 Schedulers.boundedElastic 上（见 ServiceRequestHandler 的
+      # selectInstance 调用），不会卡住 Netty EventLoop；超时值决定最坏情况下
+      # 每个被限流请求额外等待多久。
+      timeout-ms: 50

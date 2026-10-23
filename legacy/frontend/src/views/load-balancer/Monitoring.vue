@@ -1,0 +1,793 @@
+<template>
+  <PageSkeleton :title="t('loadBalancer.monitoring.pageTitle')">
+    <template #actions>
+      <!-- 页头只留一个主操作（导出），其余收进「更多」；「清空历史」保持为真实按钮，
+           因为 E2E 05-traffic-governance 用 .layout-main button + 文案定位它并断言二次确认 -->
+      <el-dropdown @command="handleExport">
+        <el-button type="primary">
+          {{ t('loadBalancer.monitoring.export') }} <el-icon class="el-icon--right"><Download /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="json">{{ t('loadBalancer.monitoring.exportJson') }}</el-dropdown-item>
+            <el-dropdown-item command="csv">{{ t('loadBalancer.monitoring.exportCsv') }}</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <el-button @click="clearHistory" :loading="clearingHistory">
+        {{ t('loadBalancer.monitoring.clearHistory') }}
+      </el-button>
+      <el-dropdown @command="handleMoreCommand">
+        <el-button :loading="togglingMonitor">
+          {{ t('loadBalancer.monitoring.moreActions') }}
+          <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="toggle">
+              {{ monitorStatus.paused ? t('loadBalancer.monitoring.resumeMonitoring') : t('loadBalancer.monitoring.pauseMonitoring') }}
+            </el-dropdown-item>
+            <el-dropdown-item command="strategy" divided>
+              {{ t('loadBalancer.monitoring.actions.strategyConfig') }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </template>
+
+    <!-- 路由监控控制面板 -->
+    <el-card class="control-panel" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">{{ t('loadBalancer.monitoring.controlTitle') }}</span>
+        </div>
+      </template>
+
+      <el-row :gutter="20">
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="config-item">
+            <label>{{ t('loadBalancer.monitoring.sampleRate') }}</label>
+            <el-slider
+              v-model="configForm.sampleRate"
+              :min="1"
+              :max="100"
+              :format-tooltip="formatSampleRate"
+              @change="updateSampleRate"
+              :disabled="updatingConfig"
+            />
+          </div>
+        </el-col>
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="config-item">
+            <label>{{ t('loadBalancer.monitoring.historySize') }}</label>
+            <el-input-number
+              v-model="configForm.historySize"
+              :min="100"
+              :max="10000"
+              :step="100"
+              @change="updateHistorySize"
+              :disabled="updatingConfig"
+            />
+          </div>
+        </el-col>
+        <el-col :xs="24" :sm="24" :md="12">
+          <div class="connection-status">
+            <el-tag :type="wsConnected ? 'success' : 'danger'">
+              {{ wsConnected ? t('loadBalancer.monitoring.wsConnected') : t('loadBalancer.monitoring.wsDisconnected') }}
+            </el-tag>
+            <span class="sampled-count">
+              {{ t('loadBalancer.monitoring.sampledCount', { count: monitorStatus.totalSampledCount }) }}
+            </span>
+          </div>
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <!-- 实时路由监控统计卡片：中性容器，状态色只落在「已暂停」标签上 -->
+    <el-row :gutter="16" style="margin-top: var(--ja-space-4)">
+      <el-col :xs="24" :sm="12" :md="6" v-for="(serviceStats, serviceType) in routingStats" :key="serviceType">
+        <el-card shadow="hover" class="stats-card">
+          <div class="service-stats">
+            <div class="service-header">
+              <el-tag type="info" size="large">{{ serviceType }}</el-tag>
+              <el-tag
+                :type="getServicePausedType(serviceType)"
+                size="small"
+                style="margin-left: 8px"
+              >
+                {{ isServicePaused(serviceType) ? t('loadBalancer.monitoring.pausedStatus') : t('loadBalancer.monitoring.monitoringActive') }}
+              </el-tag>
+            </div>
+            <div class="stats-content">
+              <div class="stat-row">
+                <span class="stat-label">{{ t('loadBalancer.monitoring.strategy') }}</span>
+                <span class="stat-value">{{ serviceStats.strategy || '-' }}</span>
+              </div>
+              <div class="stat-row">
+                <el-tooltip :content="t('loadBalancer.monitoring.countHint')" placement="top">
+                  <span class="stat-label">{{ t('loadBalancer.monitoring.selectionCount') }}</span>
+                </el-tooltip>
+                <span class="stat-value">{{ serviceStats.totalSelections || 0 }}</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">QPS</span>
+                <span class="stat-value">{{ serviceStats.requestsPerSecond?.toFixed(2) || '0.00' }}</span>
+              </div>
+            </div>
+            <div class="instance-distribution">
+              <div class="distribution-title">
+                {{ t('loadBalancer.monitoring.distributionTitle') }}
+                <el-tooltip :content="t('loadBalancer.monitoring.countHint')" placement="top">
+                  <el-icon class="hint-icon"><InfoFilled /></el-icon>
+                </el-tooltip>
+              </div>
+              <!-- 按模型分组显示 -->
+              <div
+                v-for="(instanceCounts, modelName) in serviceStats.modelInstanceCounts"
+                :key="modelName"
+                class="model-group"
+              >
+                <div class="model-name">
+                  <el-icon><Box /></el-icon>
+                  <span>{{ modelName }}</span>
+                </div>
+                <div
+                  v-for="(count, instance) in instanceCounts"
+                  :key="instance"
+                  class="distribution-item"
+                >
+                  <span class="instance-name">{{ getInstanceShortName(instance as string) }}</span>
+                  <el-progress
+                    :percentage="getPercentage(count as number, serviceStats.totalSelections)"
+                    :stroke-width="6"
+                    :show-text="false"
+                  />
+                  <span class="instance-count">{{ count }}</span>
+                </div>
+              </div>
+              <!-- 如果没有模型数据，显示旧的实例分布 -->
+              <div
+                v-if="!serviceStats.modelInstanceCounts || Object.keys(serviceStats.modelInstanceCounts).length === 0"
+                class="fallback-distribution"
+              >
+                <div
+                  v-for="(count, instance) in serviceStats.instanceCounts"
+                  :key="instance"
+                  class="distribution-item"
+                >
+                  <span class="instance-name">{{ getInstanceShortName(instance as string) }}</span>
+                  <el-progress
+                    :percentage="getPercentage(count as number, serviceStats.totalSelections)"
+                    :stroke-width="6"
+                    :show-text="false"
+                  />
+                  <span class="instance-count">{{ count }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="service-actions">
+              <el-button
+                size="small"
+                :type="isServicePaused(serviceType) ? 'success' : 'warning'"
+                @click="toggleServiceMonitor(serviceType as string)"
+              >
+                {{ isServicePaused(serviceType) ? t('loadBalancer.monitoring.resume') : t('loadBalancer.monitoring.pause') }}
+              </el-button>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 实时路由事件流 -->
+    <el-card class="events-card" style="margin-top: var(--ja-space-4)" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">{{ t('loadBalancer.monitoring.eventsTitle') }}</span>
+          <el-select v-model="selectedServiceType" :placeholder="t('loadBalancer.monitoring.selectServiceType')" clearable style="width: 200px">
+            <el-option
+              v-for="type in serviceTypes"
+              :key="type"
+              :label="type"
+              :value="type"
+            />
+          </el-select>
+        </div>
+      </template>
+
+      <el-table
+        :data="filteredEvents"
+        stripe
+        max-height="400"
+        v-loading="loadingEvents"
+        class="events-table"
+      >
+        <el-table-column prop="timestamp" :label="t('loadBalancer.monitoring.columns.time')" width="180">
+          <template #default="{ row }">
+            {{ formatTimestamp(row.timestamp) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="serviceType" :label="t('loadBalancer.monitoring.columns.serviceType')" width="100">
+          <template #default="{ row }">
+            <el-tag size="small">{{ row.serviceType }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="strategy" :label="t('loadBalancer.monitoring.columns.strategy')" width="150">
+          <template #default="{ row }">
+            <el-tag type="info" size="small">
+              {{ row.strategy }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="selectedInstance" :label="t('loadBalancer.monitoring.columns.selectedInstance')" min-width="200">
+          <template #default="{ row }">
+            <el-tooltip :content="row.selectedInstanceUrl" placement="top">
+              <span class="instance-id">{{ row.selectedInstance }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column prop="clientId" :label="t('loadBalancer.monitoring.columns.clientId')" width="120">
+          <template #default="{ row }">
+            <span class="client-id">{{ row.clientId || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="candidateCount" :label="t('loadBalancer.monitoring.columns.candidateCount')" width="80" />
+        <el-table-column prop="selectionTimeMs" :label="t('loadBalancer.monitoring.columns.selectionTimeMs')" width="90">
+          <template #default="{ row }">
+            <span :class="{ 'slow-select': row.selectionTimeMs > 10 }">
+              {{ row.selectionTimeMs || 0 }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+  </PageSkeleton>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Download, ArrowDown, Box, InfoFilled } from '@element-plus/icons-vue'
+import request from '@/utils/request'
+import PageSkeleton from '@/components/PageSkeleton.vue'
+
+interface MonitorStatus {
+  enabled: boolean
+  paused: boolean
+  sampleRate: number
+  historySize: number
+  totalSampledCount: number
+  pausedServices: string[]
+}
+
+interface ServiceRoutingStats {
+  strategy: string
+  totalSelections: number
+  requestsPerSecond: number
+  instanceCounts: Record<string, number>
+  modelInstanceCounts: Record<string, Record<string, number>>
+  recentSelections: string[]
+  clientInstanceMap: Record<string, string>
+}
+
+interface RoutingEvent {
+  timestamp: string
+  serviceType: string
+  modelName: string
+  strategy: string
+  selectedInstance: string
+  selectedInstanceUrl: string
+  clientId: string
+  candidateCount: number
+  selectionTimeMs: number
+}
+
+const apiBaseUrl = '/v1/routing-monitor'
+
+const monitorStatus = ref<MonitorStatus>({
+  enabled: true,
+  paused: false,
+  sampleRate: 0.1,
+  historySize: 1000,
+  totalSampledCount: 0,
+  pausedServices: []
+})
+
+const routingStats = ref<Record<string, ServiceRoutingStats>>({})
+const events = ref<RoutingEvent[]>([])
+const selectedServiceType = ref<string>('')
+const serviceTypes = ref<string[]>(['chat', 'embedding', 'rerank', 'tts', 'stt', 'imggen', 'imgedit'])
+
+const configForm = ref({
+  sampleRate: 10,
+  historySize: 1000
+})
+
+const wsConnected = ref(false)
+const togglingMonitor = ref(false)
+const updatingConfig = ref(false)
+const clearingHistory = ref(false)
+const loadingEvents = ref(false)
+let ws: WebSocket | null = null
+let reconnectTimer: number | null = null
+// 主动断开标志：disconnectWebSocket 置 true，避免 close 事件再排重连
+let isManualClose = false
+
+const { t } = useI18n()
+const router = useRouter()
+
+const filteredEvents = computed(() => {
+  if (!selectedServiceType.value) {
+    return events.value.slice(0, 50)
+  }
+  return events.value
+    .filter(e => e.serviceType === selectedServiceType.value)
+    .slice(0, 50)
+})
+
+const formatSampleRate = (val: number) => `${val}%`
+
+const formatTimestamp = (timestamp: string) => {
+  const date = new Date(timestamp)
+  return `${date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })  }.${  String(date.getMilliseconds()).padStart(3, '0')}`
+}
+
+const getInstanceShortName = (instanceId: string) => {
+  if (!instanceId) return '-'
+  const parts = instanceId.split('-')
+  return parts.length > 2 ? parts.slice(0, 2).join('-') : instanceId.substring(0, 12)
+}
+
+const getPercentage = (count: number, total: number) => {
+  if (!total) return 0
+  return Math.round((count / total) * 100)
+}
+
+const isServicePaused = (serviceType: string) => {
+  return monitorStatus.value.pausedServices?.includes(serviceType) || false
+}
+
+const getServicePausedType = (serviceType: string) => {
+  return isServicePaused(serviceType) ? 'warning' : 'success'
+}
+
+const loadStatus = async () => {
+  try {
+    const response = await request.get(`${apiBaseUrl}/status`)
+    monitorStatus.value = response.data
+    configForm.value.sampleRate = Math.round(monitorStatus.value.sampleRate * 100)
+    configForm.value.historySize = monitorStatus.value.historySize
+  } catch (error) {
+    console.error('Failed to load monitor status:', error)
+  }
+}
+
+const loadStats = async () => {
+  try {
+    const response = await request.get(`${apiBaseUrl}/stats`)
+    routingStats.value = response.data
+
+    serviceTypes.value = Object.keys(routingStats.value)
+  } catch (error) {
+    console.error('Failed to load routing stats:', error)
+  }
+}
+
+const loadHistory = async () => {
+  loadingEvents.value = true
+  try {
+    const response = await request.get(`${apiBaseUrl}/history`, {
+      params: { limit: 100 }
+    })
+    const allEvents: RoutingEvent[] = []
+    Object.values(response.data as Record<string, RoutingEvent[]>).forEach((serviceEvents) => {
+      allEvents.push(...serviceEvents)
+    })
+    allEvents.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    events.value = allEvents
+  } catch (error) {
+    console.error('Failed to load history:', error)
+  } finally {
+    loadingEvents.value = false
+  }
+}
+
+const connectWebSocket = () => {
+  isManualClose = false
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const token = localStorage.getItem('admin_token')
+  const qs = token ? `?token=${encodeURIComponent(token)}` : ''
+  const wsUrl = `${protocol}//${window.location.host}/ws/routing-monitor${qs}`
+
+  ws = new WebSocket(wsUrl)
+
+  ws.onopen = () => {
+    wsConnected.value = true
+  }
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+
+      if (data.type === 'connected') {
+        monitorStatus.value = data.status
+        routingStats.value = data.stats || {}
+      } else if (data.type === 'heartbeat') {
+        // Heartbeat received
+      } else {
+        // Routing event
+        const newEvent: RoutingEvent = data
+        events.value.unshift(newEvent)
+        if (events.value.length > 100) {
+          events.value.pop()
+        }
+
+        loadStats()
+      }
+    } catch (error) {
+      console.error('Failed to parse WebSocket message:', error)
+    }
+  }
+
+  ws.onclose = () => {
+    wsConnected.value = false
+    if (isManualClose) return
+    reconnectTimer = window.setTimeout(() => {
+      connectWebSocket()
+    }, 3000)
+  }
+
+  ws.onerror = (error) => {
+    if (isManualClose) return
+    console.error('WebSocket error:', error)
+  }
+}
+
+const disconnectWebSocket = () => {
+  isManualClose = true
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  if (ws) {
+    ws.close()
+    ws = null
+  }
+}
+
+const toggleMonitor = async () => {
+  togglingMonitor.value = true
+  try {
+    const action = monitorStatus.value.paused ? 'resume' : 'pause'
+    await request.post(`${apiBaseUrl}/${action}`)
+    monitorStatus.value.paused = !monitorStatus.value.paused
+    ElMessage.success(monitorStatus.value.paused ? t('loadBalancer.monitoring.messages.paused') : t('loadBalancer.monitoring.messages.resumed'))
+  } catch (error) {
+    ElMessage.error(t('loadBalancer.monitoring.messages.operationFailed'))
+  } finally {
+    togglingMonitor.value = false
+  }
+}
+
+const toggleServiceMonitor = async (serviceType: string) => {
+  try {
+    const isPaused = isServicePaused(serviceType)
+    const action = isPaused ? 'resume' : 'pause'
+    await request.post(`${apiBaseUrl}/${action}/${serviceType}`)
+
+    if (isPaused) {
+      monitorStatus.value.pausedServices = monitorStatus.value.pausedServices.filter(s => s !== serviceType)
+    } else {
+      monitorStatus.value.pausedServices.push(serviceType)
+    }
+
+    ElMessage.success(
+      isPaused
+        ? t('loadBalancer.monitoring.messages.serviceResumed', { serviceType })
+        : t('loadBalancer.monitoring.messages.servicePaused', { serviceType })
+    )
+  } catch (error) {
+    ElMessage.error(t('loadBalancer.monitoring.messages.operationFailed'))
+  }
+}
+
+const updateSampleRate = async (value: number) => {
+  updatingConfig.value = true
+  try {
+    await request.put(`${apiBaseUrl}/config/sample-rate`, {
+      sampleRate: value / 100
+    })
+    monitorStatus.value.sampleRate = value / 100
+    ElMessage.success(t('loadBalancer.monitoring.messages.sampleRateUpdated', { value }))
+  } catch (error) {
+    ElMessage.error(t('loadBalancer.monitoring.messages.sampleRateUpdateFailed'))
+    configForm.value.sampleRate = Math.round(monitorStatus.value.sampleRate * 100)
+  } finally {
+    updatingConfig.value = false
+  }
+}
+
+const updateHistorySize = async (value: number) => {
+  updatingConfig.value = true
+  try {
+    await request.put(`${apiBaseUrl}/config/history-size`, {
+      historySize: value
+    })
+    monitorStatus.value.historySize = value
+    ElMessage.success(t('loadBalancer.monitoring.messages.historySizeUpdated', { value }))
+  } catch (error) {
+    ElMessage.error(t('loadBalancer.monitoring.messages.historySizeUpdateFailed'))
+    configForm.value.historySize = monitorStatus.value.historySize
+  } finally {
+    updatingConfig.value = false
+  }
+}
+
+// 清空路由监控历史不可恢复 ⇒ 必须二次确认。
+// 审计 #460：原实现点一下就直接 DELETE，且**整个文件没有任何确认语句**。
+// 守卫见 frontend/e2e/specs/05-traffic-governance.mjs 的 lb-clear-history:* 三条断言
+// （弹层出现 / 取消不发写请求 / 取消后关闭）——其中「取消不发写请求」做过 A/B 反证。
+const clearHistory = () => {
+  ElMessageBox.confirm(
+    t('loadBalancer.monitoring.confirmations.clearHistoryMessage'),
+    t('loadBalancer.monitoring.confirmations.clearHistoryTitle'),
+    {
+      confirmButtonText: t('loadBalancer.monitoring.confirmations.confirm'),
+      cancelButtonText: t('loadBalancer.monitoring.confirmations.cancel'),
+      type: 'warning'
+    }
+  ).then(async () => {
+    clearingHistory.value = true
+    try {
+      await request.delete(`${apiBaseUrl}/history`)
+      events.value = []
+      monitorStatus.value.totalSampledCount = 0
+      ElMessage.success(t('loadBalancer.monitoring.messages.historyCleared'))
+    } catch (error) {
+      ElMessage.error(t('loadBalancer.monitoring.messages.clearHistoryFailed'))
+    } finally {
+      clearingHistory.value = false
+    }
+  })
+}
+
+const handleExport = async (command: string) => {
+  try {
+    const response = await request.get(`${apiBaseUrl}/export/${command}`, {
+      params: { limit: 5000 },
+      responseType: 'blob'
+    })
+
+    const blob = new Blob([response.data], {
+      type: command === 'json' ? 'application/json' : 'text/csv'
+    })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `routing-history.${command}`
+    link.click()
+    window.URL.revokeObjectURL(url)
+
+    ElMessage.success(t('loadBalancer.monitoring.messages.exportSuccess', { format: command.toUpperCase() }))
+  } catch (error) {
+    ElMessage.error(t('loadBalancer.monitoring.messages.exportFailed'))
+  }
+}
+
+// 「更多」菜单：暂停/恢复监控、跳到策略配置
+const handleMoreCommand = (command: string) => {
+  if (command === 'toggle') {
+    void toggleMonitor()
+    return
+  }
+  if (command === 'strategy') {
+    router.push({ name: 'load-balancer-strategy-config' })
+  }
+}
+
+onMounted(() => {
+  loadStatus()
+  loadStats()
+  loadHistory()
+  connectWebSocket()
+})
+
+onUnmounted(() => {
+  disconnectWebSocket()
+})
+</script>
+
+<style scoped>
+.control-panel {
+  margin-bottom: var(--ja-space-4);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ja-ink);
+}
+
+.config-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ja-space-2);
+}
+
+.config-item label {
+  font-size: 14px;
+  color: var(--ja-ink-2);
+  font-weight: 500;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-4);
+  padding-top: var(--ja-space-6);
+}
+
+.sampled-count {
+  font-size: 14px;
+  color: var(--ja-ink-3);
+}
+
+.stats-card {
+  height: 100%;
+}
+
+.service-stats {
+  padding: var(--ja-space-2);
+}
+
+.service-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--ja-space-3);
+}
+
+.stats-content {
+  margin-bottom: var(--ja-space-3);
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--ja-border-light);
+}
+
+.stat-row:last-child {
+  border-bottom: none;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: var(--ja-ink-3);
+}
+
+.stat-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ja-ink);
+}
+
+.instance-distribution {
+  background: var(--ja-surface-2);
+  border-radius: var(--ja-radius);
+  padding: var(--ja-space-3);
+  margin-bottom: var(--ja-space-3);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.distribution-title {
+  font-size: 12px;
+  color: var(--ja-ink-3);
+  margin-bottom: var(--ja-space-2);
+}
+
+.distribution-title .hint-icon {
+  margin-left: 4px;
+  vertical-align: -2px;
+  cursor: help;
+}
+
+.model-group {
+  margin-bottom: var(--ja-space-3);
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--ja-border-dark);
+}
+
+.model-group:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.model-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ja-ink-2);
+  margin-bottom: var(--ja-space-1);
+}
+
+.fallback-distribution {
+  /* 无模型数据时的备用显示 */
+}
+
+.distribution-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ja-space-2);
+  margin-bottom: var(--ja-space-1);
+}
+
+.distribution-item:last-child {
+  margin-bottom: 0;
+}
+
+.instance-name {
+  font-size: 12px;
+  color: var(--ja-ink-2);
+  width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distribution-item .el-progress {
+  flex: 1;
+}
+
+.instance-count {
+  font-size: 12px;
+  color: var(--ja-ink-2);
+  width: 40px;
+  text-align: right;
+}
+
+.service-actions {
+  text-align: center;
+}
+
+.events-card {
+  box-shadow: var(--ja-shadow-sm);
+  border-radius: var(--ja-radius-lg);
+}
+
+.events-table {
+  width: 100%;
+}
+
+.instance-id {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.client-id {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--ja-ink-3);
+}
+
+.slow-select {
+  color: var(--ja-warning);
+  font-weight: 500;
+}
+</style>

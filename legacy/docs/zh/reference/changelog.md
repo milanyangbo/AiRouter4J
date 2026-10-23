@@ -1,0 +1,2292 @@
+# 更新日志
+
+<!-- 版本信息 -->
+
+> **文档版本**: 3.4.0
+> **最后更新**: 2026-10-21
+> **作者**: JAiRouter Team
+
+<!-- /版本信息 -->
+
+本文档记录了 JAiRouter 项目的版本更新历史和重要变更。
+
+## 版本规范
+
+JAiRouter 遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范：
+
+* **主版本号 (MAJOR)**: 不兼容的 API 变更
+
+* **次版本号 (MINOR)**: 向后兼容的功能新增
+
+* **修订号 (PATCH)**: 向后兼容的问题修正
+
+## 版本历史
+
+### [3.4.0] - 2026-10-21 - 功能发布（控制台重构 + 权限语义化 + 脱敏配置持久化 + 配额小时/月限额）
+
+#### 权限语义化：补齐 8 个只读码（TA4 / #567）
+
+- 新增 8 个只读权限码（`lb:config:read`、`tracing:config:read`、`security:apikeys:read`、`security:sanitization:read`、`security:jwttokens:read`、`security:blacklist:read`、`system:accounts:read`、`system:permissions:read`），权限码总数 **55 → 63**。
+- URL 规则表由 68 条增至 75 条：原先用 `any()` 把读请求绑定到写码的 7 条规则拆成「GET → read 码 / 写 → manage 码」；新增 `GET /api/loadbalancer/config/** → lb:config:read` 窄规则，插在 `/api/loadbalancer/**` 通配之前。
+- 只读角色不再需要持写码就能看列表：`RolePermissionSeeder` 的增量收敛补一条不变式 —— **角色模板里持有某个 `:write`/`:manage` 时，必须同时持有对应的 `:read`**（升级后各内置角色的可见面不会变小；管理角色 63 码、操作员 46、普通用户 29、只读 27）。
+- 控制台 9 个只挂写码的菜单入口改为「读或写」任一命中即可显示；前端路由守卫同步由「全部满足」改为「任一满足」，7 条路由的权限声明补成 `[read, manage]`。
+
+#### 脱敏配置持久化（TA2）
+
+- 控制台改的脱敏规则、敏感词、PII 模式现在**落库**（新表 `sanitization_config`，按 `config_scope`（request / response）自然主键，Flyway `V4` 双方言脚本），重启后由数据库优先装载，数据库无行时回落 yml —— 此前这些改动只存在内存里，重启即丢且规则 ID 会复用。
+- 保存顺序改为「先落库、后重建规则」：落库失败时把内存配置回滚到本次更新前并返回 500，避免「运行态按新配置生效、重启后又回旧值」的不一致。
+- `updated_at` / `updated_by` 记录最后一次修改时间与操作者（无认证上下文时记 `system`）。
+
+#### 配额小时 / 月限额（TA3）
+
+- API Key 新增 4 个限额：`hourlyRequestLimit`、`hourlyTokenLimit`、`monthlyRequestLimit`、`monthlyTokenLimit`（`0` = 不限制）。窗口枚举 `QuotaWindow` 本就支持 MINUTE/HOUR/DAY/MONTH，本次把限额模型与判定、账本写入、详情回显补齐。
+- 判定顺序为 HOUR → DAY → MONTH → MINUTE，命中即拒并给出对应维度的限额违规；重置配额仍按 Key 清空全部窗口。
+- 控制台 API Key 的「配额」抽屉与新建/编辑表单增加四个输入（小时请求/Token、月请求/Token）；没有账本数据时窗口百分比显示为空而不是 0%，避免把「不知道」画成「用了 0%」。
+
+#### 控制台重构（P0-1 ～ P3，33 页 + 登录页 + 导航）
+
+#### 控制台导航信息架构（P0-3）
+
+- 侧栏菜单由 **9 组 40 项** 收敛为 **7 组 28 项**（概览 / 运行观测 / 流量治理 / 模型与实例 / 安全 / 系统 / 开发工具）。12 个页面降级为同组菜单项下的 tab，**URL 一律不变**，深链、书签与文档里的旧路径继续有效。无后端/接口变更，无数据迁移。
+- 收起为 tab 的 12 项：调用历史仪表盘、追踪仪表盘、异常统计、慢查询分析、配额用量监控、负载均衡策略、熔断器历史、熔断器全局配置、试验场的向量生成/重排序/语音服务/图像服务。
+- `menu.ts` 的 `MenuItem.permission` 支持 `string | string[]`（**数组为「或」**）；每个 tab 各自带权限并单独门控，点击菜单项落到「第一个有权限的 tab」。
+- 侧栏高亮改由 `ROUTE_TO_MENU` 查表（由 tabs 派生，不手写），未命中的路由回退自身路径；组展开由当前路由反查，删除硬编码前缀表。
+- 面包屑改为「组 → 菜单项 → 当前 tab」，最后一段不可点；详情页（如 `/exceptions/detail/:id`）末段追加 `#id`。
+- 文档口径修正：异常管理实际由 `monitoring:exceptions:read` 控制（此前写成「无权限码」）。
+
+#### 品牌与首屏（P0-1）
+
+- 新增品牌资源目录 `frontend/src/assets/brand/`（`logo-mark-64.png`、`logo-badge-256.png`、`favicon-32.png`、`favicon-180.png`）；`frontend/index.html` 补 `<link rel="icon">` 与 `<link rel="apple-touch-icon">`；侧栏左上角由占位图标换成徽标（图片 `alt` 留空，名称仍由旁边的 `JAiRouter` 文本承担）。
+- 新增中性阶与强调色令牌（`--ja-paper` / `--ja-surface` / `--ja-surface-2` / `--ja-ink` / `--ja-ink-2` / `--ja-ink-3`、`--ja-accent`、`--ja-accent-soft`）。**主色 `#409eff` 未改**，`--ja-border` 也未改（暗色边框校正留到后续批次）。
+- 首屏启动动画去掉紫色渐变，改为中性底色 + 徽标 + 青色进度环，并带暗色分支。
+
+#### 登录页（P0-2）
+
+- 登录页改为左右分栏：左侧品牌墙（徽标、一句话介绍、三条事实、页脚版本），右侧表单；背景是 Canvas 拓扑动效。
+- 两条退路：URL 带 `?static`，或系统设置 `prefers-reduced-motion: reduce` 时，只渲染一帧静态底图，不挂动效与视差。
+- 表单契约不变：仍是 `.login-form` 容器、两个输入框（用户名 → 密码）与 `button.login-button`（`type=submit`）；登录失败只显示行内提示，不再额外弹 toast。
+
+#### 观测组五页（P1-1）
+
+- 调用记录、慢调用、Token 用量、链路搜索、异常列表统一到列表页骨架（标题与描述、操作、筛选、工具条、表格、分页、抽屉六个槽位）。
+- 相对时间组件 `TimeText` 随界面语言切换（新增 `common.justNow`）；异常列表 0 条时不再渲染空的分页条。
+
+#### 三张重页与图表皮肤（P1-2）
+
+- 新增三个共享件：指标条 `MetricStrip`、图表卡 `ChartCard`（自带加载与空状态；默认插槽始终挂载，避免 ECharts 实例因容器消失而丢失）、图表皮肤 `useChartSkin`（色板、坐标轴、网格、提示框统一从设计令牌取色，暗色自动跟随）。
+- API Key 页：4 个指标卡换指标条；「配额告警」无告警时改为页头一行摘要；权限列超过 3 项折叠为「N 项」并可弹层展开；行操作保留「配额」，其余收进「更多」。
+- 审计日志页：4 个渐变卡换指标条；事件类型环形图改为横向 Top 5；补齐 12 个审计事件类型的本地化文案。
+
+#### 侧栏折叠、暗色语义色与窄屏（P1-3）
+
+- 侧栏可折叠（200px 与 64px 之间切换，状态记在 `localStorage['ja-sidebar-collapsed']`）；视口不超过 767px 时强制折叠，且不写回用户偏好。
+- 暗色主题补全层级（页面底色深于卡片）与图表专用色（`--ja-chart-series-neutral`、`--ja-chart-axis`），修正此前「分界色被当作数据系列色」导致暗色下系列不可见的问题。
+- 三个列表页在 767px 以下改为卡片列表（`TableCards` 组件），768–1024px 隐藏次要列、不产生横向滚动。
+
+#### 全站去彩虹化（P2-1，三批，共 33 页）
+
+- KPI 卡片统一为指标条、图表统一为图表卡与皮肤；装饰性渐变与多色标签收敛为中性，语义色只用于真语义（失败、超限、危险、进行中）。
+- API Key 页由单文件 1696 行拆为 9 个子组件（表格、卡片、表单弹窗、配额抽屉、导入弹窗、告警卡、权限标签等），行为与文案不变。
+
+#### 全局搜索与顶部状态条（P3）
+
+- `⌘K` 或 `Ctrl+K` 打开全局搜索，可搜菜单、服务类型、实例、API Key、TraceID 与异常；方向键选择、回车打开、Esc 关闭。
+- 顶部状态条显示「开放熔断数」与「24 小时异常数」，点击跳到对应监控页。
+
+#### 配置与接口修正（#575）
+
+- `GET /api/loadbalancer/config/{serviceType}` 在该服务类型没有专属负载均衡配置时，返回 **200 与全局默认配置**（`isGlobal: true`），不再是 500：策略配置页不再丢失「图像生成」「图像编辑」这类未单独配置的服务行，控制台也不再出现 500 红字。前端保留对 404 的兜底，以兼容旧版本后端。
+
+#### 测试与代码卫生（TA1 / TA5）
+
+- 新增试脱敏语料回归集（20 条语料，覆盖命中、漏检、误伤与原样透传四类）与响应脱敏覆盖面测试。
+- 10 个没有调用方的后端类标注 `@Deprecated(forRemoval = true)` 并注明替代实现；删除两个从未生效的 Logback 转换器注册（`conversionRule` 指向的类包名不存在，且日志 pattern 从未使用 `%traceId`）。
+
+#### 升级提示
+
+- **有一处数据库结构变更**：Flyway `V4__sanitization_config.sql`（H2 与 PostgreSQL 各一份，只新增 `sanitization_config` 表，不改既有表）。按既有迁移流程启动即可，无需手工操作。
+- **有一处授权语义变更**：写码不再隐含读权限的替代路径 —— 读接口改由 `:read` 码把关；升级时 `RolePermissionSeeder` 会为持有写码的内置角色补上对应读码，自定义角色若只配了写码且需要看列表，请在角色管理里补只读码。
+- 无破坏性接口变更；旧 URL 全部有效，菜单结构变化不影响深链。
+- 若有自动化脚本依赖菜单结构，请改为按 URL 或权限判断：菜单已由 9 组 40 项变为 7 组 28 项。
+
+### [3.3.6] - 2026-10-19 - 补丁发布（库结构迁移 + 两处授权收紧 + 页内写门控与契约瘦身）
+
+> ⚠️ **需要留意的行为变化**（逐条，客户端与运维请核对）：
+>
+> | # | 变化 | 谁受影响 |
+> |---|---|---|
+> | 1 | **Flyway V3** 把黑名单「原因」的 7 个历史中文预设值改写为稳定码（`MALICIOUS_LOGIN` 等），展示时按语言翻译 | 已有数据的部署；接口里该字段的取值形态变了（自由文本不受影响） |
+> | 2 | **权限码 54 → 55**：新增 `monitoring:metrics:write`、`monitoring:slowquery:write` | 自定义角色需显式授予；内置 `OPERATOR` 按「所有 `:read`+`:write`」模板自动获得 |
+> | 3 | `callhistory:view` **不再**放行 `POST /api/call-history/record` 与 `DELETE /api/call-history/cleanup` | 只持有 `callhistory:view` 的非 ADMIN 角色：这两个操作由「能」变 403 |
+> | 4 | `POST /api/state-persistence/test/save-circuit-breaker/{id}` 在 `prod` 下**不注册** | 生产环境依赖该测试端点者（本不应存在） |
+> | 5 | 恒空字段删除：`PerformanceIssue` / `activeIssues`、`ModelCallStats` 的 `p95ResponseTime` / `p99ResponseTime` / `peakQps` | 读这些字段的客户端与脚本 |
+> | 6 | Prometheus 少 10 条序列（`sanitization.rule.matches` + `SanitizationMetrics` 的 9 条） | 按这些序列建的看板 —— 它们此前恒为 0 |
+
+#### 数据：黑名单原因改稳定码 + Flyway V3（#455）
+
+- 根因：`security_blacklist.reason` 是自由文本列，前端下拉把**中文文案本身**当 value 提交 ⇒ 切到英文界面后历史原因仍是中文。
+- 修法：7 个预设值改为与语言无关的稳定码，渲染时按语言翻译；**存量数据**由 `V3__blacklist_reason_codes.sql` 幂等改写
+  （H2 与 PostgreSQL 各一份；`WHERE` 匹配旧中文文本，重跑不二次命中；用户自填文本不动）。
+- 回滚语句在 PR `#533` 描述里。
+
+#### 授权：两处收紧（#514 / #483 / #487）
+
+- `callhistory:view` 原来是 `any(...)` 规则（空方法集 = 不限制方法）⇒ **查看权限同时放行了写入与删除**。现在只给
+  `GET` 一条规则；写/删不匹配任何规则，落 `RbacUnmatchedPolicy` 的 `DENY_ALL`（仅 ADMIN）。
+- 状态持久化的**测试写端点**从管理控制器抽成独立类并标 `@Profile("!prod")`，生产 profile 下该端点不存在。
+- 配额清理调度器原先读 `app.quota.cleanup.enabled`（本仓孤例、且没有任何 yml 设置它）⇒ 运维改 `jairouter.*` 关不掉。
+  现在读 `jairouter.security.quota.cleanup.enabled`，并在 `security-base.yml` 补上该键（默认 `true`，与现状一致）。
+
+#### 权限与门控（#454 / #468）
+
+- `monitoring:metrics:write`：`/api/monitoring/metrics/**` 的 10 个写端点此前**没有任何规则**、只靠默认拒绝兜住；
+  现在是一条可授的权限。
+- `monitoring:slowquery:write`：`DELETE /api/monitoring/slow-queries/stats`（慢查询「重置统计」）同理。
+- 控制台新增 `v-permission` 指令，9 个页面的 33 处写控件（含 `RuleManagement` 的拖拽排序）按写权限显隐；
+  只读角色不再看到「点了必 403」的按钮。**前端只做显隐，后端裁决不变**（低权限调用仍 403，已由 E2E 断言）。
+
+#### 契约瘦身：删掉「恒空」字段（#501）
+
+- `PerformanceIssue` / `activeIssues`：`activeIssues` 从未被填充（全仓 `activeIssues.add` 命中 0）⇒ 恒 `[]`，删除。
+- `ModelCallStats` 的 `p95ResponseTime` / `p99ResponseTime` / `peakQps`：百分位无法从聚合量反推、`currentQps` 从未被计算 ⇒ 删除。
+- 黑名单统计的 5 个恒空字段改为**后端真算**；异常事件的 `lineNumber` 改为从堆栈取应用帧行号。
+
+#### 可观测性（#456 / #495）
+
+- 10 个安全指标接到真实入口：认证 4（attempts / successes / failures / duration）、JWT 4（validations / refreshes /
+  expired / validation duration）、脱敏 2（operations / duration）。
+- 删掉从不递增的 `jairouter.security.sanitization.rule.matches` 与零调用方的 `SanitizationMetrics` 类
+  （另 9 条恒 0 序列）；新增登记面守卫测试，防止「注册了但没人写」的指标再加回来。
+
+#### 文档与门闩（#457 / #547）
+
+- `/v3/api-docs` 曾是**空文档**（springdoc 扫描的包不存在）⇒ 修正扫描范围并补守卫。
+- 18 篇过期文档逐篇评审：修掉「版本号停在 v3.1.2」「`docker pull` 示例停在 v3.1.1」与一处 `v3.1.1x+` 笔误，
+  其余按 ReviewedAt 记评审。
+- 贡献指南补齐「发布节奏」与「合并前把 CI 门闩读对」两节。
+
+### [3.3.5] - 2026-10-16 - 补丁发布（存储契约与健康判定修复 + 错误体形状口径更正）
+
+> ⚠️ **一处对外可观察变更**（客户端请核对）：**`/api/**` 面上的错误体形状取决于「谁写的」**——
+> 认证过滤器自己写出的响应（401 `AUTH_MISSING`、429 `RATE_LIMITED_API_KEY`）是协议形状
+> `{"error":{"message":…,"type":…,"code":…}}`，授权层拦下的 403 是 `text/plain` 的 `Access Denied`，
+> 只有 controller 抛出的错误才是 `RouterResponse`。**客户端判据 = 顶层有没有 `error` 字段**。
+> 本版**不改变任何运行时行为与状态码**，这一条是把既有实现按实测写进文档（#448）。
+>
+> **已作为 GitHub Release `v3.3.5` 发布（2026-10-17）**，并触发多架构镜像（`v3.3.5` / `3.3.5` / `latest`）；本 Release 同时交付 `v3.3.2`–`v3.3.4` 的内容。
+> 本条目覆盖 `v3.3.4` 之后合入的全部改动。
+
+#### 存储契约：删除最后一个条目不再静默失败（#446）
+
+- **现象**：对只剩一个条目的集合执行删除，接口返回 `200 {"success":true}`，但条目并未删除。资源池侧**立即复活**
+  （控制器删完会 `reloadActivePools()` 从持久层重读），可配置 adapter 侧**当时看着删掉了、进程重启后复活**。
+- **根因**：`JpaStoreManager.saveConfig` 对空表早退（`config.isEmpty()` → `return`），而 `PoolPersistenceService` /
+  `AdapterDefinitionPersistenceService` / `RuleDefinitionPersistenceService` 都是「`loadAll()` → `removeIf()` → `saveAll()`」，
+  删掉最后一个条目时正好传空表 ⇒ 落库被跳过，而旧值仍在库里。
+- **这不是约定而是单方面偏离**：`BaseStoreManager` / `MemoryStoreManager` / `FileStoreManager.doSaveConfig`
+  都按原样落库（含空表），只有 `JpaStoreManager` 早退。
+- **修法**：去掉早退（只保留 `null` 保护并打 warn），并把「空表是合法输入」写进 `StoreManager.saveConfig` 的契约
+  （表达「清除该键」请用 `deleteConfig`）。
+- **测试守护**：新增 `JpaStoreManagerTest` 直接驱动真实实现（只把 JPA 仓库换成有状态替身），断言「库里最后留下了什么」；
+  三个 `*PersistenceServiceTest` 的删除断言补上载荷检查，并各补一例真实 `MemoryStoreManager` 的「删到空 → 读回空」往返。
+  原测试漏掉该缺陷的机制是：它们 **mock 了 `StoreManager`**，mock 上没有那段早退，「`saveConfig` 被调用过」恒真。
+- 该缺陷自 `c86fe199`（2026-04-28，v2.7.6）起存在，**不是 v3.3.1 之后的回归**。
+
+#### 健康判定：span 丢弃率不再让 `/actuator/health` 变成 503（#447）
+
+- **现象**：**生命周期累计**的 span 丢弃率一旦超过 10%，聚合端点 `/actuator/health` 就返回 `503`，且越阈值后
+  只能靠重启归零。三份 `docker-compose*.yml` 的容器健康检查用的正是该端点 ⇒ 容器被持续判 unhealthy，
+  而重启并不解决丢 span。实测现场：`tracing=DOWN`（`issue=数据丢弃率过高: 50.44%`），其余组件全 `UP`。
+- **修法**：丢弃率超阈值改记 `WARNING`（HTTP 仍 200，数值仍完整留在 details 供告警规则使用），
+  只有「异步处理器未运行」「内存压力 CRITICAL」「性能监控自身 DOWN」才判 `DOWN`。
+  顺带修掉同段「`healthBuilder = Health.down()...` 逐条覆盖」导致的问题项丢失（后者会连前者的状态与 details 一起丢掉），
+  改为分别收集 `downIssues` / `warnings` 后统一定状态。
+- **测试守护**：新增 `TracingHealthIndicatorTest`（该类此前**零覆盖**）共 8 例，含「丢弃率超阈值不得 DOWN」
+  与「多条 DOWN 级问题不得互相覆盖」。
+- K8s 探针面不受影响（`liveness` 只含 `livenessState,ping`，`readiness` 只含 `readinessState`）。
+  该判定自 `deffede2`（2026-04-28，v2.7.5）起存在，非 v3.3.1 之后的回归。
+
+#### 文档：`/api/**` 错误体形状按实测更正（#448）
+
+- 认证过滤器是认证链状态的**唯一渲染点**（`SpringSecurityAuthenticationFilter:287-319`、`:339-383`），
+  非 `/v1` 路径走硬编码形状分支 ⇒ `/api/**` 的 401 / 429 是协议形状；授权层 403 由 Spring Security 默认
+  处理器写成 `text/plain`。而 controller 抛出的 403（如 `BUILTIN_READONLY`）确实是 `RouterResponse`。
+- 更正位置：`api-reference/{error-codes,universal-api,index}.md` 与 `getting-started/claude-code.md`（中英对称）；
+  后者原有「网关自身错误在 `/v1` 与 `/api` 两面上都是 `RouterResponse`」的说法，对 `/v1` 也是错的。
+
+#### 其它
+
+- **客户端可见状态修复（#432）**：请求体缺失不再变成 `500 + INTERNAL_ERROR`，三个 `@RequestBody` 端点改为前置校验返回 **400**。
+  约束：校验必须放在方法自己的 `try` **之外**，否则会被兜底 `catch (Exception)` 吞掉再包成 500。
+- **文档↔代码契约（#436）**：英文侧 TTS/STT 端点前缀纠正为 `/api/v1/audio/*`（`/v1/audio/*` 全无映射，错的是英文侧）。
+- **门闩**：`快闸` 补 `src/main/resources/config/**` 与 `.github/workflows/**` 触发路径；工作流语法校验器修好后接入快闸（含反证自测）。
+- **工程与工具**：分支清理脚本入库（squash 合并下改用内容判据，含合成仓库自检）。
+
+#### 本轮发布前验证（本地）
+
+冷启动全新 H2 库 → 前端构建 → 打包 → 起 8080：**前端全量 E2E 414/414 通过**（14 个 spec；修复前 404/407）；
+**接口冒烟 51/51 通过**（覆盖 v3.3.1 以来全部对外语义变更：#404 / #405 / #432 / `/v1` 双协议错误体 / #340）。
+
+### [3.3.4] - 2026-10-16 - 补丁发布（错误码语义裁决落地、收口与文档归置）
+
+> ⚠️ **两处对外可观察变更**（客户端请核对）：
+> ① **`PUT`/`DELETE /api/config/adapter/{name}` 命中内置 adapter 时由 `400` 改为 `403`**（`errorCode` 仍为 `BUILTIN_READONLY`）—— 授权语义应报 403（#405）；
+> ② **API Key 每分钟限流由 `401` 改为 `429`**，并**新增错误码 `RATE_LIMITED_API_KEY`**（`/v1/**` 协议体的 `type` 随之由 `authentication_error` 变为 `rate_limit_error`）—— 客户端不再需要把 401 当限流处理（#404）。
+> 除上述两处外，本版**不改变任何其它对外状态码**：注册表 62 → 63（新增 1 个），两张错误码表由门闩**双向对账**。
+>
+> **已打 tag `v3.3.4`**；其内容随 `v3.3.5` 的 GitHub Release 一并交付（2026-10-17）。
+> 本条目覆盖 `v3.3.3` 之后合入的全部改动。
+
+#### 错误码面：裁决落地与收口
+
+- **限流拆码（#404）**：按「429 + 拆新码」把两条真实路径拆开 —— 管理面限流器保留 `RATE_LIMIT_EXCEEDED`（429 扁平体），
+  API Key 校验链改用新增的 `RATE_LIMITED_API_KEY`（登记为 429）；认证过滤器不再硬编码 401，改为**透出异常携带的状态**，
+  三处 error `type` 一律按状态经 `V1ErrorBodyMapper.errorTypeOf` 推导（与映射表同源）。`RATE_LIMIT_EXCEEDED` 的渲染路径
+  相应改为 `ERROR_BODY`（此后只由管理面直写扁平体发出）。**401 形状逐字节不变**（三条老路径有字节级断言，并用改动前的实现做过对照）。
+- **状态对齐（#405）**：`BUILTIN_READONLY` 两端均为 403（端点原为 400）、`RESTART_REQUIRED` 两端均为 400（规则链原推导 403）；
+  两处 `@ApiResponse` 注解同步（改前与实现相反）。
+- **死码删除与文档口径更正（#406 / #412 / #414）**：删除 7 个「只有常量与从未被调用的工厂、全仓无发出点」的码；
+  文档把 `RESOURCE_FORBIDDEN` → `FORBIDDEN_RESOURCE` 的**内部常量改名**与对外契约变更分开写；
+  `management-api` 两张表里 4 个从不发出的码换成注册表真名。
+
+#### 仓库与文档卫生
+
+- **内部文档归置（#418）**：会话记忆（`mimo-memory/` 393 文件、`session-digests/`）与两篇内部流程 SOP
+  （`development/{doc-maintenance,knowledge-base-governance}.md`，中英各一对）移出公开文档站到 `innerdoc/`；
+  随之修掉本地文档扫描的 10 处误报，并移除 `mkdocs` 导航里两个孤儿项。
+- **版本与台账（#417）**：版本号 3.3.3 → 3.3.4；README / roadmap 的「未发布」台账同步。
+
+#### 已知未闭环（台账）
+
+- #413（30 处失败响应不带 `errorCode`，单参 `RouterResponse.error`）· #419（错误码文档门闩只覆盖两张主表）·
+  #420（认证链两处按旧语义硬编码：entryPoint 401 与「限流打成认证失败」的日志口径）。
+
+### [3.3.3] - 2026-10-15 - 补丁发布（错误码注册表贯通代码与文档、前端生成物卫生；`v3.3.2` 的内容一并发布）
+
+> ⚠️ **对外契约变更（#403）**：`TOKEN_USAGE_FORBIDDEN` → **`FORBIDDEN_TOKEN_USAGE`** —— 该码写进令牌用量响应体，客户端可见；
+> 类别一律写在**前缀位**（全表唯一历史后缀例外是 `*_NOT_FOUND`），客户端如硬编码了旧码请同步。
+> 另有 `RESOURCE_FORBIDDEN` → **`FORBIDDEN_RESOURCE`**，那只是 `AuthorizationException` 的**内部常量改名**：该码全仓没有发出点
+> （工厂方法只被单元测试调用），客户端不可能收到 ⇒ **不属于对外契约变更**（登记见 #406）。
+> 除 `FORBIDDEN_TOKEN_USAGE` 这一处码名外，本版**不改变任何对外状态码与错误码集合**：阶段 3 的迁移经复核「发出点解出的码 = 注册表 62 个，逐个一致」。
+>
+> **已打 tag `v3.3.3`**；其内容随 `v3.3.5` 的 GitHub Release 一并交付（2026-10-17）。
+> 本条目覆盖 `v3.3.1` 之后合入的全部改动 —— `v3.3.2` 曾打 tag 但**未单独发布**，已由本版取代（其内容见下一节）。
+
+#### 错误码治理：注册表成为单一事实来源（#370 方案 A）
+
+- **阶段 1（#402）**：新增 `common/constants/ErrorCode` 注册表，`ApiException.resolveStatus` 改为注册表优先、
+  原规则链原样抽为 `legacyResolveStatus` 作兜底（**零行为变化**，由不变量测试钉住）。
+- **阶段 2（#407）**：注册表补全到 **62 个「会真正发出的码」**，每项登记「码 + 客户端可见状态 + **渲染路径** + 说明」；
+  `resolveStatus` **只对规则链路径（`API_EXCEPTION`）查表**（认证/脱敏/响应体直写/错误体直写四条路径的状态不由规则链决定，保持零行为变化）；
+  中英错误码表按注册表重写（双向 0 差异：补 33 个漏列码、删 7 个「只有常量与未接线工厂」的历史码、
+  登记 `DOWNSTREAM_SERVICE_ERROR`）；`scripts/docs/check-error-codes.py` 的权威来源由「源码字面量」换成注册表并**双向判红**
+  （文档漏列 / 文档列了发不出的码 都失败），自测 11 项含 3 条反证。
+- **阶段 3（#410）**：`src/main/java` 里**不再有裸码字面量** —— 约 175 处发出点统一写 `ErrorCode.X.code()`
+  （含异常类常量改由注册表派生、`SecurityExceptionHandler` 的重复常量删除、限流 JSON 直写体、认证过滤器里变量中转的码）；
+  新增 `ErrorCodeLiteralGuardTest`：注册表里的码**不得以裸字面量出现**（例外清单「恰好相等」，含理由），防复发。
+- 由注册表**当场暴露**、并各立台账的三处既有语义问题（本版只登记、**不改行为**）：
+  `RATE_LIMIT_EXCEEDED` 在管理面限流器（429）与 API Key 校验链（401）上是两个状态（#404）；
+  `BUILTIN_READONLY` / `RESTART_REQUIRED` 端点实返 400 而命名规则推导 403（#405）；
+  7 个码只有常量与未接线工厂、全仓无发出点（#406）。
+- 顺带修掉错误码文档里 zh 侧被引用块**截断的表格**，并用真实的 `DOWNSTREAM_SERVICE_ERROR` 取代「`5xx`/`502`/`503`/`504` 模式」那组假码。
+
+#### 仓库卫生
+
+- **前端生成物不再改脏工作树（#408 / #409）**：提交 npm 11.2.0 归一化后的 `frontend/package-lock.json`，
+  并给 `auto-imports.d.ts` / `components.d.ts` 加 `.gitattributes -text`（关掉行尾转换）⇒
+  跑一次不跳前端的构建（`npm install` + `vue-tsc && vite build`）之后 `git status` 仍为空。
+
+#### 一并发布：`v3.3.2` 的内容（曾打 tag、未单独发布）
+
+> 见下一节 —— `/v1` 流式空体修复、告警与审计收口、配置诚实性第三批、死代码与形状收口、CI 与文档门闩、
+> 依赖安全（Vue 3.5.21 → 3.5.44）等 40 项。
+
+### [3.3.2] - 2026-10-14 - 补丁发布（`/v1` 流式空体修复、告警/审计收口、配置诚实性第三批、文档与门闩）
+
+> 本条目覆盖 `v3.3.1`（10-10 ~ 10-11 切片）之后合入的 **40 项**改动（2026-10-12 → 2026-10-14）。
+> **已打 tag `v3.3.2` 但未单独发布**；其内容随 `v3.3.3` 并入 `v3.3.5` 的 GitHub Release（2026-10-17）。
+
+#### `/v1` 流式空体修复（本次最重要的可用性修复）
+
+- **修复：`/v1` 面正常流返回 `200` + `text/event-stream` 但响应体 0 字节**（#356）：`/v1` 分支用
+  `exchangeToMono` 把 `clientResponse.bodyToFlux(...)` 交回 exchange 作用域之外，`Mono.just(ResponseEntity)`
+  立即终止 ⇒ WebClient 释放并排空响应体 ⇒ 框架订阅时拿不到任何 chunk。现改为 `retrieve()` + 状态保真的
+  `onStatus`（正常流走与 legacy 面相同的 `bodyToFlux` 路径）
+- **协议 error 帧改为「仅首块之后」补发**：首块之前失败时状态码尚未提交 ⇒ 异常原样上抛，
+  按下游真实状态结束（429 仍是 429）；首块之后失败仍先补 error 帧再终止（不补 `[DONE]`）
+- **回归钉**：`StreamingErrorPathRuntimeTest` 现在**同时驱动两个面**（legacy 与 `/v1`，含 Anthropic 面）——
+  它此前把客户端路径硬编码成 `/gateway/stream`，因此**从未覆盖 `/v1` 分支**，这正是本缺陷逃过测试的原因
+- 连带：`/v1/messages`（Anthropic 面）走同一分支，此前同样返回空体
+
+#### 流式与协议基线
+
+- 流式失败的客户端可见性基线固化为探针类，作为 #257 的实施依据与回归钉（#298）
+- `/v1` 面流中失败补协议形状 error 帧后仍以异常终止，**不补 `[DONE]`**（#299）
+- `/v1` 面在提交响应前按下游状态保真结束，legacy 面语义不变（#305）
+
+#### 告警与审计口径
+
+- 安全告警冷却改为**跨副本排他**，消除多副本重复触发与计数虚高（#306）
+- 审计事件类型一律走**枚举名**，`parseEventType` 不再静默回退成 `SYSTEM_MAINTENANCE`（枚举 17 → 26；
+  ⚠️ 修复前落库的 `SYSTEM_MAINTENANCE` 行混杂多个来源、**无法回溯拆分**）（#309）
+- 删除无人消费的告警阈值与出口开关配置面（#313）
+
+#### 配置诚实性（第三批，与前两批同一口径：能接线就接线、不能接线就删）
+
+- 删除 `jairouter.security.audit` 树下 7 个无绑定子块与 2 个无人读的键（#319）
+- 删除无绑定类的整棵 `jairouter.security.performance` 子树（#322）
+- 删除 `audit.extended` 下 14 个无消费方键（`extended.enabled` 是活的，保留）（#323）
+- 响应脱敏失败改为**只终止、不写体**，并把「错误体归中央处理器」钉进测试（#329）
+- 启动校验的告警不再谎称「首次启动会生成随机密码」，改为描述真实回落与后果（#331）
+
+#### 死代码与形状收口
+
+- 删除无实现方与调用方的 `SecurityAuditApi`（#328）
+- 删除**整层** `common/api` 模块边界层（16 个文件，全仓无实现方与调用方）（#332）
+- 删除无生产方的 `SecurityStatisticsResponse` DTO（#311）
+- 控制台 `DashboardOverview` 类型改为接口真实载荷，删掉只写不读的死 store 与变量（#333）
+- 让响应脱敏测试真正驱动响应写入路径（修复前 `setUp()` 未 stub `isEnabled()` ⇒ 整个测试类空转）（#316）
+
+#### 文档口径与治理
+
+- README 重写为「事实优先」结构，补齐生产启动密钥要求（#315）；台账改为「链接 + 分类散文」（#330）
+- 两棵已删配置树的文档口径收口（16 个文件里的失效示例）（#325）
+- 贡献文档补「合并前：把 CI 门闩读对」小节（#326）；后补「发布节奏」判据与可执行的发布检查清单（#362）
+- 错误码表按代码重写：en 侧对齐 zh、两侧速查表逐条回代码核对（#348）
+- `dynamic-config` 的实例管理段与「配置文件管理 API」按真实接口重写，9 个不存在的端点已删（#349 / #351 / #353）
+- quick-start 的实例管理示例改为真实可用（纠正路径 + 补认证），并逐条实测（#341）
+- 撤掉写进文档的 `"status": "HEALTHY"` 示例（该取值会让实例不可路由）（#355）
+- 文档复审批次：3 篇修正 + 1 篇缺陷另立 + 2 篇记录 `ReviewedAt`（#343 / #346）
+- 修复 6 个文件 / 10 处 markdown 围栏错字，并新增可复用的围栏配平检查器（#337）
+
+#### 工程与门闩
+
+- 落地「CI 配额不可用时的本地替代门闩」（脚本 + 协议 + 依赖与忽略项修复）（#336）
+- 镜像冷启动冒烟改用轮询容器健康状态，消除「应用已就绪但容器还没 healthy」的竞态（#338）
+- 流式错误路径的端到端夹具落地：让**生产处理器**进链路（#347；它当天就抓出了 #354 与 #356）
+- 版本管理脚本的输出文案改为单一事实来源、自测不再抄措辞；该 workflow 的路径过滤补上 `scripts/docs/**`
+  （此前改脚本根本不会触发它，属 #352 能在 PR 阶段全身而过的第二个成因）（#359）
+- 补上「重复写 `--mark-reviewed` 不得静默丢参」的回归钉（#360）
+- 把 `v3.3.1` 的回切条目补进 master 的中英 changelog/roadmap（#364）
+
+> **破坏性变更**：无公开 API / 路由的破坏性变更。**行为变化**提示：
+> ① `/v1` 面首块前失败改为按下游真实状态结束（此前为空体/统一 500）；
+> ② 审计事件类型未知名字不再静默回退；③ 脱敏失败时客户端拿到的是异常（错误体由中央处理器渲染）。
+
+### [3.3.1] - 2026-10-14 - 补丁发布（审计整改：事件循环阻塞、SSRF 建连绑定、用量属主、告警接线）
+
+> **本版本为回切发版**，内容取自 `v3.3.0` 之后的 **2026-10-10 ~ 10-11 批次**（切片点 `ea2b7bc2`），
+> 共 **24 项实质改动**（4 项前端依赖更新 + 1 项文档注释修正 + 19 项审计整改）。
+> 该批次之后的改动（`/v1` 流式错误语义保真、配置诚实性收口、文档与工程工具批次）将在 **`v3.3.2`** 交付。
+> ⇒ 本版本不代表 master 在发布时刻的状态。
+
+#### 事件循环与阻塞（可用性）
+
+- API Key 用量统计写库不再阻塞事件循环（#267）
+- 错误上报落库不再阻塞事件循环（#268），故障期不再放大延迟
+- JWT 黑名单本地缓存同步改为**锁外批量核对**，不再逐条阻塞查询 Redis（#273）
+- tracing 的 `TRACING_APPENDER` 改为经 `AsyncAppender` 挂载（#279）
+
+#### 安全
+
+- 出站校验把**解析结果与建连绑定**，堵住 DNS 重绑定绕过面（#282）
+- 两处服务自建的 `WebClient` 收归 `WebClientPool`，使出站解析守卫覆盖到它们（#284）
+- `/api/token-usage/record` 写入按主体**收敛属主**，拒绝跨主体上报（#280）
+- 把 `SecurityAlertService` 接到认证失败路径上 —— 修复前它**零调用方**，四类安全告警实际不会触发（#277）
+
+#### 安全告警与审计口径
+
+- 告警判据对齐审计事件类型，计数下沉到存储侧（#286）
+- 告警出口收敛为**指标 + 结构化日志**，窗口聚合改由定时排他驱动（#293）
+- 安全告警配置面统一，删掉重复实现与「配了没人读」的通知配置（#294）
+- 概览页接出**真实的近 24 小时安全告警数**（#296）
+
+#### 控制台与追踪
+
+- tracing 仪表盘趋势图改接真实统计，移除随机占位数据（#269）
+- playground 流式解析补齐**跨 chunk 残行**缓冲，长回答不再缺字（#270）
+- tracing 搜索页查询失败时改为空态，移除占位追踪数据（#271）
+- 流式路径不再把响应内容写入控制台，并补上可取消能力（#274）
+
+#### 清理与修正
+
+- 删除不可达的 `ApiKeyAuthenticationProvider` 与 `AuthenticationEventListener`（#275）
+- 删除无引用的 `useChatRequest`（#278）
+- 修正 `StatePersistenceManagement` 中与实现不符的注释（#272）
+- 修正熔断器实例标识符注释与代码逻辑相反的问题（#251）
+- 前端依赖更新：axios 1.18.0 → 1.20.0（#173）、postcss-selector-parser 7.1.4 → 7.1.6（#225）、
+  source-map-js 1.2.1 → 1.2.2（#226）、brace-expansion 5.0.9 → 5.0.12（#252）
+
+> **破坏性变更**：无公开 API / 路由的破坏性变更。**有意的行为变化**四处：
+> ① **安全告警会真的开始触发** —— 修复前 `SecurityAlertService` 零调用方，四类告警一条都不会响，
+> 升级后运维会新看到告警指标（`jairouter.security.violations`）与 WARN 日志；
+> ② `/api/token-usage/record` 的**跨主体上报会被拒绝**；
+> ③ 上述写库路径的**延迟特征变化**（由事件循环内同步执行改为异步/批量）；
+> ④ 出站 SSRF 校验更严（解析结果与建连绑定）。
+
+### [3.3.0] - 2026-10-07 - 次版本发布（PostgreSQL 与版本化迁移、多副本集群能力、配置诚实性收口）
+
+> 自 v3.2.2（2026-09-22）以来累计合入 **24 项新功能与 29 项修复**，跨度较大，三条主线：
+> ① **持久化** —— 接入 PostgreSQL、引入 Flyway 版本化迁移（PG 切 `ddl-auto: validate`，H2 也接上），
+> 随之删掉两个启动期补丁组件；② **多副本** —— 跨副本实时事件广播与限流计数、共享态启动自检、
+> 定时任务按类处置；③ **配置诚实性** —— tracing 一批「能绑定但零消费方」的配置字段逐个接上消费方或删除。
+>
+> **破坏性变更**：无公开 API / 路由 / 配置键的破坏性变更。**有意的行为变化**有三处：
+> ① 管理面失败响应在 v3.2.2 起已由 HTTP 200 改为 4xx / 5xx；
+> ② RBAC 未命中的写方法与 GET 改为 **fail-closed**（默认 `DENY_ALL`，可回退，见 #128）；
+> ③ tracing 的 `monitoring.health` 阈值改为**去抖动**语义（连续 N 次失败才判不健康）。
+> **配置键**：删除了一批从未生效的键（见「配置诚实性」）——旧部署里配了它们的会静默失效，但它们本来就没有任何作用。
+
+#### 持久化与版本化迁移
+
+- 接入 PostgreSQL，方言 / 数据源 / 索引命名全部外化；修复 PG 下索引重名导致的**静默丢索引**（#160 阶段 A+B）
+- 引入 Flyway 并以当前 schema 为基线，PostgreSQL 路径切 `ddl-auto: validate`（#190、#214）
+- 老库补丁逻辑转为版本化迁移 V2；**H2 也接上版本化迁移**，两个启动期补丁组件随之整体删除（#192）
+- 迁移专用入口（`migrate` profile）：退出码反映成败、非 Web 模式可启动、支持跑完自退（#193、#195）
+- 补丁组件的 `INFORMATION_SCHEMA` 查询限定当前 schema，修掉同库多 schema 时的静默失效（#216）
+
+#### 多副本与集群
+
+- 跨副本**实时事件广播**，修复多副本下监控面板静默漏事件；事件与指标带上来源副本标识（#164、#181）
+- 跨副本**滑动窗口计数**，放行量不再随副本数放大；限流键维度可配置、缺失维度显式可见（#161）
+- 多副本共享态启动自检与缓存跨副本收敛（#162）
+- 定时任务按类处置：外部副作用加跨副本排他锁，写文件的改为按副本命名（#163）
+- 补跨副本事件广播的双实例端到端验证（#181）
+
+#### 安全与鉴权
+
+- RBAC 三阶段收口：端点覆盖自检 → 写方法未命中改 fail-closed（显式豁免清单）→ GET 也未命中改 fail-closed（默认 `DENY_ALL`，可回退）（#128）
+- 客户端 IP 信任策略收敛到单一组件，修复伪造 `X-Forwarded-For` 污染审计与追踪（#151）
+- SSRF 门闩下沉到 `WebClientPool` 出站收敛点（#114）
+- JWT 强制校验 issuer + 黑名单不可用时可选 fail-closed（#117、#118）
+- 取消 JWT 独立 Redis，消除全套多副本开关下的类型歧义与重名注册（#194、#196）
+- 启动期安全检查：跳过开关的变量名收敛为单一来源（#201）；修复随机生成的密码被判弱而拒启动（#171）与随机强密钥被误判 `VERY_WEAK`（#169）
+- 认证 / 授权异常改为回 401 / 403，不再落进 500 兜底（#205）；放行 `/actuator/health/**`，让 K8s 探针不再被鉴权拦住（#203）
+- `RolePermissionSeeder` 改为增量收敛，修复已初始化部署的**静默权限回退**（#144）
+
+#### 限流与配额
+
+- 修复限流器的并发安全、无界增长与 XFF 绕过（#121–#124）
+- 配额预留中段失败回滚；多窗口预留不再部分提交（#119、#120）
+- 结算与用量查询不再在 Reactor 非阻塞线程上同步阻塞 Redis（#105）
+
+#### 流式与前端
+
+- 流式内容累积加上界（含缓存预算）+ 上游空闲看门狗（#126、#127）
+- 流式完成回调的 JPA / 存储写入移出 EventLoop（#115、#125）
+- 前端：流式回答按节流渲染与落盘（#135）；修复组件卸载后的 WS 重连僵尸循环与流未中止（#130–#132）；不再把请求头与令牌打印到控制台（#129）；修复追踪详情 / 检索图表实例未释放导致的 canvas 泄漏（#133、#134）
+
+#### 配置诚实性（tracing）
+
+- tracing 配置字段按「零消费方 / 只被 `/actuator/info` 回显」普查后分四批处理：批 A 删 24 个、批 B1 删 23 个；批 B2 接 3 个（`alerts.thresholds.memory-usage`、`export-latency-p99`、`metrics.traces.histogram-buckets`）并删 10 个；再删 6 个连回显都没有的 `components.*.capture-*`（#224）
+- 采样策略（`ratio` / `rule` / `adaptive`）真正接线并可按 `strategy` 配置（#234）；控制台补上策略选择器，并修掉保存时清空 `sampling.rules` 与 `adaptive.*` 的缺陷（#242）
+- `thread-pool.keep-alive` 接上消费方（#220）；`monitoring.health` 阈值接上并改为去抖动（#224 批 B2）
+- `tracing-base.yml` 的死键逐个接上或删除，并加绑定守护测试（#215）
+- 修复 Redis 滑动窗口门控测试的跨窗口边界假红（#227）；去除 `StatePersistencePerformanceTest` 的墙钟 flaky（#197）
+
+#### 部署与日志
+
+- 容器部署下 stdout 改为一行一条结构化 JSON（`json-logs` profile）（#211）
+- 提供 Kustomize K8s 制品、补探针分组（#165）；修正 prod / dev compose 的端口映射、探活端口与数据卷路径，补优雅停机（#165）
+- 出站 `WebClient` 连接参数与 tracing 监控调度器参数外部化（#182）
+- CI：`java-tests` 增加 PostgreSQL 服务容器并扩展门控测试校验（#174）
+
+#### 文档治理
+
+- 新增 `ReviewedAt` 人工评审机制；过期判定改按文档类型阈值，修正 9 处误报与 10 处漏报（#101）
+- 逐条核对并修正与代码不符的文档事实：tracing 10 篇（50 处键名）、`config-reference`、api-reference 系列与 tracing 入口页 —— 含英文版 `monitoring-api` 的**整段虚构端点**、约 20 个全库不存在的错误码、错误的 Prometheus 指标名（`model_router_*` 实为 `jairouter_*`）与不存在的 `modelRouter` 健康组件（#159、#231、#235）
+
+### [3.2.2] - 2026-09-22 - 补丁发布（用户上报问题修复 + 管理面 HTTP 状态码语义校正）
+
+> 修复用户上报的 API Key 配额回显（#84）与负载均衡监控计数（#83）两个问题，并连带收口配额接口不可用（#92）、管理面业务失败恒返 200（#94）、前端 e2e 断言假通过（#95）、告警阈值口径不一致（#96）、监控接口错误码不统一（#98）等相邻缺陷。纯缺陷修复：无新功能、无公开 API / 路由 / 配置键的破坏性变更；但**管理面失败响应由 HTTP 200 改为 4xx / 5xx**，属有意的行为变化（见下）。
+
+#### API Key 配额
+
+- **修复创建 / 编辑 API Key 时配额字段未完整提交**，导致创建时设置的配额在前端回显异常（#84）
+- **修复配额更新 / 重置接口恒定失败**：两个接口在 Reactor 非阻塞线程上调用 `block()`（WebFlux 禁止），配额抽屉的保存、批量重置与全部重置 100% 失败（#92）
+- **统一告警阈值口径为 `[0.05, 1]` 闭区间**：此前创建对话框为 `[0,1]`、抽屉为 `[0.05,1]`、服务端为 `(0,1)` 开区间；新增 `QuotaLimits` 作为单一事实来源（区间常量 + 校验方法），创建与更新两条写入路径统一调用，创建路径此前完全不校验（#96）
+- 补前端 e2e 回归用例，断言在创建对话框中填写的配额确实落库且可读回
+
+#### 负载均衡与路由监控
+
+- **修复一条请求内实例被重复选择 3 次**：请求主链、`BaseAdapter.processRequest` 与 `BaseAdapter.getWebClient` 内部各选一次，致使「实例分布」的数字一条请求跳变 +3（用户观测 12 → 15）（#83）
+  - 适配器改为复用已选实例构造 `WebClient`，删除内部那次重复选择（#87）
+  - 新增 `SelectedInstanceHolder`（请求级 ThreadLocal），网关与适配器共享同一次实例选择，一条请求恰好选择一次（#88）
+- 连带修复两个更严重的问题：适配器侧选择时未透传请求头，使**基于请求头的规则 / 标签路由在适配器侧不生效**（实际转发实例可能与规则指定不符）；以及负载均衡 `recordCall` 每请求推进 2 次导致轮询与负载均衡状态失真
+- 说明计数口径：该数字统计的是**实例选中次数**而非请求数，故障转移等有效重选会额外计数，属有意保留的行为
+
+#### 管理面 HTTP 状态码语义
+
+- **修复管理面业务失败恒返回 HTTP 200**：控制器普遍自行 `onErrorResume` 把异常吞成成功响应，失败仅体现在响应体的 `success:false`，客户端（脚本 / SDK / e2e）无法用状态码判成败（#94）
+  - 新增 `ApiException`（携带错误码与目标状态码，并以规则表把错误码映射为状态码）与 `ApiExceptions` 工具，全局异常处理器增加对应分支
+  - 生产代码中 138 处「失败伪装为 200」的站点全部迁移；`onErrorResume` 的兜底分支按异常类型细化，不再一律映射为 500
+  - **迁移保持响应体兼容**：失败响应体仍是逐字不变的 `RouterResponse.error(message, errorCode)`，仅 HTTP 状态码变化
+  - 前端响应拦截器同步透出后端错误消息，避免返回 4xx 时只显示 HTTP 客户端库的英文提示
+- 收紧前端 e2e 断言（#95）：5 处检查原本只断言状态码，接口实际失败时用例仍通过；现同时断言状态码与响应体的 `success` 字段
+- 统一 `MonitoringController` 客户端参数校验错误码（#98）：10 处客户端输入校验由 `INTERNAL_ERROR`(500) 改为 `INVALID_REQUEST`(400)（真实服务端失败仍为 500），并补上自动模式接口此前缺失的测试覆盖
+
+#### 行为变化（有意）
+
+- **管理面接口业务失败现在返回 4xx / 5xx**，不再恒为 200。仅依赖「HTTP 200 + 响应体 `success`」判断成败的脚本需改为依据状态码，或同时判断两者
+- 告警阈值不再接受 `0`：创建或更新 API Key 时，阈值越界（小于 `0.05` 或大于 `1`）返回 400
+
+#### 工程与工具
+
+- 新增 OpenAI 兼容的 mock 模型服务，供本地联调与端到端测试使用
+- 忽略本地 `docker-ctx` 目录
+
+### [3.2.1] - 2026-09-21 - 补丁发布（审计整改：并发/流式/配额/鉴权/SSRF/正则安全）
+
+> v3.2.0 发布后合入的审计整改批次（PR #67–#72、#78–#81）。纯缺陷与安全修复：无新功能、无公开 API / 路由 / 配置键破坏性变更。
+
+#### 并发与流式
+
+- 健康 SSE 的 interval 快照移出 EventLoop（`subscribeOn(boundedElastic)`），去掉逐实例 JPA N+1 与 `tryEmitNext().orThrow()`
+- 流式完成回调的 SUMMARY 脱敏不再 `block(5s)`；适配器指标与调用历史路径同样异步化
+- 请求主链同步段移出 EventLoop（`Mono.defer(...).subscribeOn(boundedElastic())`）
+- SSE / WebSocket Sink 加 `onBackpressureBuffer(256, DROP_OLDEST)` 背压上限
+- 冷路径 `block()` 统一超时（`ReactorTimeouts`：普通 5s、启动 30s）
+
+#### 配额与限流
+
+- 修复单机 `evaluate` → `reserve` 的 TOCTOU（按 API Key 串行化「判定 + 预留」）
+- 分布式跨实例竞态改为 Redis 原子 Lua CAS（HINCRBY + 上限检查 + 超限回滚）；429 与 `X-Quota-*` / `Retry-After` 语义不变
+
+#### 认证与授权
+
+- **修复伪 401**：认证过滤器 `switchIfEmpty` 误挂在含 `chain.filter` 的 Mono 上，认证成功也会返回 `AUTH_MISSING`（JWT 登录态下控制台 AI 面与 `/v1/**` 曾不可用）
+- 控制台 JWT 登录态放行 AI 端点；追踪过滤器不再重复执行过滤器链
+- JWT 黑名单存储不可用时降级收敛：首次告警 + 30s 短路窗口 + 启动期存储探测
+- `/ws/**` 与健康 SSE 改为需认证（前端 WebSocket 改带 query token）
+- 补齐 RBAC 缺口；调试端点默认关闭并在启用时脱敏；Swagger / OpenAPI 默认需认证
+- 前端 SSE 重连定时器统一并在卸载时清理
+
+#### 启动与配置
+
+- 拒绝出厂默认 JWT 密钥；生产环境缺密钥或使用默认值启动即失败（`StartupSecurityGate`）
+
+#### SSRF 与正则安全
+
+- 实例 URL 新增 `SsrfGuard`：覆盖实例创建/更新、配置同步、出站 `WebClient`、适配器连通性测试
+- 新增 `SafeRegexValidator`：用户自定义脱敏正则统一走安全闸门（长度上限 512、嵌套量词、被量词包裹的交替分支、反向引用、超大量词）；两个脱敏引擎的三条编译路径与配置面校验全部收口；检测器自身改为 O(n) 字符扫描，不再对用户输入运行正则
+- 顺带修复 `OptimizedSanitizationRuleEngine.compileRules` 在 Reactor `map` 中返回 `null` 触发 NPE 的潜伏缺陷
+
+#### 行为变化（有意）
+
+- 含嵌套量词 / 反向引用 / 超长量词的**用户自定义**正则会：PUT `/api/config/sanitization` 返回 400；配置校验报错；运行时跳过并 WARN。响应脱敏默认关闭，出厂默认模式已回归覆盖
+
+### [3.2.0] - 2026-09-19 - 次版本（PII 治理 + 配额操作 + 控制台 E2E/体验）
+
+> 含 PR #60 的 PII 闭环、API Key 配额便捷操作（抽屉/预设/批量重置）、控制台卡顿修复、管理端 API 限流读写分桶、模块化前端 E2E 套件，以及账户/仪表板可发现性改进。版本号 3.2.0。
+
+#### API Key 配额操作
+
+- `PUT /auth/api-keys/{id}/quota`、批量重置、全量重置；详情返回剩余量
+- 控制台配额抽屉与预设；列表 loading 与配额接口解耦；配额接口短超时
+- 管理面账本读改内存聚合；JWT 黑名单 Redis 300ms fail-fast
+
+#### 管理端体验（3.2.0 收口）
+
+- **`AdminApiRateLimiter` 读写分桶**：GET/HEAD 默认 120/min·2000/h，写操作 30/min·200/h，POST 创建另限 10/h；避免控制台列表刷新打满配额
+- 限额可配置：`jairouter.auth.admin-api-rate-limit.*`
+- 账户管理：编辑/删除图标补充 `title`/`aria-label`；用户名提示「3–50 字符」
+- 仪表板治理跳转文案：查看规则 / 监控限流 / 监控熔断 / 监控负载
+
+#### 质量
+
+- 前端 E2E 模块化套件：`frontend/e2e/`（`npm run test:e2e`）覆盖全路由冒烟、认证守卫、弹窗骨架、核心 CRUD（账户/资源池/API Key/黑名单）、API Key 配额与 PII 深测；兼容命令 `test:e2e:legacy` 保留 `console-v32.mjs`
+- 权限码断言改为绑定 `PermissionCodes.ALL_PERMISSION_CODES.size()`（当前 49，含 `security:sanitization:manage`）
+- vitest 单测/API 测试；配额操作 TDD 服务测试；`AdminApiRateLimiterReadWriteTest`
+
+### [3.1.2] - 2026-09-18 - 补丁发布（Docker 启动与可用性修复）
+
+#### 启动与密钥
+
+- **JWT 密钥环境变量名统一为 `JWT_SECRET`**：`application-{prod,staging,dev}.yml` 改为嵌套占位符 `${JWT_SECRET:${PROD_JWT_SECRET:}}` 等，优先读 `JWT_SECRET`、回退旧变量名；两者皆缺仍解析为空串，**保留 prod「必须显式配置」的 fail-fast 语义**（刻意不内置默认密钥）。此前 prod 读 `PROD_JWT_SECRET`，而三个 compose 文件传的都是 `JWT_SECRET`，导致 `docker compose` 路径必然启动失败
+- **`--generate-key` 修复**：生成逻辑移出 Spring 生命周期（`main()` 在 `SpringApplication.run` 之前拦截参数）。此前挂在 `CommandLineRunner` 上，而 JWT 绑定校验在上下文装配期即中止 → 恰在缺密钥、最需要该工具时它必然跑不起来；同时修复 5 个 Dockerfile 的 `ENTRYPOINT`，使 `docker run <镜像> --generate-key` 的参数能透传到应用层
+- **`secret` 校验报错可自助**：四处报错文案追加环境变量名与生成方式（保留原前缀子串，既有测试无需修改）
+
+#### 镜像与控制台
+
+- **前端打包路径修复**：镜像构建脚本此前传 `-Pfast`（其 `frontend.build.skip=true`），`frontend/dist` 不生成 → `static/admin/` 从不产生 → 控制台 `GET /admin` 返回 500。现为构建脚本追加 `-Dfrontend.build.skip=false`，并在 release workflow 增加「jar 内须含 `BOOT-INF/classes/static/admin/index.html`」的构建期断言
+- 清理仓库中 454 个入库的陈旧前端构建产物（它们会被 Maven 打进 `classes/static/` 根路径，静默顶替真实构建结果）
+
+#### 可观测性
+
+- **健康检查误报修复**：未部署 Redis 时 `/actuator/health` 恒 `DOWN`、容器恒 `unhealthy`。根因是 Spring Boot 自动装配的 Redis 探针（`spring-boot-starter-data-redis-reactive` 虽标 optional 但运行期在 classpath）默认探测 `localhost:6379`；现改为 `management.health.redis.enabled=${REDIS_ENABLED:false}`，并修正 `persistence-base.yml` 中硬编码 `enabled: true` 的覆盖源。使用 Redis 的部署请设置 `REDIS_ENABLED=true`
+
+#### 文档与 CI
+
+- 快速启动/安装指引改为 dev 方式启动（内置开发密钥、零配置）+ 生产环境需提供 `JWT_SECRET`；更正失效的 `--generate-key` 用法；文档落地页的裸 `docker run` 一并修正
+- `README` 生产示例变量名对齐为 `JWT_SECRET`；修正「从源码构建」片段的目录与 jar 名
+- 修正 `docs-version-management.yml` / `docs-content-sync.yml` 的分支过滤（原 `[main, develop]` 导致在 master 上永不触发），并修好两者暴露出的 `steps is not defined` 与 `--output` 参数错配缺陷
+- **新增 `image-smoke-test.yml` 镜像冷启动冒烟测试**：构建含前端的 jar → 断言 `static/admin` 存在 → 构建镜像 → 校验 `--generate-key` 不启动项目即可出密钥、dev 冷启动后 health 为 UP 且 `/admin` 返回 200 且容器 healthy、prod 无密钥时 fail-fast 且报错可自助
+
+#### 关联
+
+主 issue #44 及其子问题 #46 / #47 / #48
+
+### [3.1.1] - 2026-09-15 - 补丁发布（协议正确性 + 网关错误消息可读性 + 控制台 SSE 告警修复 + 文档纠正）
+
+#### 协议正确性
+
+- `/v1/messages` 的**认证失败 401** 改为 Anthropic 协议形状（`{"type":"error","error":{…}}`）；此前无论路径一律输出 OpenAI 形状，Anthropic-only 客户端（如 Claude Code）无法解析认证错误。`/v1/chat/completions` 等其它原生面保持 OpenAI 形状，`/api/**` 响应体逐字节不变
+- `/v1/messages/count_tokens` 现在计入 `tools` 的 schema 文本与 `tool_use` / `tool_result` 块内容；此前均被忽略，导致大幅低估（Claude Code 对话主体为 `tool_result`，影响尤为明显）。`image` 块仍不计
+
+#### 可读性
+
+- `/v1/**` 的网关错误消息不再携带 legacy 中文包装（如 `请求处理失败: 429 TOO_MANY_REQUESTS "…"`）与冗余引号，直接输出可读 reason；`/api/**` 保持既有消息格式不变
+
+#### 控制台
+
+- 修正概览页 SSE 在**路由切换 / 页面刷新**时误报连接错误（新增拆毁标志与 `pagehide` 兜底，真实失败仍会告警并重连）——此前离开概览页时控制台会出现 `SSE连接失败` / `读取SSE流时出错`
+
+#### 文档
+
+- 纠正 `claude-code.md`（zh/en）关于原生面认证的错误声称：`/v1/**` **同时接受** `X-API-Key`（OpenAI 面）/ `x-api-key`（Anthropic 面）与 `Jairouter_Token`（JWT），两者同存时 JWT 优先；此前误称"仅支持 API Key 认证"
+
+---
+
+### [3.1.0] - 2026-09-14 - 功能发布（Token 配额账本 + 多协议入口：多维多窗限流 + Anthropic/工具调用 + 运行时配置与观测）
+
+#### 配额账本（Quota）
+
+- **多维多窗配额账本**：支持 MINUTE / HOUR / DAY / MONTH 四种时间窗口，基于 JPA 持久化存储配额规则与用量记录
+- **主链 `reserve` 前置 + 429 语义**：请求进入主链前执行 `reserve` 预扣，超出配额返回 HTTP 429；流式与非流式路径均执行 `settle` 结算
+- **Redis 分布式计数与断连降级**：`QuotaCounterBackend` 提供 Local（内存）与 Redis 双实现，Redis 不可用时自动降级到本地计数
+- **默认关闭**（`jairouter.quota.enabled=false`），不影响现有部署
+
+#### 控制台与观测
+
+- **配额运行时配置面**（`GET/PUT /api/config/quota`）：可热改字段（`enabled`、`failOpen`、`windows`）；需重启字段（`distributed.*`、`retention`、`flushIntervalSeconds`）传入即拒，返回 400 `RESTART_REQUIRED`
+- **配额观测面**：`GET /api/monitoring/quota/status`（配额状态）与 `GET /api/monitoring/quota/usage`（用量详情）
+- **控制台新增 3 页**：配额运行时配置（`/config/quota`）、配额用量监控（`/monitoring/quota`）、客户端接入指南（`/tools/client-access`）
+- **新增权限码**：`config:quota:read`、`config:quota:write`、`monitoring:quota:read`
+
+#### 多协议入口
+
+- **`GET /v1/models`**：OpenAI 原生模型列表端点
+- **Anthropic `POST /v1/messages`**：支持非流式与流式 SSE 响应，兼容 `count_tokens`，Claude Code 可直连
+- **工具调用**：`tools` / `tool_choice` / `tool_use` / `tool_result` 三套协议翻译，流式 `input_json_delta` 正确拼装
+- **网关错误体协议化**：`/v1/**` 路径错误体按协议形状输出（Anthropic / OpenAI 双形状）；`SecurityExceptionHandler` 一并协议化
+- **错误体字符集修复**：显式 UTF-8 编码，修复非 UTF-8 默认平台下中文乱码
+
+#### 修复
+
+- **流式路径实例级 headers 忽略**：`stream:true` 场景下实例级自定义 headers 未注入导致下游 401，已修复
+- **`RoundRobinLoadBalancerTest` 统计型 flaky 修复**：消除测试中概率性失败
+- **响应缓存 P1 已入库**
+
+#### 升级提示
+
+- 配额功能默认关闭，不影响现有部署；开启方式见 `configuration/quota` 文档
+
+---
+
+### [3.0.3] - 2026-09-13 - 功能发布（Web 完整流程验收与发布：旅程验收 + 素材重拍 + 冷启动深链修复）
+
+#### 端到端旅程验收
+
+- **10 条端到端旅程逐项通过**：接入（Onboarding 四步）→ 5 类 AI 试验场（对话/向量/重排序/语音/图像）→ Dashboard 治理面板 → 配置规则 → 调用历史/追踪回查；0 pageerror、0 个 5xx
+- **权限冒烟**：登录 JWT 含 44 权限码；44 权限码与 47 条 URL 规则 + PermissionClosureTest 保持全绿
+
+#### README 素材重拍
+
+- **截图矩阵替换旧图**：`screenshots/` 由 6 张（2026-09-05）替换为 32 张（8 页 × 中/英 × 亮/暗），新增慢查询分析页与暗色主题展示
+- **README.md / README-ZH.md 引用同步**：英文版引用 `-en-US-*`、中文版引用 `-zh-CN-*`，旧命名图删除
+
+#### 修复
+
+- **冷启动深链修复（重要）**：F5 / 新标签页直达 `/security/*` 与 `/system/*` 时，`userInfo`/`permissions` 未从既有 token 补齐，角色守卫（`meta.roles`）误判为无角色并重定向到仪表盘；改为 store 初始化时从 token 同源解析补齐
+- **i18n 告警清理**：为 12 个父级路由补 `titleKey`（dashboard/config/loadBalancers/circuitBreakers/security/system/tracing/playground/exceptions/rateLimiters/monitoring/callHistory），消除 intlify 回退告警；`adapter.capability`、`adapter.test` 键名与嵌套对象遮蔽修复（改名 `capabilityColumn`、`testAction`）
+- **语言切换器图标修复**：Element Plus 图标集无 `Globe`，原 `<Globe/>` 从未注册（控制台告警且图标不渲染），改用 `Coordinate` 并显式引入所用图标
+
+#### 文档与计划
+
+- roadmap / changelog 中英对称更新；`innerdoc` 开发计划回填 v2.10.x / v3.0.x 迭代与状态
+
+#### 质量
+
+- mvn 全量 **3202 用例全绿**；前端 `vue-tsc` 0 error + `vite build` 通过；markdownlint 0；Playwright 复验：i18n/图标告警 0、深链 6/6 直达
+
+---
+
+### [3.0.2] - 2026-09-07 - 功能发布（API 清理与权限收口：废弃控制器删除 + 权限规则补齐 + 前端死函数清理）
+
+#### 废弃控制器与死方法清理
+
+- **删除 4 个废弃控制器**：ServiceConfigController（旧 `/api/services`）、ServiceInstanceController（旧 `/api/instances`）、InstanceConfigController（旧 `/api/instance-configs`）、SecurityAuditController（旧 `/security/audit`）——v2.10.2 标注 @Deprecated，本版安全移除
+- **TokenUsageController 5 个死方法删除**：去除无调用方的废弃端点及其对应测试
+- **DTO 弃用项清理**：ServiceInstanceDTO.getInstanceId 废弃移除；ApiKey.keyValue 保留并注明契约原因（序列化兼容）
+- **前端死函数清理**：tokenUsage.ts 零引用函数与 debugPlayground.ts 删除
+
+#### 权限 URL 规则渐进补齐
+
+- **PermissionRuleRegistry 清理**：废弃 services/instances/instance-configs 绑定移除，保留 ratelimit/circuitbreaker 子路径
+- **权限 URL 规则登记 15 条**（累计 47 条规则）：为此前未覆盖的管理端点补齐 URL→权限码映射
+- **PermissionClosureTest 35 断言**：新增权限闭包测试，验证全部 47 条 URL 规则的 401/403/200 冒烟
+
+#### 质量
+
+- mvn 全量 **3202 用例全绿**（0 失败/0 错误）；前端 vue-tsc + vite build 通过
+
+---
+
+### [3.0.1] - 2026-09-06 - 功能发布（Web 完整流程系列开篇：流程串联 - Onboarding 闭环 + 治理入口补全 + 统一骨架）
+
+> 版本从 2.x 进入 3.0.x：无 breaking（对外 /api/v1 通用接口保持不变），按「Web 完整流程里程碑」语义升级主版本；本版主题 = Web 流程串联。
+
+#### Onboarding 闭环
+
+- 新增 `useRoutePreselect`（`playgroundTargetRoute` / `useRoutePreselect` / `preselectInstanceName` 三导出契约）；Onboarding 第 4 步依 serviceType 跳到对应容器路由
+- 5 个 playground 容器（chat/embedding/rerank/audio/image）消费 `?serviceType=` 预选健康实例；audio/image 同步激活 tts/stt·imgGen/imgEdit 内部 Tab
+
+#### 治理入口补全（跨页闭环）
+
+- Dashboard 治理区新增 4 入口卡：响应缓存 / 慢查询分析 / Token 统计 / 链路追踪（name 路由直达）
+- CB/LB 监控页补「去配置」反向跳转：全局配置 / 历史记录 / 策略配置
+- 服务页 #actions 新增「版本历史」→ 版本管理页（版本页入站，消除孤岛）
+
+#### 旧路由清理与统一骨架
+
+- tracing/Dashboard 跳转改 name 引用；删除 8 处旧 redirect（/admin/tracing、playground/main、tracing/overview|performance 等），全仓旧路径 0 残留
+- PageSkeleton 统一布局覆盖 18 个路由叶页（callHistory×3、config×2、cb×3、lb×2、rl、tracing×3、security×2、exception×3），新增对应 pageTitle keys（zh/en 成对）
+
+#### 质量
+
+- vue-tsc + vite build 通过；语言包 zh/en 全对等；Playwright 旅程冒烟通过（入口卡/版本历史/CB·LB 反向跳转/playground 预选路由）；后端零改动（3243 基线不变）；内嵌静态刷新并重启验证（36/37 页访问、warm 后无页面错误）
+
+---
+
+### [2.10.4] - 2026-09-06 - 功能发布（Web 体验收尾：服务类型显示名统一 + 图表热切换 + 死代码清理 + 暗色对比门禁 + 后端消息注记 + 代码块双主题高亮）
+
+#### 服务类型显示名统一
+
+- 全站收敛到顶层 `serviceTypes.*`（删除 callHistory / exception / dashboard 语言包内各自维护的嵌套字典，双源归一）
+- ServiceManagement 类型列补中文显示（原渲染原始类型码）、新增服务下拉补 i18n（原渲染 key 字面量）；exception 页残留半英（Chat/TTS 等）修正；词汇统一对照：聊天 → 聊天模型、嵌入 → 嵌入模型、聊天服务 → 聊天模型 等，en 侧同步（去 Service 后缀等）
+
+#### 图表与主题体验
+
+- 新增 `useChartAutoRefresh`（监听语言与亮暗主题，flush post）：Dashboard / callHistory×2 / tracing×3 / 异常统计 / 审计日志共 8 页图表在切语言或切主题后即时重绘（纯前端重绘，不触发网络）
+
+#### 清理与质量
+
+- 死代码清理：删除零引用的 `utils/errorHandler.ts` 与 `utils/validators/{index,rules,useValidation}.ts`
+- 暗色对比审计门禁：新增 `frontend/scripts/contrast-audit.mjs`（真实浏览器登录后对 36 个页面做暗色 DOM 对比度审计，WCAG ≥ 4.5，退出码门禁）；修复暗色违规根因与案例（`index.html` 首帧启动屏全局裸 `h2 #333 / p #666` 样式泄漏到 SPA、tracing/dashboard 标题、state-persistence info 按钮、response-cache alert 文字），暗色全站内容文字违规清零
+- 代码块双主题：MarkdownRenderer / CodeBlock 的 hljs token 色收敛为语义分组 CSS 变量，`html.dark` 采用 GitHub Dark 近似配色，亮暗两态对比度达标（注释 ≥ 3，其余 ≥ 4.5）
+
+#### 文档
+
+- FAQ zh/en 新增 Q12.1：说明管理台已中英双语、后端直返 message 维持原文透传、错误码化后端改造另立项
+
+#### 质量
+
+- 前端 vue-tsc + vite build 通过；图表页切语言/主题浏览器冒烟通过；后端零改动（3243 基线不变）；内嵌静态刷新
+
+---
+
+### [2.10.3] - 2026-09-06 - 功能发布（Web 双语版：全量 zh/en i18n + 语言切换器 + Element Plus locale + 日期/数字本地化）
+
+#### i18n 基建
+
+- **语言包目录化**：`locales/<lang>/*.json` 按顶层命名空间分文件、glob 自动合并（新文件零注册）；zh/en 各 39 文件、2321 leaf keys、key 与 `{占位符}` 全对等、顶层命名空间零冲突；zh 文案逐字保留
+- **语言切换器**：`LanguageSwitcher` 胶囊按钮（圆角/边框/悬停高亮主题令牌 + 箭头旋转）接入 Layout 头部与登录页；选择经 localStorage（`ja-locale`）持久化并同步 `<html lang>`；浏览器语言决定首次默认
+- **Element Plus locale**：`el-config-provider` 联动 EP 组件内置文案（分页/表格/日期等）
+- **标题体系**：menu.ts / 路由 `meta.titleKey` 全量 key 化；afterEach 依据路由标题同步浏览器标签页；登录页校验文案随语言即时更新
+
+#### 全量迁移
+
+- **~40 视图 + 共享组件**：Dashboard、服务/实例/Adapter 组、路由规则组、资源池/版本/状态持久化、响应缓存/慢查询、API Key、JWT×2、黑名单、审计日志、权限管理（含 `permission.ts`）、tracing×4、exception×3、callHistory×4、cb/lb/rl×6、playground（chat/embedding/rerank/audio/image/common×4）、共享弹窗 CircuitBreakerConfig/RateLimitConfig
+- **共享字典**：`serviceTypes` 显示名、playground errors、user store 兜底、playgroundCache、api 层抛错均 i18n 化；死代码（`utils/errorHandler`、`validators/*`）核实无消费后保留
+- **日期/数字本地化**：新增 `utils/format.ts`（locale 感知）；11 个页面关键表格日期/数字列委托接入（zh 输出逐字节保持，en 月份名/千分位）
+
+#### 体验修复
+
+- **暗色对比收口**：callHistory 统计卡硬编码 `#303133/#909399`、JwtAccount 角色描述与 ChatConfigPanel label 等 → 主题令牌；卡片头裸 `h2`（暗色呈 `#333` 不可见）与滑块刻度文字（EP `--el-color-info` 过暗）全局收口；DOM 对比度审计（ratio ≥ 5）覆盖 tracing/management、call-history/token-usage、call-history/slow-calls 等页清零
+
+#### 质量
+
+- 前端 vue-tsc + vite build 通过；后端零改动（3243 基线不变）；登录/暗色/中英切换冒烟通过；内嵌静态刷新并重启生效
+
+---
+
+### [2.10.2] - 2026-09-06 - 功能发布（Dashboard v2 治理指挥台 + 配置接入与能力补页）
+
+> 本次发布合并 v2.10.1（治理指挥台）与 v2.10.2（配置接入与能力补页）两个开发批次。
+
+#### 治理指挥台
+
+- **Dashboard v2**：新增 `api/limitMetrics.ts`（限流/熔断/路由监控状态与指标封装，逐接口降级）；Dashboard 增治理链路面板（规则命中 / 限流 / 熔断 / LB 四维 + 跳转）+ 异常摘要（近 5 条）+ 服务配置表跳转（`serviceType` query）
+- **Cross-link 跨页导航**：服务（类型 → 实例 / 适配器）、实例（读 query 切 Tab + 打开服务配置）、规则（动作目标可点跳转）、资源池（类型 / 成员 → 实例）、调用历史（服务 / 实例列跳转）、异常（大写枚举归一化后跳转）
+- **骨架迁移与令牌化收尾**：AdapterManagement / PoolManagement / CallHistoryList / JwtToken / AuditLog / Blacklist / Permission 7 页接入 PageSkeleton；16 文件 ~102 处 `hex`→token；`tokens.css` 增 `--ja-space-1..8` 间距梯度（4 文件试点）
+
+#### 配置接入与能力补页
+
+- **「响应缓存管理」页** `/config/cache`：状态卡 + 全量 / 按服务 / 按模型定向失效 + 命中 / 未命中 / 命中率 StatCard
+- **响应缓存 B 档（运行时开关 + 命中观测）**：后端累计 hits/misses 计数与 snapshot（`hitRatio` null = 暂无数据）；`PUT /api/config/cache/response/config` 部分更新（enabled / skipStreaming / onlyDeterministic / ttlSeconds，ttl 1~604800，非法返回 400 INVALID_REQUEST）；页面运行时配置面板 diff 仅传变更字段，标注重启还原 yaml；`maxSize` 保持只读（Caffeine 构造期）；缓存页 `hitRatio` 缺失字段判空（undefined → 暂无数据）
+- **「慢查询分析」页** `/monitoring/slow-queries`：stats / hotspots / alerts
+- **接入引导**：`OnboardingSteps.vue` 四步引导条（Adapter → 服务 → 实例 → Playground）接入 3 个配置页
+- **治理增强**：CB 监控「清空 / 按实例重置」按钮（修复 states Map 解析 bug）；API Key 页「配额告警」区块
+- **后端配套**：`ResponseCacheController` 增 GET 状态快照（enabled / ttl / maxSize / size / skipStreaming / onlyDeterministic）+ `ResponseCacheService.size()`；`@Deprecated` 标注 4 个整控制器（旧 `/api/services` `/api/instances` `/api/instance-configs` `/security/audit`）+ `TokenUsageController` 5 个死方法
+- **权限 44→45**：新增第 45 码 `config:cache:read`（URL 规则子路径先于父路径）；前端静态清单 / 权限树 / 角色模板同步（角色计数 45 / 36 / 25 / 24）
+
+#### 质量
+
+- 后端全量 **3243 用例全绿**（自 v2.10.0 新增 18 例）；前端 vue-tsc + vite build 通过；内嵌静态资源刷新至最新构建；菜单子项去独立 icon 与兄弟项对齐
+
+---
+
+### [2.10.0] - 2026-09-05 - 功能发布（Web 前端地基：清理 + 统一组件 + 令牌化 + 暗色修复）
+
+#### 前端地基
+
+- **死代码清理**：删除 13 个零引用 .vue（旧 tracing/playground 群，11,726 行）+ `components/common/` 13 组件 + `tracing.ts` 16 个死导出（合计 -13.5k 行）
+- **统一组件**：新建 `PageSkeleton.vue`（slot 化页面骨架）、`StatCard.vue`（统计卡，tone 令牌化）、`useChartTheme.ts`（亮/暗图表主题）；Dashboard / ServiceManagement / RuleManagement 试点接入
+- **令牌化**：约 20 个页面 ~150 处硬编码 `hex`/`rgba` → `--ja-*` / `--el-*` 语义令牌（统计卡/表格/图表渐变/对话框）；统计卡统一为 StatCard（Dashboard/ApiKey/CallHistory/Exception/限流监控 22 卡）
+- **暗色模式修复**：引入 Element Plus 官方 `theme-chalk/dark/css-vars.css`；暗色下 `--el-color-*-light-N` 与 `--ja-primary-light-N` 不再映射浅色值（改暗调，如 light-9 #18222b）——消除暗色近白块与刺眼高对比
+- **细节**：Layout 微调（移除 logo 呼吸灯/侧边栏 hover 阴影、面包屑直链 `/dashboard/main`）；清除约 50 处 console 调试残留；熔断器监控 CLOSED/OPEN/HALF_OPEN 状态卡暗色适配
+- **内嵌 UI 刷新**：最新前端构建同步至后端静态资源 `src/main/resources/static`
+
+#### 质量
+
+- 后端全量 **3225 用例全绿**（回归）；前端 vue-tsc + vite build 通过；亮/暗页面程序化白面探测通过
+
+---
+
+### [2.9.11] - 2026-09-05 - 功能发布（README 更新 + hallmark 设计审计 + 前端修复）
+
+#### README 与文档
+
+- **README / README-ZH 全面更新**：重拍并替换 7 张界面截图（含暗色主题与调用历史仪表盘，此前为 2026-08-26 旧 UI）；Core Features 补充响应缓存 P1、RBAC 44 权限码、暗色/亮色主题；Roadmap 权限码 43→44；示例认证头统一为 `Jairouter_Token`
+- **rbac-permissions zh/en 同步 44 码**：全量清单新增 `config:cache:write`（config 模块 11 资源 = 21 码）；角色计数 ADMIN 44 / OPERATOR 35；接口与权限树描述同步
+
+#### hallmark 设计审计（本地 innerdoc，v2.10.x 重构输入）
+
+- 产出 `innerdoc/02-架构与设计/web-management-hallmark-audit.md`（474 行）：硬编码颜色 395 处、~5,300 行死代码、Dashboard 治理链路缺失、`components/common` 13 组件零引用、4 套 stat-card 重复等；含 v2.10.0（地基）/ v2.10.1（配置接入）/ v2.10.2（治理安全）落地要点
+
+#### 前端修复
+
+- 权限码静态清单同步 44（`permission.ts` / `menu.ts`，权限树可显示 `config:cache:write`）
+- 登录页 i18n 补齐缺失 key（username/passwordPlaceholder、submitting），修复占位符直接渲染原始 key
+- `stores/user.ts` jwt validate GET→POST（对齐后端契约，修复 405 静默失败）
+- `BlacklistManagement` 移除不存在的 `suspicious-ips` 端点调用与 mock 回退（IP 列表改由活跃令牌提供）
+
+#### 质量
+
+- 后端全量 **3225 用例全绿**；前端 `vue-tsc` + `vite` build 通过
+
+---
+
+### [2.9.10] - 2026-09-05 - 功能发布（路由智能深化-5：响应缓存 P1）
+
+#### 响应缓存（流式 SSE 拼接缓存 + 失效 API + 服务级限流提前短路）
+
+- **流式 SSE 拼接缓存**：非流式之外，流式 chat 响应同样可缓存——transform 后逐块 + usage + finishReason 存入 `CachedStreamingResponse`，流正常结束写缓存；命中按裸 SSE（TEXT_EVENT_STREAM + [DONE]）回放；需显式配置 `jairouter.response-cache.skip-streaming: false` 开启
+- **失效 API**：`CacheStore` 扩展 delete / deleteByPrefix / clear；新增 `DELETE /api/config/cache/response`（支持按 serviceType / model / 全部失效）；缓存键改三段式 `rc:{service}:{model}:{sha256}` 支持按前缀失效
+- **服务级限流提前短路**：`RateLimitManager.tryAcquireService` + `ServiceRateLimitHolder`（ThreadLocal 恰一次防双扣）——缓存命中在实例选择前短路，429 硬边界语义不变
+- **权限扩展**：第 44 码 `config:cache:write`（PermissionCodes + PermissionRuleRegistry URL 规则 + 角色模板同步）
+
+#### 测试
+
+- 新增 49（流式写/读回放/分桶/invalidate/键三段式/限流短路集成）；**全量 3225 用例全绿**
+
+---
+
+### [2.9.9] - 2026-09-03 - 功能发布（路由智能深化-4：响应缓存 P0）
+
+#### 响应缓存（非流式精确匹配）
+
+- **完整响应缓存**：相同请求（同租户 + 同服务/模型 + 规范化同请求体）直接复用缓存响应，**完全跳过下游**——降延迟、降成本；与 v2.9.0 前缀缓存（KV Cache 亲和，仍走下游省 prefill）可叠加
+- **P0 范围**：非流式 chat + embedding + rerank（确定性请求：chat 需 temperature==0/null 且 n==1/null；embedding/rerank 天然确定性）；image/TTS/STT 二进制排除；流式缓存放后续版本
+- **组件**：`ResponseCacheProperties`（`jairouter.response-cache`，默认关 opt-in）/ `CacheStore` 接口 + `CaffeineCacheStore`（±10% TTL 抖动防雪崩）/ `ResponseCacheService` 门面（enabled 短路 + 确定性门控）/ `ResponseCacheKeyBuilder`（chat/embedding/rerank 规范化）
+- **缓存键**：`SHA-256(apiKeyId|user?|serviceType|model|规范化请求体)`——apiKeyId 入键防跨租户泄漏；user 可选入键（空则 apiKey 粒度，零接口破坏）；`cacheSalt` 显式绕过位；键无明文内容
+- **会话语义**：无 sessionId、会话历史全量在 messages——键含完整 messages 天然区分上下文；通用问候单轮高频天然高命中，陈旧由 TTL 控制
+- **挂载**：handler 读（selectInstance 后短路，服务级限流不绕过）；NonStreamingRequestProcessor 写（仅 2xx 确定性响应）
+- **指标**：`jairouter_response_cache_hits_total / misses_total / hit_ratio`（tag service/model）
+- **命中语义**：命中短路在下游执行前（不写调用历史、不耗 token 配额，仅累加命中指标）
+- **配置文档**：新增 `configuration/response-cache.md`（zh/en）
+
+#### 测试
+
+- 新增 45：KeyBuilder 12 / CaffeineCacheStore 6 / ResponseCacheService 8 / processor 写 4 / 指标 3 / handler 集成 13（命中短路/未命中/禁用/流式与 temperature>0 绕过/租户隔离/embedding·rerank/写读闭环）；**全量 3176 用例全绿**；DeepSeek 真实下游端到端冒烟通过（命中/租户隔离/指标）
+
+---
+
+### [2.9.8] - 2026-09-02 - 功能发布（Web 菜单 RBAC 管理 + 用户/权限扩展）
+
+#### 数据驱动权限体系
+
+- **43 权限码**：`module:resource:action` 体系（overview/config×10/lb/cb/rl/callhistory/monitoring×5/tracing×3/security×4/system×2/ai/actuator）；`PermissionCodes` 常量 + 全量清单
+- **4 角色模板**：ADMIN（43 全量）/ OPERATOR（34：read+write 排除 system/security:manage/actuator）/ USER（24：dashboard+config:read+lb/cb/rl+monitoring:read+tracing dashboard/search+playground）/ VIEWER（23：仅 :read）；`RolePermissionSeeder` 启动播种（表空幂等），role_permissions 表存储
+- **JWT permissions claim**：登录 JWT 内嵌权限码（无 ROLE_ 前缀）；角色仍为 roles claim；refresh 自动保留
+
+#### 数据驱动授权
+
+- **PermissionRuleRegistry**（36 条 URL→权限码规则）+ **PermissionAuthorizationManager**（ReactiveAuthorizationManager：命中→查码；ADMIN 直通；无规则回退 authenticated）；SecurityConfiguration `/api/**` 接入
+- 同步返回 controller 权限全走 URL 规则（遵守 RBAC 500 铁律：禁方法级 @PreAuthorize）；ModelCallStats `hasAdminPermission` stub 补 URL 规则
+- **契约修复**：`/api/security/jwt/accounts/**` 映射统一为 `system:accounts:manage`
+
+#### 管理 API 与 UI
+
+- `GET /api/security/permissions`（全量码）/ `GET /api/security/permissions/roles`（角色→码）/ `PUT /api/security/permissions/roles/{roleName}`（改角色权限，invalidateCache）/ `GET /api/auth/permissions`（当前用户码）
+- **权限管理 UI**：系统管理→权限管理（角色下拉 + 43 码权限树 + 保存；提示变更需重新登录）
+- **菜单重分类**：11 组 → 8 组 34 项（概览/模型服务/流量治理/数据记录/链路追踪/安全管理/系统管理/AI 试验场）；menu.ts 数据驱动 + usePermission 过滤 + 路由守卫 meta.permissions
+
+#### 登录链路修复
+
+- **DB 账户 fallback**：`AccountManager` 登录认证支持 Web 账户管理创建的 DB 账户（YAML 静态账户优先，jwt_accounts 表兜底；enabled=null 按启用，与 JwtAccountService 约定一致）
+
+#### 前端修复
+
+- 侧边菜单滚动阶梯感修复（菜单区独立滚动容器 + 固定全高渐变列，滚动背景连续）
+
+#### 测试
+
+- 新增 50+：RolePermissionService/Seeder/PermissionAuthorizationManager（含 URL 规则矩阵）/PermissionManagementController/JWT permissions claim/AccountManager（DB fallback 13 例）等；**全量 3131 用例全绿**；权限冒烟（ADMIN 200 / 无 token 401 / USER/VIEWER 403 矩阵）通过
+
+#### 文档
+
+- 新增 `security/rbac-permissions.md`（zh/en）：权限码/角色模板/工作流/管理 API/权限 UI/菜单路由/升级注意
+
+---
+
+### [2.9.7] - 2026-09-01 - 功能发布（路由智能深化-3：标签路由）
+
+#### 标签路由（tags）
+
+- **实例标签**：`ModelInstance` 新增 `Map<String,String> tags`（如 `gpu_type: a100` / `region: cn-north` / `tier: premium`），YAML/API/持久化全链路支持（ConfigConverterHelper/ModelInstanceConfiguration/ServiceInstanceEntity JSON 列/ServiceInstanceManager）
+- **规则动作 TARGET_TAGS**：路由规则新增「标签路由」动作，命中后按标签圈选实例（AND 语义——实例 tags 必须包含全部键值对才入选）；`RuleDefinition.Action` 新增 `tags` 字段
+- **请求级 header 圈选**：`X-JAiRouter-Tags: key=value,key2=value2`（逗号分隔、容忍空格与空项）直接按标签过滤候选实例；规则 TARGET_TAGS 优先于 header
+- **优先级**：TARGET_INSTANCE 锁定 > TARGET_TAGS > 资源池；标签过滤空候选 404；池路由与 auto-model 天然不受 tags 影响（池成员显式指定）
+- **前端**：实例管理页「标签配置」key-value 编辑区（仿请求头）；规则表单新增 TARGET_TAGS 动作 + 标签编辑区；规则列表动作摘要展示
+
+#### 修复
+
+- **旧库升级兼容**：`CompatibilitySchemaMigrator` 登记 `service_instance.tags` 列（CLOB，方言适配）——修复旧 H2 库缺列导致实例查询 500
+- **限流器实例标识**：`RateLimitManager.generateInstanceKey` 回退 `instanceId → name → baseUrl`，修复实例未配置 instance-id 时监控显示 null；指标解析按首个 `:` 切分兼容含冒号实例名
+- **限流器监控指标**：`RateLimiterTracingWrapper` 补 `getRemainingCapacity()`/`getUsageRatio()` 委托转发——修复监控页使用率恒显示 -100%（此前 tracing 包装层未转发接口默认值 -1）
+- **base 配置**：`model-services-base.yml` 9 个实例补 `instance-id`（消除 null 标识根因）
+- **LB 策略下拉**：StrategyConfig.vue 下拉宽度 + 选项布局修复（延迟感知策略与说明不再贴字）+ fallback 补 latency 策略
+- **规则模板复制**：`RuleTemplateService.copyAction` 补 TARGET_TAGS case（防未来模板复制丢 tags）
+
+#### 测试
+
+- 新增：SelectInstanceOptimizerTest（9 例）、ModelServiceRegistryTagRoutingIntegrationTest（10 例）、ModelInstanceConfigurationTest（6 例）、CompatibilitySchemaMigrator 迁移断言（3 例）、RateLimitManagerInstanceKeyTest（3 例）、RateLimiterTracingWrapperTest（2 例）；**全量 3069 用例全绿**
+
+---
+
+### [2.9.6] - 2026-08-30 - 功能发布（路由智能深化-2：请求级故障转移）
+
+#### 请求级故障转移（failover）
+
+- **换实例重试**：`BaseAdapter.processRequestWithRetry` 改造——可重试错误（连接错误/5xx/超时）时，当前实例加入本次请求失败黑名单（`baseUrl:path` 键），经正常选择链（健康/熔断过滤 + 负载均衡策略）**重新选择未失败实例**重试，替代此前"同一实例反复重试"
+- **黑名单隔离**：请求内已失败实例不会被重复选择（`tryReselectInstance` 循环，上限 `failedKeys.size()+2` 防死循环）
+- **安全回退**：单实例服务 / 全实例失败 / 重选耗尽 → 回退原实例重试（既有行为不变）；4xx 不可重试错误不换实例；重试次数仍由 `RetryPolicy` 控制
+- **默认启用**：无需额外配置（重选用 null clientIp，LB 自动降级非 IP 感知；粘性路由在重选阶段自然旁路）
+- 新 WebClient 按实例 baseUrl 获取（`getWebClientForInstance`），实例切换无需重建连接池语义
+
+#### 测试
+
+- 新增 `BaseAdapterFailoverTest`（5 用例：A 失败→B 成功 / 全失败回退 / 单实例无重选 / 4xx 不重试 / 重选 cap 防循环）；**全量 3034 用例全绿**（+5）
+
+---
+
+### [2.9.5] - 2026-08-30 - 功能发布（文档知识库治理）
+
+#### 知识库治理机制（docs 155 + innerdoc 165）
+
+- **工具集** `scripts/knowledge-governance/`：kg-scanner（清点+SHA-256+一次性分类）/ kg-duplicate-detector（SHA-256 精确 + 文件名近似）/ kg-staleness-detector（索引漂移/状态冲突/版本字面量）/ kg-archive-mover（--plan/--execute 归档，knowledge-base 与 16-版本发布 硬保护）/ kg-version-tracker（innerdoc/docs-versions.json + --regen-index）
+- **治理工作流** `.mimocode/skills/knowledge-governance/SKILL.md`：5 步（扫描→LLM 提案→人工审批→执行→索引更新），每版本发布执行（开发计划版本条目含 checklist）
+- **CI 增强**：`validate-nav-files.py`（mkdocs nav 完整性校验）+ docs-version-management.yml 增强（nav 校验步骤 + issue 附 docs 重复检测）
+- **首次治理执行**：归档 61 文件（H2×23/security×16/开发指南×11/tracing×7 等 → `innerdoc/archive/`）；3 处唯一内容合并入 knowledge-base（JPA 迁移/API-Key 初始化修复/追踪验证清单）；索引三件套重建（README-INNERDOC/INDEX.json/00-索引，105 文件/18 分类）；修复状态冲突 1 处
+- **SOP 文档**：`docs/{zh,en}/development/knowledge-base-governance.md`（10 节）；补齐缺失的 `docs/en/development/doc-maintenance.md`（修复 mkdocs strict 构建风险）
+- **docs 修复**：8 个文档版本头 2.6.11 → 2.9.5；roadmap 当前稳定版 v2.7.11 → v2.9.5
+
+#### 测试
+
+- 治理工具实测通过（165 文件/3 精确重复组/22 近似集群/索引漂移检出）；全量 **3029 用例全绿**（无 Java 代码改动）
+
+---
+
+### [2.9.4] - 2026-08-30 - 功能发布（UI 设计系统重构 + RBAC 修复）
+
+#### UI 设计系统
+
+- **设计 Token**：新增 `src/styles/tokens.css`（40+ 语义化 `--ja-*` CSS 变量：主色/侧栏/主区/文本/边框/圆角/阴影/字体/登录渐变/仪表盘渐变色，含 `html.dark` 覆盖）
+- **Element Plus 变量覆盖**：`src/styles/element-override.css` 将 `--el-color-primary` 家族、`--el-bg-color`、`--el-fill-color-*`、`--el-text-color-*`、`--el-border-color-*`、阴影映射到 token（亮/暗双套）
+- **暗色模式**：`src/composables/useTheme.ts`（isDark/toggleTheme/initTheme，localStorage 持久化，默认跟随系统，启动前同步初始化防闪烁）；Layout 顶栏日/月切换按钮
+- **硬编码色清理**：Layout.vue 侧栏/激活/主区、Login.vue 渐变、Dashboard.vue 统计卡渐变与图标色、index.html 渐变 → token 变量（保持原视觉）
+
+#### RBAC 修复（500 回归）
+
+- **根因**：`@EnableReactiveMethodSecurity` 下，同步返回类型 controller 的方法级 `@PreAuthorize` 要求 Publisher 返回（Reactor Context），真实请求抛 500（认证正常、授权拦截崩溃，非 401）
+- **修复**：`ApiCallHistoryController` / `CallHistoryConfigController` / `TracingSecurityController`（3 个同步返回 controller）移除 `@PreAuthorize`，改由 `SecurityConfiguration` URL 规则保护（`/api/call-history/**`、`/api/config/call-history/**`、`/api/config/tracing/security/**` → ADMIN）
+- 真实请求验证：ADMIN 200 / 无 token 401；本地 dev 库手动补齐 v2.9.2 新列（H2 `DATABASE_TO_UPPER=FALSE` 下 Hibernate ddl-auto update 大小写元数据不匹配导致无法自动加列）
+
+#### 旧库升级兼容（自动迁移）
+
+- **`CompatibilitySchemaMigrator`**（启动时幂等迁移）：旧版本（≤v2.9.1）升级的数据库若缺 `record_level` / `request_body_encrypted` / `response_body_encrypted` 列，应用启动时自动检测并 `ALTER TABLE ADD COLUMN` 补齐，无需人工干预；列类型按方言适配（H2=CLOB / MySQL=LONGTEXT / PostgreSQL=TEXT）；新库由 JPA 建表自动跳过；重复启动安全；新增实体列时在迁移清单登记即可扩展
+
+#### 测试
+
+- 更新 ApiCallHistoryControllerRbacTest / RecordLevelChangeAuditTest（RBAC 断言改为 URL 规则语义）；**全量 3023 用例全绿**
+
+---
+
+### [2.9.3] - 2026-08-30 - 功能发布（路由智能深化-1：EWMA 延迟感知路由）
+
+#### 延迟感知负载均衡（`load-balance.type: latency`）
+
+- **LatencyAwareLoadBalancer**：基于 EWMA（指数加权移动平均）的延迟感知策略，按实例历史调用延迟加权随机（`1/(1+ewma)`，延迟越低概率越高）；冷启动（无样本）等权重公平探索；失败调用按 30s 惩罚值更新
+- **duration 链路接入**：`LoadBalancer` 接口新增带 durationMs 的 hook 重载（default 兼容，现有 6 策略零改动）；`AdapterMetricsRecorder → ModelServiceRegistry → LoadBalancer` 全链路传递调用耗时；`StickyLoadBalancer` 3 参透传（粘性包裹下 duration 不丢失）
+- **配置**：`ewma-alpha`（默认 0.2，全局/服务级均可配）；ComponentFactory 注册 `latency` 类型；两个校验器 + DTO + 合并器/转换器全链路支持；`/api/loadbalancer/strategies` 含 latency
+- 默认策略仍为 random，`type: latency` 配置选择开启，零默认行为变化
+
+#### 测试
+
+- 新增 LatencyAwareLoadBalancerTest（EWMA 收敛/选择分布/冷启动/失败惩罚/并发安全）、ModelServiceRegistryDurationFlowTest（duration 传递）；扩展 StickyLoadBalancerTest、LoadBalancerManagementControllerTest、ConfigValidatorHelperTest；**全量 3024 用例全绿**（+16）
+
+---
+
+### [2.9.2] - 2026-08-30 - 功能发布（记录治理）
+
+#### 三档记录级别
+
+- **METADATA_ONLY（默认）**：仅保存调用元数据，不保存请求/回复内容
+- **SUMMARY**：经 SanitizationService 脱敏后保存前 N 字摘要（复用现有摘要列）
+- **FULL**：AES-256-GCM 加密保存完整请求/回复内容（新 `RecordContentCipher`，密钥来自 `JAIR_CALL_HISTORY_KEY` 环境变量或自动生成持久化到 `~/.jairouter/call-history.key`）
+- 新配置项：`jairouter.call-history.record-level` / `max-content-length`（默认 64KB）/ `encryption-key-source`
+
+#### 内容捕获
+
+- **非流式**：请求体（转换后序列化）与下游原始响应体（转换前）捕获，超限截断；`AdapterMetricsRecorder.recordCompleteCall` 新增含 body 重载
+- **流式**：入口序列化请求 + `doOnComplete` 组装文本；补齐流式调用历史记录（此前流式不落历史）
+- **去重修复**：BaseAdapter 成功路径改为仅更新统计，避免与 RequestProcessor 重复记录（每调用 2 行 → 1 行）
+
+#### 安全
+
+- **调用历史 API 全面 RBAC**：`ApiCallHistoryController` 全部端点 + 新配置端点 `GET/PUT /api/config/call-history` 均为 ADMIN-only
+- **修复潜在安全缺口**：新增 `@EnableReactiveMethodSecurity`（此前 `@PreAuthorize` 实际未生效）
+- **新端点** `GET /api/call-history/{id}/detail`：ADMIN 解密查看 FULL 记录内容
+- **审计事件**：`RECORD_LEVEL_CHANGE`（记录级别变更）、`FULL_CONTENT_ACCESS`（解密访问 FULL 记录）
+
+#### 前端
+
+- 调用历史页新增记录级别设置（radio：仅元数据 / 摘要（脱敏） / 完整（加密））
+
+#### 测试
+
+- 全量 **3008 用例全绿**（0 失败/0 错误，新增 55）；新增 RecordContentCipherTest、ApiCallHistoryServiceRecordLevelTest、ApiCallHistoryControllerRbacTest、RecordLevelChangeAuditTest 等
+
+---
+
+### [2.9.1] - 2026-08-30 - 质量收口
+
+#### 大文件务实拆分
+
+- **15 → 5 个 >500 行文件**（务实豁免 5 个高内聚文件）：`TracingConfiguration` 608→307（提取 4 个嵌套配置类）、`TracingEncryptionService` 543→477、`ApiKeyBatchService` 608→459、`CircuitBreakerTracingWrapper` 570→243、`DefaultMetricsCollector` 629→379、`ConfigurationService` 653→410（实例管理提取为 `InstanceConfigService`）、`JwtBlacklistServiceImpl` 558→438、`ControllerTracingInterceptor` 595→237、`ExtendedSecurityAuditServiceImpl` 629→490、`NonStreamingRequestProcessor` 574→411
+- 新增 16 个顶层类（纯 POJO 配置类/DTO + 普通 helper + `@Component`/`@Service` 委托类），行为零变更，全量测试无回归
+
+#### 前端
+
+- **资源池成员实例改为下拉选择**：按服务类型加载可用实例、已选去重、禁手输、已删实例兜底显示
+
+#### 测试
+
+- 全量 **2953 用例全绿**（0 失败/0 错误）；jacoco INSTRUCTION 覆盖率 **31%**（≥ 30% 目标达标，1175 类）
+
+---
+
+### [2.9.0] - 2026-08-28 - 功能发布
+
+#### LLM KV 缓存增强:前缀缓存友好网关
+
+- **自动租户粘性路由**：新增 `StickyLoadBalancer`（一致性哈希按 `apiKeyId|serviceType|modelName` 映射实例）+ `AffinityKeyResolver`（优先 apiKeyId，回退 clientIp）+ `AffinityContextHolder`（ThreadLocal 传递亲和性键）；`sticky.enabled` 配置感知，实例 >1 时自动包装粘性负载均衡；`affinityKeyScope` 支持 `tenant` / `tenant_model`（默认含 modelName）粒度，动态解析生效
+- **缓存命中指标**：解析 DeepSeek 形态 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 与 OpenAI/vLLM 形态 `prompt_tokens_details.cached_tokens`；新增 `jairouter_cache_hit_tokens_total` / `cache_miss_tokens_total` 计数器 + `jairouter_cache_hit_ratio` Gauge（按 adapter+instance 聚合，基于累积计数 hitTotal/(hitTotal+missTotal)）
+- **缓存参数透传**：`ChatDTO.Options` 新增 `prefixCacheHash` / `enablePrefixCaching` 字段；OpenAiRequestTransformer 扩展 extra_body 白名单放行 vLLM 前缀缓存参数
+- **前缀卫生保障**：回归测试断言消息数组逐字透传（4 消息 + 6 消息两组），5 组缓存 token 解析容错测试
+- **修复**：StickyLoadBalancer 并发安全（volatile 快照 + 指纹缓存替代每请求重建 hash ring，消除 TreeMap 并发读写风险并避免 O(instances×150) 重复计算）；cache_hit_ratio 累积语义修正；affinityKeyScope 真正生效；ApiKeyBatchServiceTest 到期统计时间边界 flaky 修复
+
+#### 测试
+
+- 新增：StickyLoadBalancerTest、AffinityKeyResolverTest、CacheMetricsTest、CacheTokenParsingTest、OpenAiRequestTransformerTest（回归）、StreamingRequestProcessorTest；**全量 2953 用例全绿**
+
+---
+
+### [2.8.9] - 2026-08-26 - 功能发布
+
+#### 智能分流:资源池 + auto-model
+
+- **资源池**:一组同服务类型实例的命名集合,可配置策略(weighted-random/round-robin/least-connections/ip-hash/consistent-hash)与成员权重;YAML(`model.pools`)+ StoreManager 持久化 + CRUD API(`/api/config/pools`)+ Web 管理页(配置管理 → 资源池)
+- **auto-model 虚拟模型名**:请求 `model=auto-model`(或任意池名)时自动从池内健康实例中选择执行(健康/熔断过滤 + 池级权重 + 池策略);未配置池时 auto-model 回退为该服务全部健康实例;池成员缺失(实例被删)自动跳过
+- **规则联动**:规则 `TARGET_MODEL` 可直接指向池名锁定资源池
+- **响应回显**:池路由后,下游请求与响应(非流式)的 `model` 字段改写为实际实例模型名(流式出站请求同步改写,流式响应回显留待后续)
+- **修复**:ApiKeyBatchServiceTest 到期统计时间边界 flaky(now+2h 深夜跨零点误判)
+
+#### 测试
+
+- 新增:PoolSelectorTest(POOL-001~007)、PoolPersistenceServiceTest(POOL-PERSIST-001~008)、PoolConfigControllerTest(POOL-API-001~013)、ModelServiceRegistryRuleIntegrationTest(POOL 路由 INTEG-018~021);**全量 2909 用例全绿**
+
+---
+
+### [2.8.8] - 2026-08-26 - 功能发布
+
+#### 限流能力补齐
+
+- **服务级限流热路径接入**：请求链新增服务级限流检查（每请求恰一次，无配置零开销），超限返回 `429 Too Many Requests`；实例级仍为"跳过换下一个实例"语义
+- **按服务动态限流配置做实**：`PUT /api/services/{serviceType}/ratelimit` 由空实现改为 持久化（配置存储 `model-router-config`）+ 热生效（RateLimitManager）；GET 统一返回 canonical 格式（`enabled/algorithm/capacity/rate/scope/key`）；启用时 `capacity/rate` 必填且 > 0；配置**重启后自动生效**；服务管理页编辑对话框接入该端点
+- **规则 RATE_LIMIT 动作**：规则引擎新增规则级限流动作（按规则 ID 独立限流，与命中统计同一决策生效点，不重复执行），命中后超限返回 429；删除规则/变更动作自动清理限流器；新增「限流保护」预置模板（模板总数 6 → 7，从模板创建自动预填限流参数）；dry-run 输出包含限流参数
+- **修复**：API 调用历史统计测试过时断言（服务改用独立范围查询后测试未同步更新）；dev 模式 `VITE_API_BASE_URL` 修正为 `/api`（开发代理直连后端）
+
+#### 测试
+
+- 新增/更新：ServiceRateLimitControllerTest（RL-001~008）、ModelServiceRegistryRuleIntegrationTest（INTEG-014~017）、RuleConfigControllerTest（RULEC-029~034）、RateLimiterTest（规则级限流 3 例）、RuleTemplateServiceTest（限流模板）、RuleTemplateControllerTest（7 模板）；**全量 2876 用例全绿**（含顺带修复的 ApiCallHistoryServiceTest）
+
+---
+
+### [2.8.7] - 2026-08-25 - 功能发布
+
+#### 规则引擎三件套
+
+- **规则命中统计**：命中计数挂在决策生效点（不重复计数，dry-run 不计）；新增 Prometheus 指标 `jairouter_rule_hits_total`（tag: ruleId/actionType）+ `GET /api/config/rules/stats` 聚合端点；前端规则列表新增"命中"列与刷新
+- **优先级拖拽**：规则列表支持拖拽排序（sortablejs），按行序批量提交优先级；`PUT /priority` 改为跳过未知 id（YAML 规则不再 404），返回 `{updated, skipped}`；规则新增 `source` 字段（YAML/PERSISTED），YAML 规则显示徽章且不可拖拽
+- **场景模板**：新增 6 个预置规则模板（灰度发布/租户隔离/模型名重写/权重分流/适配器切换/VIP 实例锁定）；`GET /api/config/rules/templates` + `POST /{id}/create`；前端"从模板创建"向导，生成草稿预填表单后保存
+
+#### 测试
+
+- RuleConfigControllerTest 新增 RULEC-026~028（统计）；新增 RuleStatsServiceTest、RuleTemplateServiceTest、RuleTemplateControllerTest；规则相关测试全部通过；Checkstyle 0 violations
+
+---
+
+### [2.8.6] - 2026-08-25 - 功能增强
+
+#### 规则引擎易用性增强
+
+- **动作/条件值下拉化**：动作目标按类型下拉选择（模型名/实例/适配器，可搜索+自定义；LB 策略固定 5 选 1），条件值支持模型名/服务类型/常用请求头下拉与自动补全；服务类型变化时联动刷新模型与实例选项
+- **规则模拟测试（dry-run）**：`POST /api/config/rules/validate` 用示例请求（modelName/IP/headers）验证规则命中，只读不改状态；Web 表单内置「模拟测试」面板
+- **修复**：`serviceType` 大小写不敏感匹配（`imgGen/imgEdit` 等 camelCase 枚举可正常命中）
+
+#### 测试
+
+- RuleConfigControllerTest 新增 RULEC-025 等用例，规则引擎相关测试全部通过；Checkstyle 0 violations
+
+---
+
+### [2.8.5] - 2026-08-23 - 功能发布
+
+#### 规则引擎（可视化条件路由）
+
+实现可视化路由规则配置，让用户通过 Web 控制台**无需编写代码**即可配置基于条件的智能路由：
+
+- **条件路由规则**：支持 5 种匹配条件（模型名/服务类型/请求头/来源 IP/权重）与 5 种运算符（等于/包含/前缀/正则/CIDR 匹配），命中后执行预设动作
+- **动作类型**：TARGET_MODEL（模型重写）、TARGET_INSTANCE（锁定实例）、TARGET_ADAPTER（切换适配器）、LB_STRATEGY（负载均衡策略覆盖）
+- **规则管理 API**：`/api/config/rules` 完整 CRUD + 启停 + 优先级批量调整
+- **规则持久化**：StoreManager 持久化，重启自动恢复，YAML 定义优先合并
+- **前端可视化配置**：规则管理页面 + 规则表单对话框（条件编辑/动作配置）
+- **文档全面整理**：新增路由规则配置文档，docs 结构整理
+
+#### 测试
+
+- 规则引擎相关测试用例全部通过；Checkstyle 0 violations
+
+---
+
+### \[2.8.4] - 2026-08-15 - 功能发布
+
+#### 插件系统（自定义适配器框架）
+
+实现"插件系统"，让用户通过 Web 控制台**无需编写代码**即可创建、测试和管理自定义适配器：
+
+- **适配器模板系统**：13 个预置模板（DeepSeek/智谱GLM/月之暗面Kimi/百川智能/通义千问/MiniMax/零一万物/阶跃星辰/硅基流动/Groq/OpenRouter/Together AI/本地 Ollama）
+- **适配器测试 API**：PING 连通性测试 + CHAT 对话测试（独立 10 秒超时，API Key 不持久化）
+- **增强前端向导**：4 步配置向导（模板选择/基本配置/高级配置/测试连接）+ 模板卡片 + 测试面板
+- **适配器定义持久化**：StoreManager 持久化，重启自动恢复，YAML 定义优先合并策略
+
+#### 新增组件
+
+- `AdapterTemplateService`：模板服务（13 个预置模板）
+- `AdapterTestService`：适配器连通性测试服务
+- `AdapterDefinitionPersistenceService`：适配器定义持久化服务
+- `AdapterTemplateController` / `AdapterTestController`：模板与测试 REST API
+
+#### 测试
+
+- 新增 49 个测试用例（TDD 先行），全部通过；Checkstyle 0 violations
+
+---
+
+### \[2.8.3] - 2026-07-15 - 功能发布
+
+#### Gemini 适配器 + 适配器配置增强
+
+- **Gemini 适配器**：新增 Google Gemini 适配器支持
+- **adapter-config 阶段1-3**：支持 OpenAI 兼容 Adapter 配置、Ollama 兼容 Adapter 配置、继承+覆盖模式
+- **测试覆盖提升**：ErrorResponseBuilder（15 用例）、StreamingRequestProcessor（14 用例）、NonStreamingRequestProcessor（11 用例）、Health 模块（覆盖率 0% → 68-71%）
+
+---
+
+### \[2.8.2] - 2026-07-17 - 代码质量
+
+- Checkstyle 治理：修复 11 个警告
+
+---
+
+### \[2.8.1] - 2026-07-16 - 代码质量
+
+- Checkstyle 治理：修复 66 个警告
+
+---
+
+### \[2.8.0] - 2026-07-15 - 功能发布
+
+#### Anthropic Claude 适配器
+
+新增 Anthropic Claude 适配器支持，使 JAiRouter 可以统一网关承载 Claude API 负载，与现有 OpenAI 兼容后端并存。
+
+- **ClaudeAdapter**：Claude 适配器实现（+295 行）
+- **ClaudeAdapterTest**：适配器测试（+404 行，覆盖请求转换、响应解析、错误处理）
+- **文档清理与配置示例**：补充 Claude 适配器配置示例
+
+---
+
+### \[2.7.6] - 2026-06-30 - 功能发布
+
+#### API Key 配额管理
+
+新增全面的 API Key 配额管理功能：
+
+- **每日 Token 限额**：跟踪和限制每个 API Key 的每日 Token 使用量
+- **请求速率限制**：使用滑动窗口算法限制每分钟请求次数
+- **告警阈值**：可配置的使用量百分比告警阈值
+- **自动重置**：配额计数器每天午夜自动重置
+
+#### 问题修复
+
+- **API Key 序列化**：修复 `@JsonProperty(access = WRITE_ONLY)` 导致 `keyHash` 无法序列化到数据库的问题
+- **Token 使用量跟踪**：改进流式和非流式请求的 Token 使用量跟踪
+
+#### 新增组件
+
+- `ApiKeyQuotaService`：配额检查与告警服务
+- `TokenBucketRateLimiter`：滑动窗口限流器
+- `ApiKeyQuotaCleanupScheduler`：定时清理过期配额数据
+
+#### 数据库变更
+
+在 `api_keys` 表中新增配额相关字段：
+- `daily_token_limit`：每日 Token 使用限额
+- `rate_limit_per_minute`：每分钟请求次数限制
+- `quota_alert_threshold`：告警阈值百分比
+- `today_token_usage`：当日 Token 使用量
+- `today_request_count`：当日请求次数
+- `last_reset_time`：最后重置时间
+
+---
+
+### \[2.7.7] - 2026-07-10 - 功能发布
+
+#### ExceptionEvent 事件收集修复
+
+修复异常事件收集链路中的多个问题：
+
+- **Bean 冲突修复**：解决 `ExceptionEventService` Bean 初始化冲突
+- **错误降级优化**：异常事件收集失败时不影响主流程
+- **持久化链路修复**：确保异常事件正确写入数据库
+
+#### API Key 服务级权限检查
+
+- **服务级权限**：API Key 现在支持按服务类型（Chat/Embedding/Rerank 等）进行细粒度权限控制
+- **前端权限修复**：修复权限管理页面的显示和交互问题
+
+---
+
+### \[2.7.8] - 2026-07-10 - 功能发布
+
+#### 请求调用历史持久化
+
+新增完整的 API 调用历史记录功能：
+
+- **调用记录存储**：记录每次 API 调用的详细信息（模型、实例、耗时、状态等）
+- **查询与统计**：支持按时间范围、模型、服务类型等维度查询和统计
+- **前端仪表盘**：新增调用历史可视化页面，支持趋势图和明细表格
+- **异常监控增强**：异常管理页面添加业务字段与前端筛选功能
+
+#### 新增组件
+
+- `ApiCallHistoryService`：调用历史记录服务
+- `ApiCallHistoryController`：调用历史 REST API
+- `CallHistoryDashboard`：前端调用历史仪表盘
+
+---
+
+### \[2.5.15] - 2026-05-11 - 封板版本
+
+#### 超大类重构完成
+
+本次版本完成了 4 个超大类的重构工作，总计减少 2011 行代码（-62%）。
+
+| 文件 | 原行数 | 最终行数 | 减少 | 目标 |
+|------|--------|----------|------|------|
+| BaseAdapter | 1386 | 416 | -70% | 600 ✅ |
+| TracingService | 764 | 483 | -37% | 400 ✅ |
+| DefaultStructuredLogger | 945 | 365 | -61% | 400 ✅ |
+| ConfigVersionManager | 746 | 387 | -48% | 400 ✅ |
+
+#### 新增组件（12个）
+
+- ConfigComparator、SpanAttributeHelper、ServiceNameResolver
+- RequestLogBuilder、ResponseLogBuilder、BackendCallLogBuilder
+- ErrorLogBuilder、SystemEventLogBuilder、VersionValidator
+- VersionMetadataManager、VersionSyncService、ModelUtils
+
+#### 质量检查
+
+- Checkstyle: ✅ 通过
+- SpotBugs: ✅ 通过
+- 测试: 971 passed ✅
+
+---
+
+### \[1.7.3] - 2026-04-14
+
+#### 问题修复
+
+* **Playground Chat 流式响应修复**：修复流式响应时 AI 回复消息重复显示问题
+
+  * 问题：流式响应时，AI 回复出现两个一模一样的对话
+
+  * 原因：`MessageList.vue` 中 `displayMessages` 过滤逻辑不正确
+
+  * 修复：流式响应期间，始终过滤最后一条助手消息，由额外的 `MessageBubble` 组件显示流式内容
+
+#### 改进优化
+
+* **端口配置恢复**：服务器端口恢复为默认 `8080`，与文档保持一致
+
+#### 技术改进
+
+* 更新前端静态资源构建产物
+
+---
+
+### \[1.7.2] - 2026-04-14
+
+#### 新增功能
+
+* **Playground 组件化重构**：大幅重构 Playground 模块，实现组件化拆分
+
+  * Chat 模块：`ChatContainer`、`ChatConfigPanel`、`MessageInput`、`MessageList`
+
+  * Audio 模块：`AudioContainer`、`TtsPanel`、`SttPanel`
+
+  * Image 模块：`ImageContainer`、`ImageGeneratePanel`、`ImageEditPanel`
+
+  * Embedding 模块：`EmbeddingContainer`
+
+  * Rerank 模块：`RerankContainer`
+
+  * Common 组件：`MessageBubble`、`MarkdownRenderer`、`CodeBlock`、`ModelSelector`、`ServiceLayout`、`LoadingIndicator`
+
+* **新增 Composables**：
+
+  * `useChatSession`：聊天会话管理（localStorage 持久化）
+
+  * `useMarkdown`：Markdown 渲染处理
+
+  * `useStreaming`：SSE 流式响应处理
+
+#### 改进优化
+
+* **健康检查 SSE 控制器优化**：优化 `HealthStatusSseController` 实现逻辑
+
+* **实例管理功能扩展**：新增字段支持，扩展 `ServiceInstanceDTO` 和实体类
+
+* **Adapter 基类调整**：统一各适配器基类处理逻辑
+
+* **前端路由和布局优化**：优化路由配置和 Layout 组件
+
+#### 新增文件
+
+* `frontend/src/views/playground/components/` - 18 个组件文件
+
+* `frontend/src/views/playground/composables/` - 4 个 composable 文件
+
+* `src/main/resources/db/migration/V3__add_adapter_headers_fields.sql`
+
+---
+
+### \[1.7.1] - 2026-04-13
+
+#### 问题修复
+
+* **链路追踪修复**：
+
+  * 修复 `TracingWebFilter` 重复创建 `traceId` 问题
+
+  * 修复 `TraceQueryService` 的 `recentTraces` 合并时 `spanCount` 显示错误
+
+  * 修复 `TracingService` 的 `serviceName` 分类，前端页面路由正确识别为 'front'
+
+* **前端路由修复**：修复前端路由路径错误 (`/admin/admin/tracing` -> `/admin/tracing`)
+
+#### 改进优化
+
+* **ControllerTracingInterceptor 优化**：优化子 Span 同步记录逻辑
+
+* **表格布局优化**：表格列宽度使用 `min-width` 实现自适应填充
+
+#### 新增功能
+
+* **TraceDetail 组件**：新增链路追踪详情展示组件
+
+* **Tracing Dashboard 页面**：新增链路追踪仪表板页面
+
+#### 新增文件
+
+* `frontend/src/views/tracing/Dashboard.vue`
+
+* `frontend/src/views/tracing/components/TraceDetail.vue`
+
+* `docs/zh/development/tracing-full-chain-design.md`
+
+---
+
+### \[1.7.0] - 2026-04-10
+
+#### 新增功能
+
+* **安全黑名单管理**：新增安全黑名单管理功能，支持 IP/用户/令牌黑名单
+
+* **审计日志增强**：增强审计日志查询和展示功能，支持高级搜索和统计分析
+
+* **JWT账户状态切换**：实现账户启用/禁用状态切换功能
+
+#### 改进优化
+
+* **JWT账户管理**：修复编辑密码验证问题，优化账户管理界面
+
+* **前端表格优化**：表格列使用自适应宽度（min-width），添加统计卡片和搜索功能
+
+* **配置管理简化**：移除未实现的版本管理功能，简化界面
+
+#### 问题修复
+
+* 修复 JWT 账户编辑时的密码验证问题
+
+* 修复账户管理页面数据展示问题
+
+#### 技术改进
+
+* `CreateJwtAccountRequest` 添加 `enabled` 字段
+
+* `JwtAccountService` 实现 `toggleAccountStatus` 方法
+
+* 新增 `SecurityBlacklistController` 和相关实体类
+
+* 清理未使用的前端代码和类型定义
+
+---
+
+### \[1.6.2] - 2026-04-08
+
+#### 新增功能
+
+* **API Key 批量导入/导出**：支持批量导入导出 API Key
+
+  * 新增导出端点 `GET /api/auth/api-keys/export`
+
+  * 新增导入端点 `POST /api/auth/api-keys/import`
+
+  * 支持 MERGE/REPLACE 两种导入模式
+
+* **API Key 密钥轮换**：支持密钥自动轮换机制
+
+  * 配置 `rotationPeriodDays` 设置轮换周期
+
+  * 新增 `ApiKeyRotationScheduler` 自动执行轮换
+
+* **过期密钥自动清理**：新增 `ApiKeyExpirationScheduler` 自动禁用过期密钥
+
+#### 改进优化
+
+* **创建者信息记录**：API Key 创建时记录 `createdBy` 和 `creatorIpAddress`
+
+* **密钥使用统计持久化**：使用统计数据通过 `saveApiKeysToStore()` 持久化
+
+#### 新增文件
+
+* `ApiKeyBatchExportVO.java`
+
+* `ApiKeyBatchImportRequest.java`
+
+* `ApiKeyBatchImportResult.java`
+
+* `ApiKeyRotationScheduler.java`
+
+* `ApiKeyExpirationScheduler.java`
+
+---
+
+### \[1.6.1] - 2026-04-06
+
+#### 安全修复 (P0)
+
+* **API Key 哈希存储**：API Key 使用 SHA-256 + 盐值哈希存储，替代明文存储
+
+* **管理接口速率限制**：添加速率限制 (30/min, 100/hour, 10 create/hour)
+
+#### 新增功能
+
+* **IP 白名单**：支持 IP 白名单功能 (`allowedIpAddresses`)
+
+* **每日请求限制**：支持每日请求限制功能 (`dailyRequestLimit`)
+
+* **密钥重置接口**：新增密钥重置接口 `/api/auth/api-keys/{keyId}/reset`
+
+#### 改进优化
+
+* **前端强类型**：使用强类型 DTO/VO 替代 Map 数据传递
+
+* **表格布局优化**：优化表格布局和横向滚动支持
+
+#### 新增文件
+
+* `ApiKeyHashUtil.java` - SHA-256 哈希工具类
+
+* `AdminApiRateLimiter.java` - 管理接口速率限制过滤器
+
+* `ApiKeyVO/ApiKeyCreationVO/ApiKeyListVO/ApiKeyCreateRequest/ApiKeyUpdateRequest` - 强类型 DTO
+
+---
+
+### \[1.6.0] - 2026-04-04
+
+#### 破坏性变更
+
+* **移除配置合并功能**：移除 AutoMergeService 和 AutoMergeController
+
+* **移除相关实体类**：移除 MergeResult 等 5 个相关实体类
+
+* **移除前端页面**：移除 ConfigMergeManagement.vue 页面和相关 API
+
+#### 改进优化
+
+* **配置版本管理优化**：简化版本管理界面，保留核心版本切换功能
+
+* **日志配置优化**：优化 logback-spring.xml 配置
+
+* **文档更新**：移除配置合并相关内容
+
+#### 保留功能
+
+* `ConfigMergeService`：配置获取和合并核心功能
+
+* `SecurityConfigMergeService`：安全配置合并服务
+
+---
+
+### \[1.5.7] - 2026-04-02
+
+#### 新增功能
+
+* **JWT 账户初始化**：JWT 账户从 YAML 配置自动初始化到数据库
+
+* **账户管理 API 优化**：使用标准 RouterResponse 响应格式
+
+#### 问题修复
+
+* 修复系统启动时 JWT 账户未初始化到数据库的问题
+
+* 修复账户管理页面无法显示数据的问题
+
+* 修复 API 路径与前端不匹配的问题（`/api/admin/accounts` -> `/api/security/jwt/accounts`）
+
+#### 新增文件
+
+* `JwtAccountProperties.java` - 映射 YAML 账户配置
+
+* `JwtConfig.accounts` 字段 - 支持账户列表配置
+
+---
+
+### \[1.5.6] - 2026-03-30
+
+#### 新增功能
+
+* **实例级别限流器独立存储**：新增 `instance_rate_limit` 表存储实例限流器配置
+
+* **实例级别熔断器独立存储**：新增 `instance_circuit_breaker` 表存储实例熔断器配置
+
+* **独立配置 API**：新增独立的限流器/熔断器配置 API 接口
+
+* **强类型 DTO**：使用强类型 DTO 替代 Map 数据传递
+
+#### API 变更
+
+* `GET/PUT /api/config/instance/{type}/{id}/rate-limit`
+
+* `GET/PUT /api/config/instance/{type}/{id}/circuit-breaker`
+
+#### 新增文件
+
+* `InstanceRateLimitEntity/InstanceCircuitBreakerEntity` - 实体类
+
+* `InstanceRateLimitRepository/InstanceCircuitBreakerRepository` - 仓库
+
+* `InstanceRateLimitDTO/InstanceCircuitBreakerDTO` - DTO 类
+
+#### 改进优化
+
+* `build-and-deploy.sh` 脚本自动清理旧编译文件
+
+---
+
+### \[1.5.2] - 2026-03-20
+
+#### 新增功能
+
+* **JPA 迁移完成**：完成 R2DBC 到 JPA 的激进迁移
+
+* **DTO 结构优化**：所有核心功能恢复并优化为 DTO 结构
+
+#### 问题修复
+
+* 修复 JPA 迁移过程中的编译错误
+
+* 修复服务配置功能恢复
+
+---
+
+### \[1.4.6] - 2026-03-10
+
+#### 问题修复
+
+* 修复前端独立配置功能
+
+* 修复前端独立限流器和熔断器配置功能
+
+* 修复数据返回完整性问题
+
+* 修复 `buildInstanceMap` 和 `convertToVO` 方法
+
+---
+
+### \[1.4.4] - 2026-03-31
+
+#### 问题修复
+
+* 修复前端实例管理页面数据格式问题
+
+* 优化数据展示逻辑
+
+---
+
+### \[1.4.3] - 2026-03-25
+
+#### 问题修复
+
+* 修复服务类型验证和异常处理逻辑
+
+* 改进错误提示信息
+
+---
+
+### \[1.4.2] - 2026-03-25
+
+#### 新增功能
+
+* **Adapter 重构计划**：创建适配器重构计划文档，为后续架构优化做准备
+
+---
+
+### \[1.4.1] - 2026-03-24
+
+#### 新增功能
+
+* **值对象模式**：引入 InstanceId 值对象，提升代码类型安全性
+
+---
+
+### \[1.4.0] - 2026-03-24
+
+#### 问题修复
+
+* 优雅修复 ConfigMergeService 阻塞调用警告
+
+* 优化响应式编程模型
+
+---
+
+### \[1.2.5] - 2025-11-26
+
+#### 改进优化
+
+* 合并远程分支更新
+
+* 代码同步和稳定性改进
+
+---
+
+### \[1.1.2] - 2025-10-30
+
+#### 改进优化
+
+* 合并远程分支更新
+
+* 代码稳定性改进
+
+---
+
+### \[1.1.1] - 2025-10-28
+
+#### 改进优化
+
+* **前端路由优化**：改进路由和认证流程
+
+* 代码重构和清理
+
+---
+
+### \[1.1.0] - 2025-10-28
+
+#### 改进优化
+
+* 合并远程分支更新
+
+* 功能稳定性改进
+
+---
+
+### \[1.0.0] - 2025-10-16
+
+#### 新增功能
+
+* **首个正式版本**：JAiRouter 项目首个正式发布版本
+
+* 基础网关功能实现
+
+* 核心适配器支持
+
+---
+
+### \[0.9.2] - 2025-09-30
+
+#### 新增功能
+
+* **ApiKey 模型统一**：合并 ApiKeyInfo 与 ApiKeyProperties 为统一 ApiKey 模型
+
+---
+
+### \[0.9.1] - 2025-09-12
+
+#### 问题修复
+
+* 修复合并错误
+
+* 代码稳定性改进
+
+---
+
+### \[0.9.0] - 2025-09-10
+
+#### 新增功能
+
+* **Web Console 架构**：添加 Web Console 架构设计文档
+
+* 前端管理控制台规划
+
+---
+
+### \[0.8.2] - 2025-09-05
+
+#### 改进优化
+
+* 合并远程分支更新
+
+* 代码同步
+
+---
+
+### \[0.8.1] - 2025-09-03
+
+#### 改进优化
+
+* 更新项目版本号
+
+* 版本管理规范化
+
+---
+
+### \[0.7.3] - 2025-08-27
+
+#### 新增功能
+
+* **JWT 认证**：实现 JWT 认证和用户管理功能
+
+* 安全模块基础功能
+
+---
+
+### \[0.7.2] - 2025-08-27
+
+#### 新增功能
+
+* **分布式追踪文档**：添加分布式追踪系统文档
+
+---
+
+### \[0.7.1] - 2025-08-27
+
+#### 新增功能
+
+* **文档优化**：集成谷歌广告并优化文档样式
+
+---
+
+### \[0.7.0] - 2025-08-22
+
+#### 新增功能
+
+* **慢查询告警**：添加慢查询告警功能
+
+* 监控模块增强
+
+---
+
+### \[0.6.1] - 2025-08-19
+
+#### 新增功能
+
+* **国际化支持**：添加国际化和代码压缩支持
+
+* 文档系统增强
+
+---
+
+### \[0.6.0] - 2025-08-18
+
+#### 新增功能
+
+* **安全认证**：实现 API Key 和 JWT 认证功能
+
+* 安全模块核心功能
+
+---
+
+### \[0.5.0] - 2025-08-18
+
+#### 新增功能
+
+* **文档管理**：重构文档管理流程并提供统一管理脚本
+
+* 文档系统重构
+
+---
+
+### \[0.4.0] - 2025-08-15
+
+#### 新增功能
+
+* **Prometheus 告警规则**：添加 Prometheus 告警规则指南和配置
+
+* 新增 ALERT\_RULES\_GUIDE.md 文件
+
+* 添加 alertmanager.yml 配置
+
+* 创建 docker-compose-monitoring.yml 监控栈配置
+
+- **安全模块**：完整的企业级安全功能，包括API Key认证、JWT令牌支持和双向数据脱敏
+
+- **多租户支持**：租户隔离、资源配额和基于租户的配置管理
+
+- **认证鉴权**：API Key认证机制、JWT Token支持、OAuth 2.0集成和基于角色的访问控制(RBAC)
+
+- **数据保护**：请求/响应数据脱敏、敏感信息加密存储和安全审计日志
+
+- **H2数据库支持**：H2嵌入式数据库作为默认存储，支持配置数据、安全审计、API密钥和JWT账户的自动迁移
+
+- **监控集成**：完整的Prometheus + Grafana监控栈，支持业务指标和基础设施指标收集
+
+- **分布式追踪**：端到端分布式追踪，集成Jaeger/Zipkin实现完整的请求生命周期追踪
+
+- 完善的文档体系和用户指南
+
+- 多语言文档支持（中文/英文）
+
+- 增强的监控和告警功能
+
+- 更多的适配器支持
+
+#### 改进优化
+
+* **Spring Security集成**：与Spring Security框架完全集成，实现强大的认证和授权功能
+
+* **缓存层优化**：Redis缓存优化以提升性能
+
+* **数据库支持**：新增对PostgreSQL和MySQL数据库的支持
+
+* **H2存储性能**：相比文件存储，配置和安全数据操作性能提升5-20倍
+
+* **Docker构建优化**：为中国用户优化的Docker构建，使用阿里云Maven镜像，依赖下载速度提升5-10倍
+
+* 性能优化和内存管理改进
+
+* 更好的错误处理和日志记录
+
+* 配置验证和用户体验提升
+
+#### 问题修复
+
+* 修复已知的内存泄漏问题
+
+* 解决并发场景下的竞态条件
+
+* 改进配置热更新的稳定性
+
+* 安全扫描和漏洞修复
+
+* 修复容器环境下的配置文件路径问题
+
+* 解决Docker容器中的DNS解析问题
+
+---
+
+### \[0.3.2] - 2025-08-20
+
+#### 新增功能
+
+* **监控集成**: 完整的 Prometheus + Grafana 监控栈
+
+* **性能指标**: 新增业务指标和基础设施指标收集
+
+* **告警规则**: 预配置的告警规则和通知机制
+
+* **监控仪表板**: 专业的 Grafana 仪表板模板
+
+#### 改进优化
+
+* **指标优化**: 优化指标收集性能，减少对主业务的影响
+
+* **内存管理**: 改进指标数据的内存使用和清理机制
+
+* **配置简化**: 简化监控相关的配置参数
+
+#### 问题修复
+
+* 修复监控指标在高并发下的数据不准确问题
+
+* 解决长时间运行后的内存泄漏问题
+
+* 修复 Prometheus 指标格式兼容性问题
+
+#### 技术债务
+
+* 重构监控模块的代码结构
+
+* 改进单元测试覆盖率
+
+* 优化构建和部署流程
+
+---
+
+### \[0.3.1] - 2025-08-15
+
+#### 新增功能
+
+* **中国加速构建**: 专门为中国用户优化的 Docker 构建
+
+* **阿里云镜像**: 使用阿里云 Maven 镜像加速依赖下载
+
+* **构建脚本**: 新增 `docker-build-china.sh` 构建脚本
+
+* **Maven Profile**: 新增 `china` profile 支持
+
+#### 改进优化
+
+* **构建速度**: 中国用户构建速度提升 5-10 倍
+
+* **网络优化**: 优化网络连接和超时配置
+
+* **文档完善**: 添加中国用户专用的构建指南
+
+#### 问题修复
+
+* 修复在中国网络环境下的依赖下载超时问题
+
+* 解决 Maven 仓库连接不稳定的问题
+
+* 修复 Docker 构建过程中的网络错误
+
+---
+
+### \[0.3.0] - 2025-08-14
+
+#### 新增功能
+
+* **Docker 容器化**: 完整的 Docker 部署支持
+
+* **多环境部署**: 支持开发、测试、生产环境配置
+
+* **Docker Compose**: 提供完整的容器编排配置
+
+* **健康检查**: 容器级别的健康检查机制
+
+* **监控集成**: 基础的监控指标暴露
+
+#### 改进优化
+
+* **镜像优化**: 多阶段构建，生产镜像约 200MB
+
+* **安全加固**: 非 root 用户运行，最小权限原则
+
+* **性能调优**: 容器环境下的 JVM 参数优化
+
+* **日志管理**: 容器化环境的日志收集和轮转
+
+#### 问题修复
+
+* 修复容器环境下的配置文件路径问题
+
+* 解决容器重启后配置丢失的问题
+
+* 修复网络连接在容器间的通信问题
+
+#### 破坏性变更
+
+* 默认配置文件路径从 `./config` 改为 `/app/config`
+
+* 环境变量命名规范调整
+
+---
+
+### \[0.2.1] - 2025-08--12
+
+#### 新增功能
+
+* **定时清理任务**: 自动清理不活跃的限流器，防止内存泄漏
+
+* **内存优化**: 改进内存使用模式，减少 GC 压力
+
+* **客户端 IP 限流增强**: 更精确的客户端 IP 识别和限流
+
+* **配置文件自动合并**: 支持多版本配置文件的智能合并
+
+#### 改进优化
+
+* **性能提升**: 限流器性能优化，减少锁竞争
+
+* **监控增强**: 新增内存使用和清理任务的监控指标
+
+* **日志优化**: 改进日志格式和性能
+
+* **错误处理**: 更好的异常处理和错误恢复机制
+
+#### 问题修复
+
+* 修复长时间运行后的内存泄漏问题
+
+* 解决高并发场景下的限流器竞态条件
+
+* 修复配置热更新时的线程安全问题
+
+* 解决客户端 IP 获取在代理环境下的问题
+
+#### 技术改进
+
+* 重构限流器清理机制
+
+* 改进单元测试覆盖率到 85%
+
+* 优化代码质量检查规则
+
+---
+
+### \[0.2.0] - 2025-08-11
+
+#### 新增功能
+
+* **限流机制**: 支持 Token Bucket、Leaky Bucket、Sliding Window、Warm Up 四种限流算法
+
+* **熔断器**: 实现熔断器模式，支持失败阈值、恢复检测、降级策略
+
+* **降级策略**: 支持默认响应和缓存降级
+
+* **配置持久化**: 支持内存存储和文件存储两种后端
+
+* **动态配置更新**: 运行时更新服务实例、权重、限流、熔断等配置
+
+#### 改进优化
+
+* **性能优化**: 响应式编程模型，支持高并发处理
+
+* **配置管理**: 配置文件自动合并和版本管理
+
+* **错误处理**: 完善的异常处理和错误恢复机制
+
+* **监控指标**: 新增限流、熔断相关的监控指标
+
+#### 问题修复
+
+* 修复负载均衡器在实例变更时的线程安全问题
+
+* 解决配置更新时的数据一致性问题
+
+* 修复高并发场景下的内存泄漏问题
+
+#### API 变更
+
+* 新增动态配置管理 API (`/api/config/instance/*`)
+
+* 新增配置版本管理 API (`/api/config/versions/*`)
+
+* 扩展健康检查 API，包含更多状态信息
+
+---
+
+### \[0.1.0] - 2025-08-04
+
+#### 新增功能
+
+* **基础网关**: 统一 `/v1/*` API 网关，支持 OpenAI 兼容格式
+
+* **服务类型支持**: Chat、Embedding、Rerank、TTS、STT、Image Generation、Image Editing
+
+* **适配器模式**: 支持 GPUStack、Ollama、VLLM、Xinference、LocalAI、OpenAI 适配器
+
+* **负载均衡**: 实现 Random、Round Robin、Least Connections、IP Hash 四种策略
+
+* **健康检查**: 每服务独立状态接口，自动剔除不可用实例
+
+* **配置管理**: 基于 YAML 的静态配置支持
+
+#### 技术特性
+
+* **Spring Boot 3.5.x**: 基于最新的 Spring Boot 框架
+
+* **响应式编程**: 使用 Spring WebFlux 和 Reactor Core
+
+* **代码质量**: 集成 Checkstyle、SpotBugs、JaCoCo 代码质量工具
+
+* **API 文档**: 使用 SpringDoc OpenAPI 自动生成 API 文档
+
+* **单元测试**: 包含负载均衡、健康检查等核心功能的单元测试
+
+#### 项目结构
+
+* 建立清晰的模块化架构
+
+* 定义统一的编码规范和最佳实践
+
+* 建立完整的构建和测试流程
+
+---
+
+## 升级指南
+
+### 从 0.3.1 升级到 0.3.2
+
+#### 配置变更
+
+```yaml
+# 新增监控配置
+monitoring:
+  metrics:
+    enabled: true
+    categories:
+      - system
+      - business
+      - infrastructure
+```
+
+#### 部署变更
+
+* 新增 Prometheus 和 Grafana 容器
+
+* 更新 `docker-compose.yml` 配置
+
+* 导入新的 Grafana 仪表板
+
+#### 注意事项
+
+* 监控功能默认启用，可能会增加少量性能开销
+
+* 新增的监控端点需要相应的网络配置
+
+### 从 0.2.1 升级到 0.3.0
+
+#### 破坏性变更
+
+* 配置文件路径变更：`./config` → `/app/config`
+
+* 环境变量命名调整
+
+#### 迁移步骤
+
+1. 更新配置文件路径
+2. 调整环境变量名称
+3. 更新部署脚本和容器配置
+
+### 从 0.1.0 升级到 0.2.0
+
+#### 新增依赖
+
+* 无需额外依赖，所有功能已内置
+
+#### 配置扩展
+
+```yaml
+# 新增限流配置
+model:
+  services:
+    chat:
+      rate-limit:
+        type: token-bucket
+        capacity: 100
+        refill-rate: 10
+
+# 新增熔断配置
+      circuit-breaker:
+        failure-threshold: 5
+        recovery-timeout: 30s
+        success-threshold: 3
+```
+
+## 已知问题
+
+### 当前版本 (0.3.2)
+
+* 在极高并发场景下（>10k RPS），监控指标可能出现轻微延迟
+
+* Docker 容器在某些网络环境下可能出现 DNS 解析缓慢
+
+### 历史问题
+
+* ~~0.3.1: 中国网络环境下构建超时~~ (已修复)
+
+* ~~0.2.1: 长时间运行后内存泄漏~~ (已修复)
+
+* ~~0.2.0: 高并发下配置更新竞态条件~~ (已修复)
+
+## 贡献者
+
+感谢所有为 JAiRouter 项目做出贡献的开发者：
+
+* **核心团队**: 负责架构设计和核心功能开发
+
+* **社区贡献者**: 提供功能建议、问题报告和代码贡献
+
+* **文档团队**: 完善项目文档和用户指南
+
+* **测试团队**: 进行功能测试和性能验证
+
+## 反馈和建议
+
+如果您在使用过程中遇到问题或有改进建议，欢迎通过以下方式反馈：
+
+* **GitHub Issues**: [提交问题报告](https://github.com/Lincoln-cn/JAiRouter/issues)
+
+* **GitHub Discussions**: [参与讨论](https://github.com/Lincoln-cn/JAiRouter/discussions)
+
+* **邮件联系**: <jairouter@example.com>
+
+我们重视每一个反馈，并会及时响应和处理。

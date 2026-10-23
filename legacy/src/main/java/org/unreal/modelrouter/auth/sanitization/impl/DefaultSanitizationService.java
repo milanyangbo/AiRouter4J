@@ -1,0 +1,481 @@
+package org.unreal.modelrouter.auth.sanitization.impl;
+
+import jakarta.annotation.PostConstruct;
+import io.micrometer.core.instrument.Timer;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.unreal.modelrouter.common.constants.ErrorCode;
+import org.unreal.modelrouter.common.exception.SanitizationException;
+import org.unreal.modelrouter.auth.sanitization.SanitizationRuleEngine;
+import org.unreal.modelrouter.auth.sanitization.SanitizationService;
+import org.unreal.modelrouter.auth.sanitization.persistence.SanitizationConfigStore;
+import org.unreal.modelrouter.auth.security.config.properties.SanitizationConfig;
+import org.unreal.modelrouter.auth.security.config.properties.SecurityProperties;
+import org.unreal.modelrouter.auth.security.model.RuleType;
+import org.unreal.modelrouter.auth.security.model.SanitizationRule;
+import org.unreal.modelrouter.auth.security.model.SanitizationStrategy;
+import org.unreal.modelrouter.monitor.monitoring.security.SecurityMetrics;
+import reactor.core.publisher.Mono;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * 默认脱敏服务实现
+ * 提供请求和响应数据的脱敏处理功能，支持动态规则更新和白名单管理
+ */
+@Slf4j
+@Service
+public class DefaultSanitizationService implements SanitizationService {
+    
+    private final SanitizationRuleEngine ruleEngine;
+    private final SecurityProperties securityProperties;
+
+    /**
+     * 安全指标（issue #456）。可选依赖：单测直接 new 出本类时该字段为 null，埋点自动跳过。
+     */
+    @Autowired(required = false)
+    private SecurityMetrics securityMetrics;
+
+    /**
+     * 脱敏配置持久化存储（TA2）。可选依赖：单测直接 new 出本类时该字段为 null，
+     * 启动装载就只按 yml 配置派生规则。
+     */
+    @Autowired(required = false)
+    private SanitizationConfigStore configStore;
+    
+    /**
+     * 脱敏规则存储
+     */
+    private final ConcurrentMap<String, SanitizationRule> rules = new ConcurrentHashMap<>();
+    
+    /**
+     * 规则ID生成器
+     */
+    private final AtomicInteger ruleIdGenerator = new AtomicInteger(1);
+
+    /**
+     * 敏感词规则的起始 priority：同一列表内按索引递增，保证「列表顺序 = 执行顺序」。
+     */
+    private static final int WORD_PRIORITY_BASE = 1;
+
+    /**
+     * PII 规则的起始 priority：必须整体大于敏感词规则，且同一列表内按索引递增。
+     *
+     * <p>引擎按 {@code priority} 排序后逐条替换，若同组规则共用一个 priority，
+     * 实际执行顺序取决于 {@link ConcurrentHashMap} 的迭代顺序、与 yml 列表顺序无关
+     * ⇒ 「身份证 → 银行卡 → 手机号」这种先长后短的顺序要求无法被保证（#561）。</p>
+     */
+    private static final int PII_PRIORITY_BASE = 1000;
+    
+    @Autowired
+    public DefaultSanitizationService(
+            final SanitizationRuleEngine ruleEngine, final SecurityProperties securityProperties) {
+        this.ruleEngine = ruleEngine;
+        this.securityProperties = securityProperties;
+    }
+    
+    @PostConstruct
+    public void initializeRules() {
+        log.info("初始化脱敏规则");
+
+        // TA2：启动装载 DB 优先 —— DB 里存在该 scope 的配置快照时用它覆盖 yml 的值，
+        // 没有行则沿用 yml。规则随后一律由内存中的配置派生，因此重启后规则与配置自然一致。
+        if (configStore != null) {
+            try {
+                configStore.loadInto(securityProperties);
+            } catch (RuntimeException e) {
+                // 读库失败不阻断启动：回退到 yml，但必须把「本次运行可能不是管理员保存的配置」记进日志。
+                log.error("脱敏配置快照装载失败，回退到 yml 配置", e);
+            }
+        }
+
+        // 从配置中加载请求脱敏规则
+        loadRequestRules();
+        
+        // 从配置中加载响应脱敏规则
+        loadResponseRules();
+        
+        // 编译所有规则
+        List<SanitizationRule> allRules = new ArrayList<>(rules.values());
+        ruleEngine.compileRules(allRules).subscribe(
+                unused -> log.info("脱敏规则初始化完成，共加载 {} 条规则", allRules.size()),
+                error -> log.error("脱敏规则编译失败", error)
+        );
+    }
+    
+    /**
+     * 加载请求脱敏规则.
+     *
+     * <p>v3.2.0：配置中的敏感词/PII 始终加载进规则库（供记录侧
+     * {@link #sanitizeForStorage} 与管理端展示）；网关路径仍由
+     * {@code sanitizeRequest} 的 enabled 开关短路。</p>
+     */
+    private void loadRequestRules() {
+        SanitizationConfig.RequestSanitization requestConfig =
+                securityProperties.getSanitization().getRequest();
+
+        // 加载敏感词规则（priority 按列表顺序递增，保证执行顺序可预期）
+        List<String> sensitiveWords = requestConfig.getSensitiveWords();
+        for (int i = 0; i < sensitiveWords.size(); i++) {
+            String sensitiveWord = sensitiveWords.get(i);
+            SanitizationRule rule = SanitizationRule.builder()
+                    .ruleId("request-sensitive-word-" + ruleIdGenerator.getAndIncrement())
+                    .name("请求敏感词: " + sensitiveWord)
+                    .description("请求中的敏感词脱敏")
+                    .type(RuleType.SENSITIVE_WORD)
+                    .pattern(sensitiveWord)
+                    .strategy(SanitizationStrategy.MASK)
+                    .enabled(true)
+                    .priority(WORD_PRIORITY_BASE + i)
+                    .applicableContentTypes(List.of("application/json", "application/xml", "text/plain"))
+                    .replacementChar(requestConfig.getMaskingChar())
+                    .build();
+            
+            rules.put(rule.getRuleId(), rule);
+        }
+        
+        // 加载PII模式规则（priority 按列表顺序递增：先长后短靠这个顺序实现，#561）
+        List<String> piiPatterns = requestConfig.getPiiPatterns();
+        for (int i = 0; i < piiPatterns.size(); i++) {
+            String piiPattern = piiPatterns.get(i);
+            SanitizationRule rule = SanitizationRule.builder()
+                    .ruleId("request-pii-pattern-" + ruleIdGenerator.getAndIncrement())
+                    .name("请求PII模式: " + piiPattern)
+                    .description("请求中的PII数据脱敏")
+                    .type(RuleType.PII_PATTERN)
+                    .pattern(piiPattern)
+                    .strategy(SanitizationStrategy.MASK)
+                    .enabled(true)
+                    .priority(PII_PRIORITY_BASE + i)
+                    .applicableContentTypes(List.of("application/json", "application/xml", "text/plain"))
+                    .replacementChar(requestConfig.getMaskingChar())
+                    .build();
+            
+            rules.put(rule.getRuleId(), rule);
+        }
+    }
+    
+    /**
+     * 加载响应脱敏规则.
+     *
+     * <p>与请求侧相同：配置规则始终加载；网关响应路径由 enabled 开关短路。</p>
+     */
+    private void loadResponseRules() {
+        SanitizationConfig.ResponseSanitization responseConfig =
+                securityProperties.getSanitization().getResponse();
+
+        // 加载敏感词规则（priority 按列表顺序递增）
+        List<String> sensitiveWords = responseConfig.getSensitiveWords();
+        for (int i = 0; i < sensitiveWords.size(); i++) {
+            String sensitiveWord = sensitiveWords.get(i);
+            SanitizationRule rule = SanitizationRule.builder()
+                    .ruleId("response-sensitive-word-" + ruleIdGenerator.getAndIncrement())
+                    .name("响应敏感词: " + sensitiveWord)
+                    .description("响应中的敏感词脱敏")
+                    .type(RuleType.SENSITIVE_WORD)
+                    .pattern(sensitiveWord)
+                    .strategy(SanitizationStrategy.MASK)
+                    .enabled(true)
+                    .priority(WORD_PRIORITY_BASE + i)
+                    .applicableContentTypes(List.of("application/json", "application/xml", "text/plain"))
+                    .replacementChar(responseConfig.getMaskingChar())
+                    .build();
+            
+            rules.put(rule.getRuleId(), rule);
+        }
+        
+        // 加载PII模式规则（priority 按列表顺序递增：先长后短靠这个顺序实现，#561）
+        List<String> piiPatterns = responseConfig.getPiiPatterns();
+        for (int i = 0; i < piiPatterns.size(); i++) {
+            String piiPattern = piiPatterns.get(i);
+            SanitizationRule rule = SanitizationRule.builder()
+                    .ruleId("response-pii-pattern-" + ruleIdGenerator.getAndIncrement())
+                    .name("响应PII模式: " + piiPattern)
+                    .description("响应中的PII数据脱敏")
+                    .type(RuleType.PII_PATTERN)
+                    .pattern(piiPattern)
+                    .strategy(SanitizationStrategy.MASK)
+                    .enabled(true)
+                    .priority(PII_PRIORITY_BASE + i)
+                    .applicableContentTypes(List.of("application/json", "application/xml", "text/plain"))
+                    .replacementChar(responseConfig.getMaskingChar())
+                    .build();
+            
+            rules.put(rule.getRuleId(), rule);
+        }
+    }
+    
+    @Override
+    public Mono<String> sanitizeRequest(final String content, final String contentType, final String userId) {
+        if (content == null || content.isEmpty()) {
+            return Mono.justOrEmpty(content);
+        }
+        
+        if (!securityProperties.getSanitization().getRequest().isEnabled()) {
+            log.debug("请求脱敏已关闭，跳过脱敏处理");
+            return Mono.just(content);
+        }
+        
+        // 检查白名单
+        if (userId != null) {
+            return isUserWhitelisted(userId)
+                    .flatMap(isWhitelisted -> {
+                        if (isWhitelisted) {
+                            log.debug("用户在白名单中，跳过请求脱敏: userId={}", userId);
+                            return Mono.just(content);
+                        }
+                        return performSanitization(content, contentType, "request");
+                    });
+        }
+        
+        return performSanitization(content, contentType, "request");
+    }
+    
+    @Override
+    public Mono<String> sanitizeResponse(final String content, final String contentType) {
+        if (content == null || content.isEmpty()) {
+            return Mono.justOrEmpty(content);
+        }
+
+        if (!securityProperties.getSanitization().getResponse().isEnabled()) {
+            log.debug("响应脱敏已关闭，跳过脱敏处理");
+            return Mono.just(content);
+        }
+
+        return performSanitization(content, contentType, "response");
+    }
+
+    @Override
+    public Mono<String> sanitizeForStorage(final String content, final String contentType) {
+        if (content == null || content.isEmpty()) {
+            return Mono.justOrEmpty(content);
+        }
+        final List<SanitizationRule> applicableRules = rules.values().stream()
+                .filter(SanitizationRule::isEnabled)
+                .filter(rule -> rule.isApplicableToContentType(contentType))
+                .toList();
+        if (applicableRules.isEmpty()) {
+            return Mono.just(content);
+        }
+        final boolean preserveJson =
+                securityProperties.getSanitization().getResponse().isPreserveJsonStructure();
+        return ruleEngine.applySanitizationRules(content, applicableRules, contentType, preserveJson)
+                .onErrorMap(throwable -> new SanitizationException("记录脱敏处理失败", throwable,
+                        ErrorCode.SANITIZATION_FAILED.code()));
+    }
+
+    /**
+     * 按当前 {@link SecurityProperties} 重建配置规则并热编译（供管理端热改后调用）。
+     */
+    public Mono<Void> rebuildRulesFromProperties() {
+        return Mono.fromRunnable(() -> {
+            rules.entrySet().removeIf(entry ->
+                    entry.getKey().startsWith("request-") || entry.getKey().startsWith("response-"));
+            ruleIdGenerator.set(1);
+            loadRequestRules();
+            loadResponseRules();
+            final List<SanitizationRule> allRules = new ArrayList<>(rules.values());
+            ruleEngine.compileRules(allRules).subscribe(
+                    unused -> log.info("脱敏配置规则已热重建，共 {} 条", allRules.size()),
+                    error -> log.error("脱敏配置规则热重建失败", error)
+            );
+        });
+    }
+    
+    /**
+     * 执行脱敏处理
+     */
+    private Mono<String> performSanitization(final String content, final String contentType, final String type) {
+        // issue #456：请求/响应/存储三条脱敏都走这里，是脱敏指标的唯一天然埋点。
+        // 只记录 operations 与耗时；ruleMatch 需要规则引擎回传命中数（当前签名只有内容），另批处理。
+        final Timer.Sample sample = securityMetrics != null ? securityMetrics.startSanitizationTimer() : null;
+        if (securityMetrics != null) {
+            securityMetrics.recordSanitizationOperation(contentType, type);
+        }
+        Mono<String> result = doPerformSanitization(content, contentType, type);
+        return result.doFinally(signal -> {
+            if (securityMetrics != null && sample != null) {
+                securityMetrics.recordSanitizationDuration(sample, type);
+            }
+        });
+    }
+
+    private Mono<String> doPerformSanitization(final String content, final String contentType, final String type) {
+        // 获取适用的规则
+        List<SanitizationRule> applicableRules = rules.values().stream()
+                .filter(rule -> rule.getRuleId().startsWith(type))
+                .filter(SanitizationRule::isEnabled)
+                .filter(rule -> rule.isApplicableToContentType(contentType))
+                .toList();
+        
+        if (applicableRules.isEmpty()) {
+            return Mono.just(content);
+        }
+        
+        boolean preserveJson = securityProperties.getSanitization().getResponse().isPreserveJsonStructure();
+        
+        return ruleEngine.applySanitizationRules(content, applicableRules, contentType, preserveJson)
+                .onErrorMap(throwable -> new SanitizationException(
+                        String.format("%s脱敏处理失败", type.equals("request") ? "请求" : "响应"), 
+                        throwable, 
+                        ErrorCode.SANITIZATION_FAILED.code()));
+    }
+    
+    @Override
+    public Mono<Boolean> isUserWhitelisted(final String userId) {
+        if (userId == null || userId.trim().isEmpty()) {
+            return Mono.just(false);
+        }
+        
+        List<String> whitelistUsers = securityProperties.getSanitization().getRequest().getWhitelistUsers();
+        boolean isWhitelisted = whitelistUsers.contains(userId);
+        
+        log.debug("检查用户白名单: userId={}, isWhitelisted={}", userId, isWhitelisted);
+        return Mono.just(isWhitelisted);
+    }
+    
+    @Override
+    public Mono<List<SanitizationRule>> getAllRules() {
+        return Mono.just(new ArrayList<>(rules.values()));
+    }
+    
+    @Override
+    public Mono<Void> updateRules(final List<SanitizationRule> newRules) {
+        return Mono.fromRunnable(() -> {
+            log.info("更新脱敏规则，新规则数量: {}", newRules.size());
+            
+            // 验证所有规则
+            for (SanitizationRule rule : newRules) {
+                if (rule.getRuleId() == null || rule.getRuleId().trim().isEmpty()) {
+                    throw new SanitizationException("规则ID不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+                }
+                if (rule.getPattern() == null || rule.getPattern().trim().isEmpty()) {
+                    throw new SanitizationException("规则模式不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+                }
+                if (rule.getStrategy() == null) {
+                    throw new SanitizationException("规则策略不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+                }
+            }
+            
+            // 清除现有规则
+            rules.clear();
+            
+            // 添加新规则
+            for (SanitizationRule rule : newRules) {
+                rules.put(rule.getRuleId(), rule);
+            }
+            
+            // 重新编译规则
+            ruleEngine.compileRules(newRules).subscribe(
+                    unused -> log.info("脱敏规则更新完成"),
+                    error -> log.error("脱敏规则编译失败", error)
+            );
+        });
+    }
+    
+    @Override
+    public Mono<Void> addRule(final SanitizationRule rule) {
+        return Mono.fromRunnable(() -> {
+            if (rule == null) {
+                throw new SanitizationException("规则不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+            }
+            
+            if (rule.getRuleId() == null || rule.getRuleId().trim().isEmpty()) {
+                throw new SanitizationException("规则ID不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+            }
+            
+            if (rules.containsKey(rule.getRuleId())) {
+                throw new SanitizationException("规则ID已存在: " + rule.getRuleId(), 
+                        ErrorCode.INVALID_SANITIZATION_RULE.code());
+            }
+            
+            // 验证规则
+            ruleEngine.validateRule(rule).subscribe(isValid -> {
+                if (!isValid) {
+                    throw new SanitizationException("无效的脱敏规则: " + rule.getRuleId(), 
+                            ErrorCode.INVALID_SANITIZATION_RULE.code());
+                }
+                
+                rules.put(rule.getRuleId(), rule);
+                log.info("添加脱敏规则: {}", rule.getRuleId());
+                
+                // 编译新规则
+                ruleEngine.compileRules(List.of(rule)).subscribe(
+                        unused -> log.debug("新规则编译完成: {}", rule.getRuleId()),
+                        error -> log.error("新规则编译失败: {}", rule.getRuleId(), error)
+                );
+            });
+        });
+    }
+    
+    @Override
+    public Mono<Void> removeRule(final String ruleId) {
+        return Mono.fromRunnable(() -> {
+            if (ruleId == null || ruleId.trim().isEmpty()) {
+                throw new SanitizationException("规则ID不能为空", ErrorCode.INVALID_SANITIZATION_RULE.code());
+            }
+            
+            SanitizationRule removedRule = rules.remove(ruleId);
+            if (removedRule == null) {
+                log.warn("尝试删除不存在的规则: {}", ruleId);
+            } else {
+                log.info("删除脱敏规则: {}", ruleId);
+            }
+        });
+    }
+    
+    /**
+     * 重新加载配置中的规则
+     */
+    public Mono<Void> reloadConfigurationRules() {
+        return Mono.fromRunnable(() -> {
+            log.info("重新加载配置中的脱敏规则");
+            
+            // 清除现有的配置规则（保留手动添加的规则）
+            rules.entrySet().removeIf(entry -> 
+                    entry.getKey().startsWith("request-") || entry.getKey().startsWith("response-"));
+            
+            // 重新加载配置规则
+            loadRequestRules();
+            loadResponseRules();
+            
+            // 重新编译所有规则
+            List<SanitizationRule> allRules = new ArrayList<>(rules.values());
+            ruleEngine.compileRules(allRules).subscribe(
+                    unused -> log.info("脱敏规则重新加载完成，共 {} 条规则", allRules.size()),
+                    error -> log.error("脱敏规则重新编译失败", error)
+            );
+        });
+    }
+    
+    /**
+     * 获取规则统计信息
+     */
+    public Mono<RuleStatistics> getRuleStatistics() {
+        return Mono.fromCallable(() -> {
+            long totalRules = rules.size();
+            long enabledRules = rules.values().stream().filter(SanitizationRule::isEnabled).count();
+            long requestRules = rules.keySet().stream().filter(id -> id.startsWith("request-")).count();
+            long responseRules = rules.keySet().stream().filter(id -> id.startsWith("response-")).count();
+            
+            return new RuleStatistics(totalRules, enabledRules, requestRules, responseRules);
+        });
+    }
+
+    /**
+         * 规则统计信息
+         */
+        public record RuleStatistics(long totalRules, long enabledRules, long requestRules, long responseRules) {
+
+        @Override
+            public String toString() {
+                return String.format("RuleStatistics{total=%d, enabled=%d, request=%d, response=%d}",
+                        totalRules, enabledRules, requestRules, responseRules);
+            }
+        }
+}

@@ -1,0 +1,464 @@
+<template>
+  <div class="trace-detail" v-loading="loading">
+    <template v-if="traceChain">
+      <!-- 追踪概要 -->
+      <el-card class="summary-card" shadow="never">
+        <el-descriptions :column="4" border>
+          <el-descriptions-item label="Trace ID">
+            <div class="trace-id-cell">
+              <code>{{ traceChain.traceId }}</code>
+              <el-button text type="primary" size="small" @click="copyTraceId">
+                <el-icon><CopyDocument /></el-icon>
+              </el-button>
+            </div>
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.service')">{{ traceChain.serviceName }}</el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.totalDuration')">
+            <span :class="{ 'text-danger': (traceChain.stats?.totalDuration ?? 0) > 1000 }">
+              {{ Math.round(traceChain.stats?.totalDuration || 0) }}ms
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.spanCount')">{{ traceChain.stats?.totalSpans || 0 }}</el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.startTime')">{{ formatTime(traceChain.startTime) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.status')">
+            <el-tag :type="hasError ? 'danger' : 'success'">
+              {{ hasError ? t('tracing.traceDetail.error') : t('tracing.traceDetail.success') }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.errorCount')" v-if="(traceChain.stats?.errorCount ?? 0) > 0">
+            <el-tag type="danger">{{ traceChain.stats?.errorCount }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('tracing.traceDetail.avgDuration')">{{ Math.round(traceChain.stats?.avgDuration || 0) }}ms</el-descriptions-item>
+        </el-descriptions>
+      </el-card>
+
+      <!-- 追踪链路时序图 -->
+      <el-card class="timeline-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <span>{{ t('tracing.traceDetail.timelineTitle') }}</span>
+            <el-button-group>
+              <el-button size="small" @click="exportTrace">
+                <el-icon><Download /></el-icon>
+                {{ t('tracing.traceDetail.export') }}
+              </el-button>
+            </el-button-group>
+          </div>
+        </template>
+        <div ref="ganttChart" class="gantt-chart"></div>
+      </el-card>
+
+      <!-- Span 详情列表 -->
+      <el-card class="spans-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <span>{{ t('tracing.traceDetail.spansTitle', { count: sortedSpans.length }) }}</span>
+            <el-input
+              v-model="spanSearch"
+              :placeholder="t('tracing.traceDetail.searchPlaceholder')"
+              clearable
+              style="width: 200px"
+            >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+            </el-input>
+          </div>
+        </template>
+        <el-table :data="filteredSpans" style="width: 100%" size="small" row-key="spanId">
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="span-attributes" v-if="row.attributes">
+                <h5>{{ t('tracing.traceDetail.attributes') }}</h5>
+                <el-descriptions :column="2" border size="small">
+                  <el-descriptions-item
+                    v-for="(value, key) in row.attributes"
+                    :key="key"
+                    :label="key"
+                  >
+                    {{ formatAttributeValue(value) }}
+                  </el-descriptions-item>
+                </el-descriptions>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="operationName" :label="t('tracing.traceDetail.operation')" min-width="200">
+            <template #default="{ row }">
+              <div class="operation-cell">
+                <el-icon :size="14" :color="row.error ? 'var(--ja-danger)' : 'var(--ja-success)'">
+                  <component :is="row.error ? CircleCloseFilled : CircleCheckFilled" />
+                </el-icon>
+                <span>{{ row.operationName }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="duration" :label="t('tracing.traceDetail.duration')" width="100" sortable>
+            <template #default="{ row }">
+              <span :class="getDurationClass(row.duration)">
+                {{ Math.round(row.duration) }}ms
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="startTime" :label="t('tracing.traceDetail.startTime')" width="140">
+            <template #default="{ row }">
+              {{ formatTime(row.startTime) }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="statusCode" :label="t('tracing.traceDetail.statusCode')" width="80">
+            <template #default="{ row }">
+              <el-tag :type="getStatusCodeType(row.statusCode)" size="small">
+                {{ row.statusCode || '-' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </template>
+
+    <el-empty v-else-if="!loading" :description="t('tracing.traceDetail.noData')" />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import * as echarts from 'echarts'
+import { ElMessage } from 'element-plus'
+import {
+  CopyDocument, Download, Search, CircleCheckFilled, CircleCloseFilled
+} from '@element-plus/icons-vue'
+import { getTraceChain } from '@/api/tracing'
+import type { TraceChainResponse } from '@/types/tracing'
+import { useChartTheme } from '@/composables/useChartTheme'
+import { useChartAutoRefresh } from '@/composables/useChartAutoRefresh'
+
+const props = defineProps<{
+  traceId: string
+}>()
+
+const { getChartTheme } = useChartTheme()
+const { t } = useI18n()
+
+const loading = ref(false)
+const traceChain = ref<TraceChainResponse | null>(null)
+const spanSearch = ref('')
+const ganttChart = ref<HTMLElement | null>(null)
+let ganttChartInstance: echarts.ECharts | null = null
+
+const hasError = computed(() => {
+  return traceChain.value?.spans?.some((s) => s.error) || false
+})
+
+const sortedSpans = computed(() => {
+  if (!traceChain.value?.spans) return []
+  return [...traceChain.value.spans].sort((a, b) =>
+    new Date(a.startTime ?? 0).getTime() - new Date(b.startTime ?? 0).getTime()
+  )
+})
+
+const filteredSpans = computed(() => {
+  if (!spanSearch.value) return sortedSpans.value
+  const search = spanSearch.value.toLowerCase()
+  return sortedSpans.value.filter((s) =>
+    s.operationName?.toLowerCase().includes(search)
+  )
+})
+
+const loadTraceChain = async () => {
+  if (!props.traceId) return
+
+  loading.value = true
+  try {
+    const response = await getTraceChain(props.traceId)
+    const data = (response.data?.data || response.data) as TraceChainResponse | undefined
+    if (data) {
+      traceChain.value = data
+      await nextTick()
+      renderGanttChart()
+    }
+  } catch (error) {
+    console.error('加载追踪链路失败:', error)
+    ElMessage.error(t('tracing.traceDetail.messages.loadChainFailed'))
+  } finally {
+    loading.value = false
+  }
+}
+
+const buildGanttOption = () => {
+  const spans = sortedSpans.value
+  if (spans.length === 0) return null
+
+  const baseTime = new Date(spans[0].startTime ?? 0).getTime()
+  const ganttData = spans.map((span, index: number) => {
+    const startTime = new Date(span.startTime ?? 0).getTime()
+    const duration = span.duration ?? 0
+    const relativeStart = startTime - baseTime
+
+    return {
+      name: span.operationName,
+      spanId: span.spanId,
+      value: [index, relativeStart, relativeStart + duration, duration],
+      itemStyle: {
+        color: span.error ? getChartTheme().danger : getSpanColor(span.operationName ?? '')
+      }
+    }
+  })
+
+  const categories = spans.map((span) => {
+    const name = span.operationName || ''
+    return name.length > 30 ? `${name.substring(0, 30)  }...` : name
+  })
+
+  const maxDuration = Math.max(...ganttData.map((d) => d.value[2] ?? 0))
+
+  const option = {
+    tooltip: {
+      // echarts 的 formatter 入参类型很宽，这里收成「甘特条自带的那几个字段」（#522）
+      formatter: (params: unknown) => {
+        const data = (params as { data: { name?: string; spanId?: string; value: number[] } }).data
+        return `
+          <div style="max-width: 300px;">
+            <div style="font-weight: bold; margin-bottom: 8px;">${data.name}</div>
+            <div>${t('tracing.traceDetail.tooltip.spanId')}: ${data.spanId?.substring(0, 16)}...</div>
+            <div>${t('tracing.traceDetail.tooltip.startOffset')}: +${Math.round(data.value[1])}ms</div>
+            <div>${t('tracing.traceDetail.tooltip.duration')}: ${Math.round(data.value[3])}ms</div>
+          </div>
+        `
+      }
+    },
+    grid: {
+      left: '25%',
+      right: '10%',
+      top: '10%',
+      bottom: '10%'
+    },
+    xAxis: {
+      type: 'value',
+      name: t('tracing.traceDetail.timeOffset'),
+      nameLocation: 'middle',
+      nameGap: 30,
+      min: 0,
+      max: maxDuration * 1.1,
+      axisLabel: {
+        formatter: (value: number) => `+${Math.round(value)}ms`
+      }
+    },
+    yAxis: {
+      type: 'category',
+      data: categories,
+      axisLabel: {
+        fontSize: 11,
+        width: 150,
+        overflow: 'truncate'
+      },
+      axisTick: { show: false },
+      axisLine: { show: false }
+    },
+    series: [{
+      type: 'custom',
+      // echarts 自定义系列的 renderItem：入参类型同样很宽，这里只用到 value/coord/size/style（#522）
+      renderItem: (params: unknown, api: unknown) => {
+        void params
+        const a = api as {
+          value: (index: number) => number
+          coord: (point: number[]) => number[]
+          size: (range: number[]) => number[]
+          style: () => Record<string, unknown>
+        }
+        const categoryIndex = a.value(0)
+        const start = a.coord([a.value(1), categoryIndex])
+        const end = a.coord([a.value(2), categoryIndex])
+        const height = a.size([0, 1])[1] * 0.6
+
+        return {
+          type: 'rect',
+          shape: {
+            x: start[0],
+            y: start[1] - height / 2,
+            width: Math.max(end[0] - start[0], 2),
+            height
+          },
+          style: {
+            ...a.style(),
+            shadowBlur: 2,
+            shadowColor: 'rgba(0, 0, 0, 0.1)'
+          }
+        }
+      },
+      data: ganttData
+    }]
+  }
+
+  return option
+}
+
+const renderGanttChart = () => {
+  if (!ganttChart.value || !traceChain.value?.spans) return
+
+  ganttChartInstance?.dispose()
+  ganttChartInstance = echarts.init(ganttChart.value)
+
+  const option = buildGanttOption()
+  if (option) ganttChartInstance.setOption(option)
+}
+
+// 语言 / 主题切换后基于当前 traceChain 数据重建甘特图（纯重绘，无网络请求）
+const rebuildAll = () => {
+  if (!ganttChartInstance || !traceChain.value?.spans) return
+
+  const option = buildGanttOption()
+  if (option) ganttChartInstance.setOption(option)
+}
+
+const getSpanColor = (operationName: string) => {
+  const theme = getChartTheme()
+  if (operationName.includes('HTTP')) return theme.primary
+  if (operationName.includes('adapter')) return theme.success
+  if (operationName.includes('backend')) return theme.warning
+  if (operationName.includes('gateway')) return theme.info
+  return theme.primary
+}
+
+const copyTraceId = async () => {
+  try {
+    await navigator.clipboard.writeText(props.traceId)
+    ElMessage.success(t('tracing.traceDetail.messages.traceIdCopied'))
+  } catch {
+    ElMessage.error(t('tracing.traceDetail.messages.copyFailed'))
+  }
+}
+
+const exportTrace = () => {
+  if (!traceChain.value) return
+
+  const dataStr = JSON.stringify(traceChain.value, null, 2)
+  const blob = new Blob([dataStr], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `trace-${props.traceId}.json`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+
+  ElMessage.success(t('tracing.traceDetail.messages.traceExported'))
+}
+
+const formatTime = (timeStr?: string) => {
+  if (!timeStr) return ''
+  try {
+    const date = new Date(timeStr)
+    return date.toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  } catch {
+    return timeStr
+  }
+}
+
+const formatAttributeValue = (value: unknown) => {
+  if (value === null || value === undefined) return '-'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+const getDurationClass = (duration: number) => {
+  if (duration > 1000) return 'text-danger'
+  if (duration > 500) return 'text-warning'
+  return ''
+}
+
+const getStatusCodeType = (statusCode: string) => {
+  if (!statusCode) return 'info'
+  const code = parseInt(statusCode)
+  if (code >= 200 && code < 300) return 'success'
+  if (code >= 400 && code < 500) return 'warning'
+  if (code >= 500) return 'danger'
+  return 'info'
+}
+
+watch(() => props.traceId, () => {
+  loadTraceChain()
+}, { immediate: true })
+
+onMounted(() => {
+  useChartAutoRefresh(rebuildAll)
+})
+
+onBeforeUnmount(() => {
+  ganttChartInstance?.dispose()
+  ganttChartInstance = null
+})
+</script>
+
+<style scoped>
+.trace-detail {
+  padding: 0;
+}
+
+.summary-card {
+  margin-bottom: 16px;
+}
+
+.trace-id-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-id-cell code {
+  font-family: monospace;
+  background: var(--el-fill-color-light);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.timeline-card {
+  margin-bottom: 16px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gantt-chart {
+  height: 300px;
+}
+
+.spans-card {
+  margin-bottom: 16px;
+}
+
+.operation-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.span-attributes {
+  padding: 12px;
+  background: var(--el-fill-color-light);
+}
+
+.span-attributes h5 {
+  margin: 0 0 12px 0;
+  color: var(--ja-text-regular);
+}
+
+.text-danger {
+  color: var(--ja-danger);
+  font-weight: 500;
+}
+
+.text-warning {
+  color: var(--ja-warning);
+}
+</style>

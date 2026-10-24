@@ -50,11 +50,18 @@
       <artifactId>archunit-junit5</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 厂商自己的客户端。它只在测试里出现，作用是把「标准客户端能否直接解析我们的响应」
+         这件事交给第三方判定：自己写断言证明自己合规，等于自己批自己的卷子。 -->
+    <dependency>
+      <groupId>com.openai</groupId>
+      <artifactId>openai-java</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
-      <!-- 打出可执行 jar：目的是让「寻址程 jar 能不能起得来」这件事可以用一条命令回答，
+      <!-- 打出可执行 jar：目的是让「可执行 jar 能不能起得来」这件事可以用一条命令回答，
            而不是先祈祷 IDE 的 run configuration 和它一致。版本号由 Boot 父 POM 提供。 -->
       <plugin>
         <groupId>org.springframework.boot</groupId>

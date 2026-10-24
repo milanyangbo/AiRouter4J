@@ -30,6 +30,7 @@ airouter:
     base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
     api-key: ${AIROUTER_ENDPOINT_API_KEY:}
     model: ${AIROUTER_ENDPOINT_MODEL:}
+    request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
 
 ---
 # 本地档位：无网络也能起来，也不向任何外部服务发起连接。

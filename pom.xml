@@ -51,6 +51,11 @@
     <!-- 结构约束用的库。它只在测试作用域出现，不进入任何运行时 classpath。 -->
     <archunit.version>1.5.1</archunit.version>
 
+    <!-- 官方 OpenAI Java 客户端。**只在测试作用域出现**，用途是把「响应能不能被标准客户端解析」
+         这件事交给第三方来判，而不是由我们自己写一遍断言去证明自己合规。
+         它不参与任何运行时 classpath，网关侧不允许出现任何厂商 SDK。 -->
+    <openai-java.version>4.91.0</openai-java.version>
+
     <!-- 与 maven-checkstyle-plugin 3.6.0 配对的版本（ADR-0002）。 -->
     <checkstyle.version>10.21.2</checkstyle.version>
 
@@ -93,6 +98,13 @@
         <groupId>com.tngtech.archunit</groupId>
         <artifactId>archunit-junit5</artifactId>
         <version>${archunit.version}</version>
+        <scope>test</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>com.openai</groupId>
+        <artifactId>openai-java</artifactId>
+        <version>${openai-java.version}</version>
         <scope>test</scope>
       </dependency>
     </dependencies>

@@ -71,6 +71,11 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 - **本机端点的安装、起停与实测能力边界见 `docs/runbook/local-openai-endpoint.md`**。
   需要打真实 model 在线协议形状之前先读第 6 节台账：那里记了哪些用法能用（`include_usage` 会来一帧 `choices` 为空数组的纯用量帧），
   哪些不能用（流式工具调用在小模型上不确定，不能做 golden-file 断言）。本机地址写 `127.0.0.1` 不写 `localhost` —— Ollama 只监听 IPv4
+- **`verify` 需要本机模型端点在跑**：真实端点的那两条测试不做静默跳过（一个可以被跳过的兼容性测试等于没有）。
+  端点没起来时它们会红并给出指路信息；起停见上面那份 runbook
+- **对外 wire format 的契约测试在 `airouter-app/src/test/resources/contract/`**：一个用例一个目录，
+  放 `upstream.json` + `expected.json` 两个文件即被发现，**不需要改任何测试代码**。
+  约定写在该目录的 `README.md` 里。未来任何框架升级之后，最先能告诉你「序列化行为变了」的就是它们
 - 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
   外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么

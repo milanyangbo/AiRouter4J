@@ -1,7 +1,9 @@
 package io.github.airouter.gateway.config;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -45,7 +47,32 @@ public record EndpointProperties(
 
     /** 默认模型名。 */
     @NotBlank(message = "缺少模型名：请在环境变量 AIROUTER_ENDPOINT_MODEL 里给出")
-    String model) {
+    String model,
+
+    /**
+     * 单次调用的总上限（GLOSSARY 的 {@code Endpoint} = baseUrl / 凭证 / 超时）。
+     *
+     * <p>超时必须显式存在。留空让它掉进某个默认值，等于把「一条请求最多占多久」
+     * 变成一件只有看过实现才知道的事；流式接进来之后还要在它旁边区分「帧间空闲」，
+     * 那时更不能有一个含糊的默认值挡在前面。
+     */
+    @NotNull(message = "缺少调用超时：请在环境变量 AIROUTER_ENDPOINT_TIMEOUT 里给出")
+    Duration requestTimeout) {
+
+  /**
+   * 必须是正数。
+   *
+   * <p>这里用构造器检查而不是 Bean Validation：手上的 validator 已经没有 Duration 范围的约束了，
+   * 而「等到第一次调用才因为 0 或负数炸掉」正是本项目要避开的那类失败。放在这里至少是起不来。
+   *
+   * @throws IllegalArgumentException 超时为 0 或负数时抛出
+   */
+  public EndpointProperties {
+    if (requestTimeout != null && (requestTimeout.isZero() || requestTimeout.isNegative())) {
+      throw new IllegalArgumentException(
+          "环境变量 " + TIMEOUT_ENV + " 必须是正数，收到的是 " + requestTimeout);
+    }
+  }
 
   /** 属性前缀。写在常量里，让 yml、测试与出错信息引用的是同一个字符串。 */
   public static final String PREFIX = "airouter.endpoint";
@@ -58,4 +85,10 @@ public record EndpointProperties(
 
   /** model 的环境变量名。 */
   public static final String MODEL_ENV = "AIROUTER_ENDPOINT_MODEL";
+
+  /** request-timeout 的环境变量名。 */
+  public static final String TIMEOUT_ENV = "AIROUTER_ENDPOINT_TIMEOUT";
+
+  /** 默认超时。它只是兜底，不替代显式配置。 */
+  public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
 }

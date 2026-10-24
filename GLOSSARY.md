@@ -73,6 +73,23 @@
 **wire format**
 协议在传输层上的实际字节/JSON 形状（OpenAI 的 JSON Schema、Anthropic 的 SSE event 类型等）。翻译层的全部工作就是 Canonical ↔ wire format 的互转。
 
+**Passthrough**（透传位）
+Canonical 上用来装「网关不解释但必须转发」的字段的容器，`Map<String, String>`，值是 JSON 原文。
+它挂在三个层级：响应顶层、每个候选、每条消息、以及 usage 内部 —— 厂商在这些位置挂私有字段都很常见。
+> 值是原文而不是解析后的对象：core 不许依赖 Jackson，所以只能是文本；解码时再解析一次。
+
+**CompletionPort**（完成端口）
+Face 与 Provider 之间的端口：Face 只认识它，Provider 实现它。返回 `CompletionStage<CanonicalResponse>`。
+> 不返回 `Mono`：Reactor 进入 core 的依赖树会被 enforcer 判红，因此用 JDK 类型表达「异步结果」。
+
+**GatewayError**
+网关自己定义的错误形态（`type` / `message` / `httpStatus`）。从传输层故障到上游 4xx/5xx，
+最终都会收敛成一个 GatewayError 到达 Face，让错误只有一处收口。
+
+**UpstreamFailure**
+携带 {@code GatewayError} 的失败。它是 unchecked 的：调用链上的中间层都不打算处理它，
+只有 Face 在边界上收口一次。
+
 ---
 
 ## 三、流式管道

@@ -17,11 +17,18 @@
   <description>入站 Face、出站 Provider、transport、routing、governance（ADR-0003 第 2 节）。</description>
 
   <dependencies>
-    <!-- gateway 只允许依赖 core。HTTP 运行时（WebFlux）留到做到入站路径的那一票：
-         先放进来的依赖，后面没有人会去检查它还该不该在。 -->
+    <!-- gateway 只允许依赖 core 与本层的运行时。跨层协同走 core 里的端口，不走具体类。 -->
     <dependency>
       <groupId>io.github.airouter</groupId>
       <artifactId>airouter-core</artifactId>
+    </dependency>
+
+    <!-- WebFlux 在打通入站 Face 的那一票（票 05）引入。同一个运行时同时服务两个方向：
+         出站用 WebClient，入站用它的 Face 注解。选它的理由是网关两头都是长连接与流式，
+         阻塞式 IO 会把一条流的成本压在一个线程上（ADR-0002）。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webflux</artifactId>
     </dependency>
 
     <!-- Endpoint 的绑定与校验需要 Spring Boot 的属性基础设施与 jakarta validation。

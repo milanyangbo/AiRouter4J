@@ -42,7 +42,11 @@
                   <searchTransitive>true</searchTransitive>
                   <excludes>
                     <exclude>org.springframework*</exclude>
+                    <!-- Jackson 2 与 Jackson 3 都要写：Boot 4 已经把 databind 的坐标换到
+                         tools.jackson 之下，只写 com.fasterxml.jackson* 会让 R1 在这里失效，
+                         而它失效的方式是静默的 —— 什么都不报。 -->
                     <exclude>com.fasterxml.jackson*</exclude>
+                    <exclude>tools.jackson*</exclude>
                     <exclude>io.projectreactor*</exclude>
                   </excludes>
                 </bannedDependencies>

@@ -1,10 +1,12 @@
 package io.github.airouter.gateway.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import java.time.Duration;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
@@ -21,6 +23,8 @@ final class EndpointPropertiesValidationTest {
 
   private static final String CLOUD_BASE_URL = "https://api.example.com/v1";
 
+  private static final Duration TIMEOUT = Duration.ofSeconds(30);
+
   private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
   private Set<String> messagesOf(EndpointProperties properties) {
@@ -33,7 +37,7 @@ final class EndpointPropertiesValidationTest {
   @Test
   @DisplayName("三项全缺时，三条报错各自指名对应的环境变量")
   void everyMissingFieldNamesItsOwnEnvironmentVariable() {
-    Set<String> messages = messagesOf(new EndpointProperties("", "", ""));
+    Set<String> messages = messagesOf(new EndpointProperties("", "", "", TIMEOUT));
 
     assertThat(messages).anyMatch(m -> m.contains(EndpointProperties.BASE_URL_ENV));
     assertThat(messages).anyMatch(m -> m.contains(EndpointProperties.API_KEY_ENV));
@@ -44,7 +48,7 @@ final class EndpointPropertiesValidationTest {
   @DisplayName("base-url 少了 /v1 后缀时，报错给出「补上 /v1」级别的提示")
   void baseUrlWithoutV1SuffixIsRejected() {
     Set<String> messages =
-        messagesOf(new EndpointProperties("https://api.example.com", "key", "model"));
+        messagesOf(new EndpointProperties("https://api.example.com", "key", "model", TIMEOUT));
 
     assertThat(messages).anyMatch(m -> m.contains("/v1"));
     assertThat(messages).anyMatch(m -> m.contains(EndpointProperties.BASE_URL_ENV));
@@ -54,7 +58,7 @@ final class EndpointPropertiesValidationTest {
   @DisplayName("带尾斜杠同样不被接受：它没有 /v1 结尾这个性质")
   void trailingSlashIsRejected() {
     Set<String> messages =
-        messagesOf(new EndpointProperties("https://api.example.com/v1/", "key", "model"));
+        messagesOf(new EndpointProperties("https://api.example.com/v1/", "key", "model", TIMEOUT));
 
     assertThat(messages).anyMatch(m -> m.contains("/v1"));
   }
@@ -62,7 +66,7 @@ final class EndpointPropertiesValidationTest {
   @Test
   @DisplayName("非 http(s) 的地址不被接受")
   void nonHttpSchemeIsRejected() {
-    Set<String> messages = messagesOf(new EndpointProperties("ftp://host/v1", "key", "model"));
+    Set<String> messages = messagesOf(new EndpointProperties("ftp://host/v1", "key", "model", TIMEOUT));
 
     assertThat(messages).isNotEmpty();
   }
@@ -70,14 +74,33 @@ final class EndpointPropertiesValidationTest {
   @Test
   @DisplayName("形态正确的云端端点通过校验")
   void wellFormedCloudEndpointIsAccepted() {
-    assertThat(messagesOf(new EndpointProperties(CLOUD_BASE_URL, "real-key", "deepseek-chat")))
+    assertThat(messagesOf(new EndpointProperties(CLOUD_BASE_URL, "real-key", "deepseek-chat", TIMEOUT)))
         .isEmpty();
   }
 
   @Test
-  @DisplayName("本地 Ollama 端点通过校验：localhost 地址同样要满足 /v1 约定")
+  @DisplayName("超时为 0 或负数时在启动期就失败：等到第一次调用才炸等于把配置错误伪装成运行期故障")
+  void nonPositiveTimeoutIsRejectedAtStartup() {
+    assertThatThrownBy(() -> new EndpointProperties(CLOUD_BASE_URL, "key", "model", Duration.ZERO))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(EndpointProperties.TIMEOUT_ENV);
+    assertThatThrownBy(() -> new EndpointProperties(CLOUD_BASE_URL, "key", "model", Duration.ofSeconds(-1)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(EndpointProperties.TIMEOUT_ENV);
+  }
+
+  @Test
+  @DisplayName("超时为空时被 @NotNull 拦住")
+  void missingTimeoutIsNamed() {
+    Set<String> messages = messagesOf(new EndpointProperties(CLOUD_BASE_URL, "key", "model", null));
+
+    assertThat(messages).anyMatch(m -> m.contains(EndpointProperties.TIMEOUT_ENV));
+  }
+
+  @Test
+  @DisplayName("本地 Ollama 端点通过校验：环回地址同样要满足 /v1 约定")
   void localOllamaEndpointIsAccepted() {
-    assertThat(messagesOf(new EndpointProperties("http://localhost:11434/v1", "ollama", "q:")))
+    assertThat(messagesOf(new EndpointProperties("http://127.0.0.1:11434/v1", "ollama", "q:", TIMEOUT)))
         .isEmpty();
   }
 }

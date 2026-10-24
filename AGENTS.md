@@ -63,6 +63,9 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 - JDK 21（当前 `java -version` = 21.0.12.1）；Maven 3.9.16 在 `~/soft/apache-maven-3.9.16`
 - Maven Wrapper 已入库，**统一用 `./mvnw`**，不要用系统里的 `mvn`（版本可能与门禁要求不符）
 - 默认构建路径即全部门禁：`./mvnw clean verify`。**不带任何 skip 参数** —— 门禁没有接受 skip 的配置入口
+- 跑起来：`java -jar airouter-app/target/airouter-app-0.1.0-SNAPSHOT.jar`，健康入口在 `/actuator/health`
+- 档位：`local`（默认，本机 Ollama，不需要网络）/ `cloud`（真实厂商端点，三个变量全部必填）。
+  切换只改 profile 或环境变量，**不改代码**；变量名清单见 `.env.example` 与 `EndpointProperties` 的常量
 - 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
   外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么

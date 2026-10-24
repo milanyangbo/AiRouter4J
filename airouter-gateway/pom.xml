@@ -17,11 +17,29 @@
   <description>入站 Face、出站 Provider、transport、routing、governance（ADR-0003 第 2 节）。</description>
 
   <dependencies>
-    <!-- gateway 只允许依赖 core。HTTP 运行时（WebFlux 等）在做到入站路径的那一票引入，
-         本票不预先放进来：先放进来的依赖，后面没有人会去检查它还该不该在。 -->
+    <!-- gateway 只允许依赖 core。HTTP 运行时（WebFlux）留到做到入站路径的那一票：
+         先放进来的依赖，后面没有人会去检查它还该不该在。 -->
     <dependency>
       <groupId>io.github.airouter</groupId>
       <artifactId>airouter-core</artifactId>
+    </dependency>
+
+    <!-- Endpoint 的绑定与校验需要 Spring Boot 的属性基础设施与 jakarta validation。
+         绑定只要 spring-boot 就够，但这里是 starters 的口径：
+         让「这个模块用 Spring Boot」这件事在依赖清单里有唯一一处形式，而不是拼零件。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 

@@ -1,0 +1,47 @@
+# 这里出现的只能是「指向环境变量的占位符」，不能有任何真实地址或密钥。
+# 三个名字与 EndpointProperties 里的常量同名，改动一处就是改错一处 —— 不要在这里手写字符串。
+#
+# 两个档位：
+#   local（默认）—— 本地 Ollama，不需要网络，不需要真实凭证。
+#   cloud        —— 真实厂商端点，三个变量全部必填，缺一个都起不来。
+# 切换只改 profile 或环境变量，不改代码。
+# 默认档位写成 active 而不是 default：后者取不到 —— 那是 Boot 2.4 之前由 configfile
+# listener 认领的键，现在只有 additional profiles 的路径。代价是它必须被更高优先级的来源覆盖
+# （环境变量 SPRING_PROFILES_ACTIVE 正好在其中），不能靠低优先级的配置文件改。
+spring:
+  application:
+    name: airouter
+  profiles:
+    active: local
+
+server:
+  port: 8080
+
+# 只暴露健康与信息两个入口：其余管理端点默认全关，需要时再逐个开。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+airouter:
+  endpoint:
+    # 缺省为空串，交给 EndpointProperties 的 @NotBlank 判红，报错会指名环境变量名。
+    base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
+    api-key: ${AIROUTER_ENDPOINT_API_KEY:}
+    model: ${AIROUTER_ENDPOINT_MODEL:}
+
+---
+# 本地档位：无网络也能起来，也不向任何外部服务发起连接。
+# 三个值都可以被同名环境变量覆盖 —— 意味着「换一台有卡的机器跑本地模型」同样不需要改代码。
+spring:
+  config:
+    activate:
+      on-profile: local
+
+airouter:
+  endpoint:
+    base-url: ${AIROUTER_ENDPOINT_BASE_URL:http://localhost:11434/v1}
+    # Ollama 忽略密钥，这里给的是占位串，不是凭证。真实凭证只存在于环境里。
+    api-key: ${AIROUTER_ENDPOINT_API_KEY:ollama}
+    model: ${AIROUTER_ENDPOINT_MODEL:qwen2.5:0.5b}

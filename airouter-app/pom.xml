@@ -26,9 +26,18 @@
       <artifactId>airouter-agent</artifactId>
     </dependency>
 
+    <!-- WebFlux 而不是 Servlet：网关两头的流量都是长连接 + 流式，
+         阻塞式 IO 模型在这里会把一条流的成本压在一个线程上（AGENTS.md 纪律 4）。
+         它同时是后续所有端到端测试的入站 seam —— 整个项目只允许有这一个。 -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter</artifactId>
+      <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+
+    <!-- 存活/健康入口。后续所有端到端行为都要先打通它才谈得上打进去。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
     <dependency>
@@ -42,5 +51,24 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <!-- 打出可执行 jar：目的是让「寻址程 jar 能不能起得来」这件事可以用一条命令回答，
+           而不是先祈祷 IDE 的 run configuration 和它一致。版本号由 Boot 父 POM 提供。 -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>repackage</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 
 </project>

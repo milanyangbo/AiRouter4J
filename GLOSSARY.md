@@ -27,6 +27,19 @@
 一个 Service 下的具体后端：`id` + `Endpoint`（baseUrl / 凭证 / 超时）+ `ProviderKind` + 权重 + 启用标志。
 > 禁用：不要叫 backend / node / replica。
 
+**Endpoint 的取值来源**
+`Endpoint` 的 baseUrl 与凭证**只从环境变量读取**（`AIROUTER_ENDPOINT_BASE_URL` / `AIROUTER_ENDPOINT_API_KEY` / `AIROUTER_ENDPOINT_MODEL`），
+配置文件里出现的只能是占位符，任何受跟踪文件中都不出现真实凭证。
+
+**base-url 的 `/v1` 约定**
+地址必须以 `/v1` 结尾且不带尾斜杠。Spring AI 2.x 不再自动补这个后缀：
+少了它不在启动期报错，只会变成一次运行期的 404，因此它是一条**启动期校验**，在 `EndpointProperties` 里判红。
+
+**档位**（local / cloud）
+同一份代码运行在哪一类环境上：`local` 指向本机 OpenAI 兼容端点（Ollama），无网络也能起来；
+`cloud` 指向真实厂商端点，三个变量全部必填。切换只改 profile 或环境变量，**不改代码**。
+> 禁用：不要按 env / prod / dev 这类与环境生命周期绑定的词称呼它 —— 那是部署语义，不是端点语义。
+
 **ProviderKind**
 实例的协议种类枚举：`OPENAI_COMPATIBLE`、`ANTHROPIC`。决定用哪个 Provider 适配器。
 

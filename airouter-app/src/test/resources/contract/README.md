@@ -1,5 +1,10 @@
 # 契约用例的存放约定
 
+> 本目录与 `contract-stream/` 是**第一种形态**（OpenAI 兼容端点）的基线。
+> 第二种形态（Ollama 原生，逐行 JSON）的基线在 [`../contract-ollama/`](../contract-ollama/README.md)，
+> 那边由 `SecondProviderContractTest` 发现 —— 两者比的东西相同，输入那一侧的形态不同。
+> 改这里的任何文件都会让 `SecondProviderTouchesNoFaceTest` 变红，那是刻意的：加形态应当加新基线，不是改旧的。
+
 新增一个用例**不需要改任何代码**：在这个目录下建一个子目录，放入两个文件即可，
 `GoldenWireContractTest` 会自动发现它并参与构建。
 

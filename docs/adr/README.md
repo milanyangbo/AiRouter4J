@@ -20,6 +20,7 @@
 | [0006](./0006-streaming-terminal-outcome-contract.md) | 流式终态上报契约 | 已接受 | 流式链路、熔断、指标、配额 |
 | [0007](./0007-traffic-governance-model.md) | 流量治理模型 | 已接受 | 熔断、限流、健康判定、配额 |
 | [0008](./0008-verification-and-quality-gates.md) | 验证策略与质量门禁 | 已接受 | 构建、CI、测试金字塔 |
+| [0009](./0009-second-wire-shape-and-shape-self-description.md) | 第二种 wire 形态与「形态自述」 | 已接受 | Provider、transport 分帧、配置校验 |
 
 ## 依赖关系
 
@@ -32,6 +33,9 @@
   ├── 0005 Canonical ───── 0006 流式终态（终态事件定义在 Canonical 里）
   │                    │
   │                    └── 0007 流量治理（健康判定的输入来自终态）
+  │
+  ├── 0009 第二种 wire 形态（0005 那条「加 Provider 不碰 Face」的实证，
+  │                        并顺带决定分帧方式属于形态）
   │
   └── 0008 验证策略（0005/0006/0007 的契约都由它锁定）
 ```

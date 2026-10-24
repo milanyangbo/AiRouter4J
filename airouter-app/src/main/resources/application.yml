@@ -33,6 +33,10 @@ airouter:
     request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
     # 流式路径上的帧间静默上限，不是总时长：一条流可以很长，只要上游一直在说话。
     idle-timeout: ${AIROUTER_ENDPOINT_IDLE_TIMEOUT:15s}
+    # 端点说哪一种是哪一家的话：openai（兼容端点，地址以 /v1 结尾）/ ollama（原生接口，
+    # 地址以 /api 结尾，不用密钥，流式是逐行 JSON 而不是 SSE）。改它就能换一种 wire 形态，
+    # Face 与 core 都不参与 —— 这一条由 SecondProviderTouchesNoFaceTest 用差异统计守着。
+    provider: ${AIROUTER_ENDPOINT_PROVIDER:openai}
 
   # 可用性相关的阈值。默认值集中在一处（governance 的 AvailabilityPolicy），
   # 这里只是把它们接到环境变量上 —— 不要在别处再写一遍同名常量。

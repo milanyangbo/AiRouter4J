@@ -1,0 +1,19 @@
+{
+  "frames": [
+    {
+      "id": "",
+      "object": "chat.completion.chunk",
+      "created": 1792842051,
+      "model": "qwen2.5:0.5b",
+      "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": null}]
+    },
+    {
+      "error": {
+        "message": "上游在结束之前关闭了连接：这条流的内容可能不完整",
+        "type": "upstream_closed",
+        "code": null
+      }
+    },
+    "[DONE]"
+  ]
+}

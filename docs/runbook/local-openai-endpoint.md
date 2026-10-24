@@ -179,6 +179,7 @@ data: {"id":"chatcmpl-30","object":"chat.completion.chunk",...,"choices":[],"usa
 | `model 'x' not found` | `ollama list` 看实际名字——tag 必须完整，比如 `qwen2.5:0.5b` 不能省成 `qwen2.5` |
 | `brew install` 报 out of tap trust | 见第 3 节 |
 | 网关起来了，但健康入口不在 8080 | 见下方「一个与本机端点无关、但每次都会遇上的坑」 |
+| 形态配成 `ollama` 却起不来，报地址形态不符 | 原生接口的地址根是 `/api` 不是 `/v1`：`AIROUTER_ENDPOINT_BASE_URL=http://127.0.0.1:11434/api`。同一台机器两个都在，靠形态区分，不靠地址猜 |
 
 **一个与本机端点无关、但每次都会遇上的坑**：这台机器的会话环境里带着 `SERVER__PORT=57456` 与 `SERVER__HOST=127.0.0.1` 两个变量。
 Spring 的宽松绑定会把它们认成 `server.port` / `server.host`，于是 `application.yml` 里写的 `server.port: 8080` 被静默覆盖：
@@ -189,3 +190,47 @@ Spring 的宽松绑定会把它们认成 `server.port` / `server.host`，于是 
 ```
 
 两个来回都已实测，不是推断。这条不涉及任何本项目的缺陷，但它决定了「健康入口到底在哪个端口」这件事不能靠默认值猜：跑进程时显式给 `--server.port=`，或先把变量去掉。
+
+---
+
+## 10. 同一台机器上还有另一种形态：原生接口（`/api/chat`）
+
+Ollama 同时提供两种接口，这是本项目第二种 wire 形态的来源（见 `docs/adr/0009-...`）：
+
+| | 兼容接口 | 原生接口 |
+|---|---|---|
+| 地址 | `http://127.0.0.1:11434/v1` | `http://127.0.0.1:11434/api` |
+| 路径 | `/chat/completions` | `/chat` |
+| 凭证 | 随便填（它不看） | **没有这一项** |
+| 流式 | SSE：`data: {...}`，以 `data: [DONE]` 收尾 | **逐行 JSON**：每行一个 JSON，没有 `data:` 前缀、没有 `[DONE]`，最后一帧的 `"done":true` 就是说完了 |
+| 用量 | `usage{prompt_tokens, completion_tokens, total_tokens}` | 顶层 `prompt_eval_count` / `eval_count`，**没有合计** |
+
+两条实测（本机 `qwen2.5:0.5b`）：
+
+```bash
+# 非流式
+curl -s http://127.0.0.1:11434/api/chat -d '{"model":"qwen2.5:0.5b",
+  "messages":[{"role":"user","content":"只回复两个字：你好"}],"stream":false}'
+# → {"model":"...","created_at":"2026-10-24T11:40:36.222856Z",
+#    "message":{"role":"assistant","content":"你好"},"done":true,"done_reason":"stop",
+#    "prompt_eval_count":35,"eval_count":2,...}
+
+# 生成参数写在 options 里，写在顶层会被静默忽略
+curl -s http://127.0.0.1:11434/api/chat -d '{"model":"qwen2.5:0.5b","messages":[…],
+  "stream":false,"options":{"temperature":0,"num_predict":8,"stop":["。"]}}'
+
+# 模型不存在：错误体是字符串，不是对象
+curl -s http://127.0.0.1:11434/api/chat -d '{"model":"nope","messages":[…],"stream":false}'
+# → {"error":"model 'nope' not found"}   HTTP 404
+```
+
+**切到这一形态只改一个变量**（`local` 档位下密钥可以留着不用，它不会被发出去）：
+
+```bash
+AIROUTER_ENDPOINT_PROVIDER=ollama
+AIROUTER_ENDPOINT_BASE_URL=http://127.0.0.1:11434/api
+AIROUTER_ENDPOINT_MODEL=qwen2.5:0.5b
+```
+
+客户端那一侧看到的字节与兼容形态下**完全一致**（`chat.completion` / `chat.completion.chunk` / `[DONE]`），
+差别全在上游那一侧 —— 这正是 `contract-ollama/` 那四组基线要钉住的东西。

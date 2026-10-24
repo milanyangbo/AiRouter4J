@@ -1,0 +1,29 @@
+{
+  "status": 200,
+  "body": {
+    "id": "",
+    "object": "chat.completion",
+    "model": "qwen2.5:0.5b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "你好"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 35,
+      "completion_tokens": 2,
+      "total_tokens": 0,
+      "prompt_eval_cached_count": 0,
+      "total_duration": 834842000,
+      "load_duration": 789528042,
+      "prompt_eval_duration": 34180000,
+      "eval_duration": 8289000
+    },
+    "created": 1792842036
+  }
+}

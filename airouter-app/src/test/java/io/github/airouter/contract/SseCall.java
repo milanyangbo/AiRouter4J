@@ -110,8 +110,11 @@ final class SseCall {
         continue;
       }
       JsonNode node = tree(payload);
-      if (node.path("choices").get(0).hasNonNull("finish_reason")) {
-        reasons.add(node.path("choices").get(0).path("finish_reason").asString());
+      JsonNode choices = node.path("choices");
+      // 纯用量帧的 choices 是空数组：形态不同，它出现的频率也不同（原生接口的末帧必带用量）。
+      // 少了这个判断，读到那一帧就会抛 —— 而抛在这里表现为「测试挂了」，不是「帧不对」。
+      if (choices.isArray() && !choices.isEmpty() && choices.get(0).hasNonNull("finish_reason")) {
+        reasons.add(choices.get(0).path("finish_reason").asString());
       }
     }
     return reasons;

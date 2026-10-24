@@ -44,6 +44,16 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 成败的结论只有一个出口：只有 `providers`（产生终态的那一处）可以构造 `Outcome`
 
+**新增一种 wire 形态要动的地方**（ADR-0009，第二个 Provider 走过一遍）：
+
+1. `providers/<形态>/` —— codec 与 provider（一帧字节 → 哪几个事件，是形态差异唯一该存在的位置）
+2. `transport` —— 只有当分帧方式不同时才加一种（SSE 与逐行 JSON 是并列的两种读法，不是一个读法的两种参数）
+3. `UpstreamShape` —— 加一个取值，回答「地址该长什么样」「要不要凭证」
+4. `UpstreamConfiguration` —— 加一个 `@ConditionalOnProperty` 的 `@Bean`，不用 `if`
+
+`faces` 与 `core` **不在这个列表里**。它们一旦出现，说明抽象体表错了：回来修抽象，不要接受那份改动 ——
+`SecondProviderTouchesNoFaceTest` 用差异统计判红，红的时候会说清是哪个文件。
+
 规则一共九条，定义在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`。
 **新增规则前先读那里的表格**：规则越多，越容易走到「加个例外算了」那条路上。
 规则旁边必须写清它保护什么；「规则真的会红」由 `GuardsActuallyFireTest` 断言，不靠人记得试一次。

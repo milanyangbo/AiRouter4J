@@ -28,20 +28,34 @@
 > 禁用：不要叫 backend / node / replica。
 
 **Endpoint 的取值来源**
-`Endpoint` 的 baseUrl 与凭证**只从环境变量读取**（`AIROUTER_ENDPOINT_BASE_URL` / `AIROUTER_ENDPOINT_API_KEY` / `AIROUTER_ENDPOINT_MODEL`），
-配置文件里出现的只能是占位符，任何受跟踪文件中都不出现真实凭证。
+`Endpoint` 的 baseUrl 与凭证**只从环境变量读取**（`AIROUTER_ENDPOINT_BASE_URL` / `AIROUTER_ENDPOINT_API_KEY` /
+`AIROUTER_ENDPOINT_MODEL` / `AIROUTER_ENDPOINT_PROVIDER`），
+配置文件里出现的只能是占位符，任何受跟踪文件中都不出现真实凭证。凭证只在形态需要它时才必填。
 
-**base-url 的 `/v1` 约定**
-地址必须以 `/v1` 结尾且不带尾斜杠。Spring AI 2.x 不再自动补这个后缀：
-少了它不在启动期报错，只会变成一次运行期的 404，因此它是一条**启动期校验**，在 `EndpointProperties` 里判红。
+**base-url 的形态约定**
+地址形态由**形态**决定：OpenAI 兼容端点以 `/v1` 结尾，Ollama 原生端点以 `/api` 结尾，都不带尾斜杠。
+Spring AI 2.x 不再自动补这个后缀：少了它不在启动期报错，只会变成一次运行期的 404，
+因此它是一条**启动期校验**，在 `EndpointProperties` 里按形态判红。
+> 同一台本机 Ollama 两种地址都在（`/v1` 与 `/api`）—— 这正是形态必须由配置显式给出、不能按地址猜的理由。
 
 **档位**（local / cloud）
 同一份代码运行在哪一类环境上：`local` 指向本机 OpenAI 兼容端点（Ollama），无网络也能起来；
 `cloud` 指向真实厂商端点，三个变量全部必填。切换只改 profile 或环境变量，**不改代码**。
 > 禁用：不要按 env / prod / dev 这类与环境生命周期绑定的词称呼它 —— 那是部署语义，不是端点语义。
 
-**ProviderKind**
-实例的协议种类枚举：`OPENAI_COMPATIBLE`、`ANTHROPIC`。决定用哪个 Provider 适配器。
+**wire 形态**（`UpstreamShape`；旧词 `ProviderKind` 指同一件事，新版只用「形态」）
+对面**说哪一种话**。当前两种取值：`openai`（OpenAI 兼容端点）/ `ollama`（Ollama 原生接口）。
+它自己回答三个问题：地址该长什么样、这个协议要不要凭证、以及（经由各自的分帧器）流怎么结束。
+装配哪一个 Provider 由配置键 `airouter.endpoint.provider` 决定，不在调用路径上做分支。
+> 禁用：不要叫 provider type / vendor —— 「形态」说的是协议，不是厂商身份：
+> 同一个厂商可以同时提供两种形态（本机 Ollama 正是如此，见 [ADR-0009](./docs/adr/0009-second-wire-shape-and-shape-self-description.md)）。
+
+**逐行 JSON**（NDJSON）
+一种流式分帧约定：每行一个完整 JSON，**没有** `data:` 前缀、**没有**空行分隔、**没有**结束哨兵，
+由最后一帧的内容（原生接口的 `done:true`）宣告说完。
+它与 **SSE** 是并列的两种约定，不是同一种的变体：SSE 的读法读不出逐行 JSON 的流，一条事件都产不出来
+（这一条被 `SecondProviderContractTest` 断言着 —— 换成 SSE 的读法，解析次数就变成 0）。
+> 分帧方式属于形态而不属于传输层的参数：两种约定的差异在字节层就已经存在。
 
 **Adapter** [旧词]
 `legacy/` 里用来同时指代"入站面"和"出站适配"的词，语义含糊，新版**不再使用**。见到 legacy 代码里的 `Adapter`，先判断它实际是 Face 还是 Provider。

@@ -248,11 +248,30 @@ golden-file 契约测试针对的对象是**对外 wire format**：给定上游�
 - 取消路径下 `Terminal` 不出现，且熔断器状态不变
 - 延迟数值反映真实耗时，而不是零
 
+> **票 09 补记**：第二个 Provider 落地了 —— Ollama **原生**接口（`/api/chat`）。
+> 它与 OpenAI 兼容形态的差异是结构性的，不是命名习惯：生成参数在 `options` 里且
+> `max_tokens` 叫 `num_predict`、用量是平铺的两个计数且**没有合计**、没有流标识、
+> 创建时间是 RFC 3339 字符串、**没有结束哨兵**，流式是逐行 JSON 而不是 SSE。
+> 最后一条是本票最实的收获：没有哨兵可认的时候，「上游说完了」只能从帧的内容里读出来。
+>
+> ADR-0005 那条「新增 Provider 不需要改动 Face」因此第一次成为事实而不是声明：
+> `SecondProviderTouchesNoFaceTest` 用差异统计断言自 `baseline-pre-09` 以来
+> Face 与 `core` 没有任何文件被改动，且第一个 Provider 的 golden 基线一个字节都没改。
+> 反向验证做过四条（把逐行 JSON 换回 SSE 分帧 / 让翻译器认不出 `done:true` /
+> 在 Face 里加一行 / 改旧基线一个字符），四条都红，之后都已还原。
+>
+> 两个连带结论，细节见 [ADR-0009](../../docs/adr/0009-second-wire-shape-and-shape-self-description.md)：
+> ①**分帧方式属于 wire 形态**，transport 因此有两种并列的读法，而不是一个读法的两种参数；
+> ②「地址必须以 `/v1` 结尾」与「必须有密钥」此前是全局规则，其实只是 OpenAI 兼容端点的事实，
+> 现在由形态自己回答 —— 同一台本机 Ollama 两种地址都在，按地址猜必然猜错一次。
+
 ## Out of Scope
 
 以下内容明确不在本次范围内：
 
-- **Anthropic Face**。本切片只打通 OpenAI 兼容这一条 Face。按 ADR-0005 的渐进收口约定，Face 侧收口要等真正出现第三个 Face 时才做
+- **Anthropic Face**。本切片只打通 OpenAI 兼容这一条 Face。按 ADR-0005 的渐进收口约定，Face 侧收口要等真正出现第三个 Face 时才做。
+  > 票 09 补记：第二个 **Provider** 已经落地（Ollama 原生），但 Face 仍然只有一条 ——
+  > 这恰好把两件事分开：加 Provider 是 N+N 里的第二个 N，加 Face 才是收口的触发条件。
 - **多实例与负载均衡算法**。本切片针对单个已配置实例，不涉及实例选择策略
 - **限流的完整维度与参数调优**。本次只保证「结果结算点唯一」这条结构成立，不涉及具体算法与阈值
 - **配额的扣减与结算**。它是 `Outcome` 的下游消费者，本次留出接入点但不实现

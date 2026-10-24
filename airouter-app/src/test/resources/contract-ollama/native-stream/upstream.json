@@ -1,0 +1,4 @@
+{
+  "status": 200,
+  "ndjson": "{\"model\":\"qwen2.5:0.5b\",\"created_at\":\"2026-10-24T11:40:51.570467Z\",\"message\":{\"role\":\"assistant\",\"content\":\"你好\"},\"done\":false}\n{\"model\":\"qwen2.5:0.5b\",\"created_at\":\"2026-10-24T11:40:51.579913Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":39535625,\"load_duration\":770334,\"prompt_eval_count\":35,\"prompt_eval_cached_count\":34,\"prompt_eval_duration\":27347000,\"eval_count\":2,\"eval_duration\":9450000}\n"
+}

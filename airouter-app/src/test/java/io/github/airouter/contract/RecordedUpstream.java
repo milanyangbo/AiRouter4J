@@ -49,6 +49,10 @@ public final class RecordedUpstream implements AutoCloseable {
 
   private volatile String lastRequestBody = "";
 
+  private volatile String lastPath = "";
+
+  private volatile String lastAuthorization = "";
+
   private volatile String contentType = JSON;
 
   /** 非 null 时按块写出（流式模式）；null 表示一次写完。 */
@@ -78,6 +82,9 @@ public final class RecordedUpstream implements AutoCloseable {
       RecordedUpstream.this.requests.incrementAndGet();
       RecordedUpstream.this.lastRequestBody =
           new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+      RecordedUpstream.this.lastPath = exchange.getRequestURI().getPath();
+      // 不给缺省值：这个头「在不在」本身就是被测的东西，缺的时候必须是 null 而不是空串。
+      RecordedUpstream.this.lastAuthorization = exchange.getRequestHeaders().getFirst("Authorization");
       List<byte[]> pending = RecordedUpstream.this.chunks;
       if (pending != null) {
         writeInChunks(exchange, pending);
@@ -94,9 +101,34 @@ public final class RecordedUpstream implements AutoCloseable {
     this.server.start();
   }
 
+  /**
+   * 地址根，不含路径前缀。
+   *
+   * <p>兼容端点挂在 {@code /v1} 上，Ollama 的原生接口挂在 {@code /api} 上 ——
+   * 同一个回放服务可以同时扮演两种端点，前缀由调用方自己拼。
+   */
+  public String root() {
+    return "http://127.0.0.1:" + server.getAddress().getPort();
+  }
+
   /** 基地址，形态与真实 OpenAI 兼容端点一致，这样每一处的路径拼接走的都是同一条逻辑。 */
   public String baseUrl() {
-    return "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+    return root() + "/v1";
+  }
+
+  /** 最近一次请求打在哪个路径上。它是「走的是哪一种形态」最直接的证据。 */
+  public String lastPath() {
+    return lastPath;
+  }
+
+  /**
+   * 最近一次请求带的 {@code Authorization} 头。
+   *
+   * <p>它要能被断言成「没有」，而不只是能被断言成有：不需要凭证的形态若也把占位串发了出去，
+   * 看日志的人会以为这次调用是被授权过的。
+   */
+  public String lastAuthorization() {
+    return lastAuthorization;
   }
 
   /**
@@ -111,6 +143,8 @@ public final class RecordedUpstream implements AutoCloseable {
     this.chunks = null;
     this.contentType = JSON;
     this.lastRequestBody = "";
+    this.lastPath = "";
+    this.lastAuthorization = null;
   }
 
   /**
@@ -137,6 +171,8 @@ public final class RecordedUpstream implements AutoCloseable {
     this.contentType = EVENT_STREAM;
     this.betweenChunks = betweenChunks == null ? Duration.ZERO : betweenChunks;
     this.lastRequestBody = "";
+    this.lastPath = "";
+    this.lastAuthorization = null;
   }
 
   /** 网关最后发出去的请求体，用于断言「转发出去的东西确实是原文」。 */

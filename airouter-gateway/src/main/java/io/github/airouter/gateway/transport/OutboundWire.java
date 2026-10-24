@@ -6,6 +6,7 @@ import io.github.airouter.core.UpstreamFailure;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -34,6 +35,9 @@ public final class OutboundWire {
 
   private static final String UNREACHABLE = "upstream_unreachable";
   private static final String TIMEOUT = "upstream_timeout";
+
+  /** 逐行 JSON 的媒体类型（RFC 对它的登记名）。 */
+  private static final String NDJSON = "application/x-ndjson";
 
   private final WebClient client;
   private final Duration responseTimeout;
@@ -103,18 +107,55 @@ public final class OutboundWire {
    * @return 帧流；帧间静默超过 {@code idleTimeout} 时以 {@code UPSTREAM_TIMEOUT} 结束
    */
   public Flux<String> postStream(String path, Map<String, String> headers, String jsonBody) {
+    return frames(path, headers, jsonBody, MediaType.TEXT_EVENT_STREAM, SseFrameReader::read);
+  }
+
+  /**
+   * 发出一次 JSON POST 并按**逐行 JSON** 读回。
+   *
+   * <p>与 {@link #postStream} 的差别只有分帧一种，其余全部相同：
+   * 超时、在途记账、非 2xx 的处理、连不上的处理都走 {@link #frames} 那一条路。
+   * 这个差别不是参数调优而是**对端换了另一种 wire 形态** ——
+   * 逐行 JSON 的流里没有 {@code data:} 前缀，也没有 {@code [DONE]} 这样的结束哨兵，
+   * 用 SSE 的读法去读它会一条事件都产不出来（见 {@link LineFrameReader}）。
+   *
+   * <p>分帧器由调用方给出而不是在这里按 Content-Type 猜：
+   * 猜的依据是上游自己声明的类型，而那个声明与实际写法不一致的情形并不罕见；
+   * 真正知道对面说哪种话的是 Provider，传输层不该替它猜。
+   *
+   * @param path 相对路径
+   * @param headers 请求头
+   * @param jsonBody 请求体原文
+   * @return 帧流；帧间静默超过 {@code idleTimeout} 时以 {@code UPSTREAM_TIMEOUT} 结束
+   */
+  public Flux<String> postLines(String path, Map<String, String> headers, String jsonBody) {
+    return frames(path, headers, jsonBody, MediaType.valueOf(NDJSON), LineFrameReader::read);
+  }
+
+  /**
+   * 两条流式路径的共同部分。
+   *
+   * <p>超时、在途记账与两类错误的映射在这里只有一份，是因为它们**不随 wire 形态变化**：
+   * 无论对面用 SSE 还是逐行 JSON，「多久不说话算出事」「收不到东西时算什么」都是同一件事。
+   * 真正随形态变化的只有分帧那一步，因此它被作为参数传进来。
+   */
+  private Flux<String> frames(String path,
+                              Map<String, String> headers,
+                              String jsonBody,
+                              MediaType accept,
+                              Function<Flux<DataBuffer>, Flux<String>> framing) {
     return client.post()
         .uri(path)
         .headers(httpHeaders -> headers.forEach(httpHeaders::add))
         .contentType(MediaType.APPLICATION_JSON)
-        .accept(MediaType.TEXT_EVENT_STREAM)
+        .accept(accept)
         .bodyValue(jsonBody)
         .retrieve()
         .onStatus(HttpStatusCode::isError, response -> response.bodyToMono(String.class)
             .defaultIfEmpty("")
             .map(body -> new UpstreamRejection(response.statusCode().value(), body)))
         .bodyToFlux(DataBuffer.class)
-        .transform(SseFrameReader::read)
+        .transform(framing)
         .timeout(idleTimeout)
         .onErrorMap(TimeoutException.class, cause -> new UpstreamFailure(
             OutcomeKind.UPSTREAM_TIMEOUT,

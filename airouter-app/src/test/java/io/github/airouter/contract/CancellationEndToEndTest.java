@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.function.IntSupplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -57,6 +58,11 @@ final class CancellationEndToEndTest {
 
   /** 慢消费用例里上游有多少帧。取一个远超任何缓冲区大小的量，才能让「卡住」是可判别的。 */
   private static final int SLOW_CONSUMER_FRAMES = 60000;
+
+  /** 判「数字停住了」的取样节奏：每 200ms 看一次，连续 5 次不变即认为停住（约 1 秒）。 */
+  private static final Duration STALLED_POLL = Duration.ofMillis(200);
+
+  private static final int STALLED_ROUNDS = 5;
 
   private static final RecordedUpstream UPSTREAM = startUpstream();
 
@@ -157,8 +163,14 @@ final class CancellationEndToEndTest {
       assertThat(subscriber.awaitFirstFrame(Duration.ofSeconds(10))).isTrue();
       subscriber.cancel();
 
-      waitUntil(() -> inFlight.inFlight() == 0, Duration.ofSeconds(5));
-      assertThat(inFlight.inFlight()).as("第 " + round + " 次取消之后的在途条数").isEqualTo(0);
+      // 等 20 秒而不是 5 秒：收回可能要走到「上游被取消」或「帧间静默超时」（本用例配的是 10s）
+      // 才发生，而 CI 机器上这两件事都比本机慢。**等待时长不是断言的对象** ——
+      // 断言仍然是「必须回到零」，超时了照样红。
+      waitUntil(() -> inFlight.inFlight() == 0, Duration.ofSeconds(20));
+      assertThat(inFlight.inFlight())
+          .as("第 %d 次取消之后的在途条数（累计开出 %d、收回 %d）",
+              round, inFlight.opened(), inFlight.closed())
+          .isEqualTo(0);
     }
 
     assertThat(inFlight.opened() - openedBefore).isEqualTo(5);
@@ -177,17 +189,21 @@ final class CancellationEndToEndTest {
     result.getResponseBody().subscribe(subscriber);
     assertThat(subscriber.awaitFirstFrame(Duration.ofSeconds(10))).isTrue();
 
-    sleep(Duration.ofMillis(600));
-    int first = UPSTREAM.writtenChunks();
-    sleep(Duration.ofMillis(1000));
-    int second = UPSTREAM.writtenChunks();
+    // 不睡固定时长再比数字：停在第几块取决于内核 socket 缓冲区有多大，
+    // 而那个数值随机器与内核而变（本机与 CI 上差了一倍）。判「停住了」要等它真的停下来，
+    // 判「没有把整条流吃进来」要看样本有没有写到头 —— 后者才是非此即彼的。
+    Stalled stalled = waitUntilStalled(UPSTREAM::writtenChunks, Duration.ofSeconds(20));
 
-    assertThat(second)
-        .as("消费方不再要数据之后，回放停住了 —— 缓冲区有上界的直接证据")
-        .isEqualTo(first);
-    assertThat(first)
-        .as("停住的位置远在整条流结束之前：网关没有把上游全部吃进来")
-        .isLessThan(SLOW_CONSUMER_FRAMES / 4);
+    assertThat(stalled.stalled())
+        .as("消费方不再要数据之后，回放停在原处（第 %d 块）—— 缓冲区有上界的直接证据",
+            stalled.value())
+        .isTrue();
+    assertThat(UPSTREAM.feedFullyWritten())
+        .as("回放没有写到头：网关没有把上游整条流吃进内存（共 %d 块）", SLOW_CONSUMER_FRAMES)
+        .isFalse();
+    assertThat(stalled.value())
+        .as("停住之前确实流过数据 —— 否则这条断言什么都没验证")
+        .isPositive();
     assertThat(subscriber.frames()).isEqualTo(1);
 
     subscriber.cancel();
@@ -232,6 +248,37 @@ final class CancellationEndToEndTest {
       }
       sleep(Duration.ofMillis(50));
     }
+  }
+
+  /**
+   * 等一个数字**停下来**：连续若干次读到同一个值才算停住。
+   *
+   * <p>为什么不用「睡固定时长，然后比前后两个数字」：那样判的是「这段时间里有没有变」，
+   * 而「停在第几块」由内核缓冲区大小决定，机器一换数字就翻倍 ——
+   * 第一次在 CI 上跑就是这样红的（本机与 runner 上差了一倍）。这里改成等它自己停。
+   */
+  private static Stalled waitUntilStalled(IntSupplier reading, Duration timeout) {
+    int unchangedFor = 0;
+    int previous = -1;
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      int current = reading.getAsInt();
+      if (current == previous) {
+        unchangedFor++;
+        if (unchangedFor >= STALLED_ROUNDS) {
+          return new Stalled(true, current);
+        }
+      } else {
+        unchangedFor = 0;
+        previous = current;
+      }
+      sleep(STALLED_POLL);
+    }
+    return new Stalled(false, previous);
+  }
+
+  /** {@link #waitUntilStalled} 的结果：停没停住，以及停（或超时）时的读数。 */
+  private record Stalled(boolean stalled, int value) {
   }
 
   /**

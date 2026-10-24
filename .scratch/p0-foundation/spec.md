@@ -161,6 +161,16 @@ ADR-0008 已经把结论钉死了：**验证能力必须先于迁移落地**。�
 compile & unit     静态分析    依赖方向 / 结构    集成测试
 ```
 
+> **票 10 补记**：四个 gate 落在 `.github/workflows/ci.yml`，并行且各自独立报告。
+> 一个测试属于哪一道由类上的 `@Tag` 说（取值只有 `unit` / `integration` / `architecture`），
+> 划分标准是**启不启容器、出不出网**，不是目录位置。
+>
+> 本票最实的收获是两处「绿但什么都没跑」，都已在流水线上钉住：
+> ①ArchUnit 自带的引擎（`@AnalyzeClasses` + `@ArchTest`）**看不见 `@Tag`** ——
+> `ModuleStructureTest` 打了标记却在按 gate 筛选时被整类漏掉，9 条结构规则一条没跑，
+> 报告照样绿；②一道 gate 的测试数为 0 时构建是绿的，因此每个 gate 跑完都数一遍实际
+> 执行过的测试数，为 0 判红。细节见 [ADR-0010](../../docs/adr/0010-ci-four-gates.md)。
+
 ### 给后续迁移预留的对照入口
 
 本次不搬运 `legacy/` 的任何实现代码。但 golden-file 契约测试的基础设施要就位，

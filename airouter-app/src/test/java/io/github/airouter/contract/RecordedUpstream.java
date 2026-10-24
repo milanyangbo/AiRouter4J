@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -62,6 +63,16 @@ public final class RecordedUpstream implements AutoCloseable {
 
   private final AtomicInteger writtenChunks = new AtomicInteger();
 
+  /**
+   * 整份样本有没有写到头。
+   *
+   * <p>它是「背压有没有生效」唯一**不依赖具体数字**的证据：数字停在哪一块取决于
+   * 内核 socket 缓冲区的大小，而那个数值随机器与内核而变（本机与 CI 上差了一倍）。
+   * 「有没有写到头」则是非此即彼的：要么写到最后一块（对端把整条流都吃进去了，
+   * 即无界缓冲），要么停在某处（有界）。断言要落在后者上。
+   */
+  private final AtomicBoolean feedFullyWritten = new AtomicBoolean();
+
   /** 收到了几次请求。它是「有没有出网」的判定依据，见 {@link #requests()}。 */
   private final AtomicInteger requests = new AtomicInteger();
 
@@ -97,6 +108,7 @@ public final class RecordedUpstream implements AutoCloseable {
       exchange.sendResponseHeaders(RecordedUpstream.this.status, payload.length);
       exchange.getResponseBody().write(payload);
       exchange.close();
+      RecordedUpstream.this.feedFullyWritten.set(true);
     });
     this.server.start();
   }
@@ -142,6 +154,7 @@ public final class RecordedUpstream implements AutoCloseable {
     this.body = nextBody;
     this.chunks = null;
     this.contentType = JSON;
+    this.feedFullyWritten.set(false);
     this.lastRequestBody = "";
     this.lastPath = "";
     this.lastAuthorization = null;
@@ -170,6 +183,7 @@ public final class RecordedUpstream implements AutoCloseable {
     this.chunks = List.copyOf(nextChunks);
     this.contentType = EVENT_STREAM;
     this.betweenChunks = betweenChunks == null ? Duration.ZERO : betweenChunks;
+    this.feedFullyWritten.set(false);
     this.lastRequestBody = "";
     this.lastPath = "";
     this.lastAuthorization = null;
@@ -189,6 +203,11 @@ public final class RecordedUpstream implements AutoCloseable {
    */
   public int writtenChunks() {
     return writtenChunks.get();
+  }
+
+  /** 整份样本是否已经写到头。用法见字段上的说明：它比「写到第几块」更值得断言。 */
+  public boolean feedFullyWritten() {
+    return feedFullyWritten.get();
   }
 
   /** 把写出计数归零。每个用例自己从零开始，免得前一个用例的数字混进来。 */
@@ -259,6 +278,8 @@ public final class RecordedUpstream implements AutoCloseable {
           writtenChunks.incrementAndGet();
           pause(RecordedUpstream.this.betweenChunks);
         }
+        // 走到这里才是「整份样本都写出去了」；停在 write 上（对端不读了）不会到这里。
+        RecordedUpstream.this.feedFullyWritten.set(true);
       }
     } catch (IOException expected) {
       // 对端先走了。这正是「调用方中途断开」那条路径的必然结果，不是被测行为；

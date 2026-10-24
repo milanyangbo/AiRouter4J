@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,6 +32,7 @@ import tools.jackson.databind.json.JsonMapper;
 // 按包名向上找 @SpringBootConfiguration 的那条路在这个位置走不通。
 @SpringBootTest(classes = io.github.airouter.app.AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class NonStreamingEndToEndTest {
 
   private static final JsonMapper MAPPER = JsonMapper.builder().build();

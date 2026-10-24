@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Test;
  * 三者都表现为「没有文件被改动」，也就是全绿。一个在前提失效时仍然全绿的断言，
  * 与没有它是同一件事。
  */
+@Tag("architecture")
 final class SecondProviderTouchesNoFaceTest {
 
   /** 第二个 Provider 开始之前的基线。 */

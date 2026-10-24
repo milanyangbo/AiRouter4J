@@ -8,6 +8,7 @@ import io.github.airouter.gateway.governance.DecisionPoint;
 import io.github.airouter.gateway.governance.RateLimitDecisionPoint;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 少了这一条，「限流在过滤器里判一次、在客户端里又判一次」这种形态会在无人察觉的情况下回来 ——
  * 那正是来源项目那个口径不一致问题的起点，而它当初也没有任何一处会报错。
  */
+@Tag("architecture")
 final class ExactlyOneDecisionPointTest {
 
   private static final JavaClasses GOVERNANCE = new ClassFileImporter()

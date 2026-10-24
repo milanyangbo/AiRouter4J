@@ -3,6 +3,7 @@ package io.github.airouter.arch;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.lang.ArchRule;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 构造函数注入、{@code @Value} 配置字段、{@code @Bean} 方法、{@code @ConditionalOnProperty}、
  * faces 只用 core、config 装配所有人 —— 每一条规则在它们上面都必须是绿的。
  */
+@Tag("architecture")
 class OrdinarySpringUsageIsNotFlaggedTest {
 
   private static final String LAYOUT_ROOT = "io.github.airouter.archtest.layout.ordinary";

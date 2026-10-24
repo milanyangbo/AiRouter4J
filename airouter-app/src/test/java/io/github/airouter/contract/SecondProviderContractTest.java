@@ -29,6 +29,7 @@ import java.util.concurrent.CompletionException;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import reactor.adapter.JdkFlowAdapter;
@@ -53,6 +54,7 @@ import tools.jackson.databind.json.JsonMapper;
  * 只有「上游 4xx」那一组是手写的 —— 错误体是 {@code {"error":"..."}} 这样的字符串，
  * 真实端点在模型不存在时确实这么回，这里只是把模型名换成了好认的。
  */
+@Tag("integration")
 final class SecondProviderContractTest {
 
   private static final Path CASES = Path.of("src/test/resources/contract-ollama");

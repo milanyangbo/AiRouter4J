@@ -7,6 +7,7 @@ import io.github.airouter.app.AiRouterApplication;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +28,7 @@ import tools.jackson.databind.json.JsonMapper;
  * 不做静默跳过：一个可以被跳过的兼容性测试，等于没有。
  */
 @SpringBootTest(classes = AiRouterApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class LocalModelEndToEndTest {
 
   private static final JsonMapper MAPPER = JsonMapper.builder().build();

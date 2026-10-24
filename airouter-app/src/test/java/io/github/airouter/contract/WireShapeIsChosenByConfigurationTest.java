@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -33,6 +34,7 @@ import tools.jackson.databind.json.JsonMapper;
  * 前三个在这里，第四个由 {@code LineFrameReader} 与 {@link SecondProviderContractTest} 覆盖 ——
  * 逐行 JSON 的字节用 SSE 的读法一条事件都读不出来，那边每一条流式用例都是它的反证。
  */
+@Tag("integration")
 final class WireShapeIsChosenByConfigurationTest {
 
   private static final JsonMapper MAPPER = JsonMapper.builder().build();

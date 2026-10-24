@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Subscription;
 import reactor.adapter.JdkFlowAdapter;
@@ -39,6 +40,7 @@ import reactor.core.publisher.BaseSubscriber;
  * 那一刻同时存在两条结算路径 —— 终态事件与取消信号 —— 少一道守卫就是两条记录，
  * 表现为一次调用被计成两次，而这类错误不报错，只会让指标与熔断阈值慢慢失真。
  */
+@Tag("integration")
 final class ExactlyOneSettlementTest {
 
   private static final Duration TIMEOUT = Duration.ofSeconds(10);

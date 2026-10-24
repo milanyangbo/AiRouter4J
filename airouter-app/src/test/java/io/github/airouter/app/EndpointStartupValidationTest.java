@@ -6,6 +6,7 @@ import io.github.airouter.gateway.config.EndpointProperties;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -19,6 +20,7 @@ import org.springframework.context.ConfigurableApplicationContext;
  * 属性绑定、校验、以及失败如何冒泡。任何一环脱开，这类缺陷就会变成运行期的 404 或
  * 401，而那种缺陷只有半夜才会被人知道。
  */
+@Tag("integration")
 final class EndpointStartupValidationTest {
 
   private static final String BASE_URL = "airouter.endpoint.base-url";

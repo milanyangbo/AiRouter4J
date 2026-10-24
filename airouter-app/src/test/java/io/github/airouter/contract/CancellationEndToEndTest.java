@@ -19,6 +19,7 @@ import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,6 +47,7 @@ import reactor.core.publisher.BaseSubscriber;
  */
 @SpringBootTest(classes = AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class CancellationEndToEndTest {
 
   private static final String STREAM_REQUEST =

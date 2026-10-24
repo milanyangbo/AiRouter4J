@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -34,6 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>两条路径各一条用例，对应票面「第二个 Provider 同样具备自己的端对端覆盖」。
  */
 @SpringBootTest(classes = AiRouterApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class OllamaNativeEndToEndTest {
 
   private static final JsonMapper MAPPER = JsonMapper.builder().build();

@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Test;
  * 只是不再经过 validator。这也是为什么下面两种断言方式并存：
  * 与形态无关的那些仍在 validator 里，与形态有关的那些在构造器里。
  */
+@Tag("unit")
 final class EndpointPropertiesValidationTest {
 
   private static final String CLOUD_BASE_URL = "https://api.example.com/v1";

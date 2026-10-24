@@ -8,6 +8,7 @@ import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
 import io.github.airouter.app.AiRouterApplication;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +27,7 @@ import org.springframework.boot.test.context.SpringBootTest;
  * <p>它打的是本机真实端点（local 档位），因此与 {@link LocalModelEndToEndTest} 一样依赖端点在跑。
  */
 @SpringBootTest(classes = AiRouterApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class StandardClientParsesResponseTest {
 
   @Test

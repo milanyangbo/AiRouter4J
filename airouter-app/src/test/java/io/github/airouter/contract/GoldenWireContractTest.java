@@ -26,6 +26,7 @@ import java.util.concurrent.CompletionException;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import tools.jackson.databind.JsonNode;
@@ -42,6 +43,7 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>比对是语义级的（解析后比对树），不断言键顺序：键顺序的变化不会影响任何客户端，
  * 把它当成契约只会带来无意义的基线改动。
  */
+@Tag("integration")
 final class GoldenWireContractTest {
 
   private static final Path CASES = Path.of("src/test/resources/contract");

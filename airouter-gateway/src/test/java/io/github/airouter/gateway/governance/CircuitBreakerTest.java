@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
  * 用真的等待来验证的话，这类用例要么慢得没人跑，要么因为机器忙而偶发红。
  * 这也是 {@link CircuitBreaker#record} 把时刻收在签名里而不是自己取系统时间的原因。
  */
+@Tag("unit")
 final class CircuitBreakerTest {
 
   private static final int THRESHOLD = 3;

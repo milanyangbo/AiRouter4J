@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Flux;
  * 而它们共同的特点是：**不会报错，只会让客户端看到一个奇怪的结果**。
  * 一个被截断的多字节字符、一个永远等不到下一行的半截事件，都属于这一类。
  */
+@Tag("unit")
 final class SseFrameReaderTest {
 
   private static final DefaultDataBufferFactory BUFFERS = DefaultDataBufferFactory.sharedInstance;

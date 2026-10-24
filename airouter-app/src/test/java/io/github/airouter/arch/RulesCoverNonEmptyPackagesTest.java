@@ -4,6 +4,7 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>规则是按包名写的。包一旦被改名或者搬空，规则不会报错，只会安静地什么都不检查 ——
  * 这正是「门禁还在，但已经不拦任何东西」的形态。这个测试把那种形态变成红色。
  */
+@Tag("architecture")
 class RulesCoverNonEmptyPackagesTest {
 
   private static final String GATEWAY = StructuralRules.ROOT + ".gateway";

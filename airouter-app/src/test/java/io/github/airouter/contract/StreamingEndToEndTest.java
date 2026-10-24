@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,6 +40,7 @@ import reactor.core.publisher.Flux;
  */
 @SpringBootTest(classes = AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class StreamingEndToEndTest {
 
   private static final Duration BETWEEN_CHUNKS = Duration.ofMillis(80);

@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import reactor.adapter.JdkFlowAdapter;
@@ -44,6 +45,7 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>比对是语义级的（解析后比对树），不断言键顺序。
  */
+@Tag("integration")
 final class GoldenStreamContractTest {
 
   private static final Path CASES = Path.of("src/test/resources/contract-stream");

@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
  * 是一种习惯，而习惯在 deadline 面前不成立。这里只看一件事 ——
  * 端点相关的每一项取值是不是**指向环境变量的占位符**，不是的话就拦住。
  */
+@Tag("unit")
 final class EndpointSecretsAreNotCommittedTest {
 
   private static final Pattern PLACEHOLDER = Pattern.compile("^\\$\\{[A-Z_]+(:[^}]*)?}$");

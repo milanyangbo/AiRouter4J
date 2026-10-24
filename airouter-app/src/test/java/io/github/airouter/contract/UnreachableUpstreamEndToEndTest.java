@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,6 +40,7 @@ import tools.jackson.databind.JsonNode;
  */
 @SpringBootTest(classes = AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Tag("integration")
 final class UnreachableUpstreamEndToEndTest {
 
   private static final String STREAM_REQUEST =

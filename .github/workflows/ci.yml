@@ -1,0 +1,233 @@
+# 四个 gate，各自独立判定、各自独立报告。任一变红，合并就被阻断。
+#
+# 为什么是四个而不是一条 `verify`：一条命令里先编译再检查再测试，报告只有一个结论 ——
+# 「构建失败」。四个 gate 之后，报告会直接说出是哪一个环节不通过，
+# 而这个区别决定了修的人要去看哪里。它们之间没有依赖，因此全部并行：
+# 最慢的那个（集成测试）不会拖着另外三个等它。
+#
+# 分派规则：每个测试类用 @Tag 标出自己属于哪一道 gate，取值只有
+# unit / integration / architecture 三个，由 -Dgroups= 挑选。
+# 「新写的测试忘了标 gate」由 EveryTestBelongsToAGateTest 判红（结构 gate 里）。
+name: gates
+
+# 每次推送都跑。刻意不写 paths / paths-ignore：
+# 「本次没改到某些文件就不跑某些 gate」本身就是一条可以绕过门禁的路径。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一个 ref 上的多次推送只保留最后一次：判定对象始终是最新那次提交。
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── gate 1：编译与单元测试 ──────────────────────────────────────────────
+  gate-1-compile-and-unit:
+    name: gate 1 · 编译与单元测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 用仓库自带的 Wrapper，不依赖 runner 上预装的 Maven 版本。
+      # 后面那串 -Dxxx=false 不是装饰：这些「关掉门禁」的属性可能来自环境变量、
+      # ~/.m2/settings.xml 或将来某个 pom 属性，而 -D 的优先级高于它们 ——
+      # 显式写成 false 之后，任何一处偷偷改了都不会让这道 gate 变成走过场。
+      - name: 编译并跑单元测试
+        run: |
+          ./mvnw -B -ntp -T1C test \
+            -Dgroups=unit \
+            -DskipTests=false -Dmaven.test.skip=false -DskipITs=false \
+            -Dcheckstyle.skip=false -Dspotbugs.skip=false -Denforcer.skip=false
+
+      - name: 这一 gate 确实跑到了测试
+        run: |
+          total=$(python3 scripts/ci/count-ran-tests.py)
+          echo "gate 1 实际跑过 $total 个测试"
+          if [ "$total" -le 0 ]; then
+            echo "::error::一个测试都没跑。绿但空跑的 gate 比红灯更危险 —— 它不阻断任何变更。"
+            exit 1
+          fi
+
+  # ── gate 2：静态分析 ────────────────────────────────────────────────────
+  gate-2-static-analysis:
+    name: gate 2 · 静态分析
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 两个工具都读字节码，因此先编译；分析范围是全部源码，含测试源码。
+      # 工具目标与生命周期阶段写在**同一条命令**里是必须的：单独跑 `spotbugs:check`
+      # 会在没有 reactor 的会话里解析 airos-agent 的 SNAPSHOT，于是这一 gate
+      # 会以「依赖解析失败」而不是「分析通过」告终 —— 那是一次假红，同样不可接受。
+      - name: checkstyle 与 spotbugs
+        run: |
+          ./mvnw -B -ntp -T1C test-compile checkstyle:check spotbugs:check \
+            -DskipTests=false -Dmaven.test.skip=false -DskipITs=false \
+            -Dcheckstyle.skip=false -Dcheckstyle.includeTestSourceDirectory=true \
+            -Dspotbugs.skip=false -Dspotbugs.includeTests=true
+
+      # 插件「跑了但什么都没分析」和「没跑」在退出码上是一样的，因此这里看产物：
+      # 每个模块都必须留下一份结果文件。
+      - name: 两个工具都真的分析过每个模块
+        run: |
+          missing=0
+          for module in airouter-core airouter-gateway airouter-agent airouter-app; do
+            if [ ! -f "$module/target/checkstyle-result.xml" ]; then
+              echo "::error::$module 没有 checkstyle 结果文件"
+              missing=1
+            fi
+            if [ ! -f "$module/target/spotbugsXml.xml" ]; then
+              echo "::error::$module 没有 spotbugs 结果文件"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::静态分析的产物不全 —— 工具没跑过与跑过但通过，退出码是一样的。"
+            exit 1
+          fi
+
+  # ── gate 3：依赖方向与结构 ──────────────────────────────────────────────
+  gate-3-structure:
+    name: gate 3 · 依赖方向与结构
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 依赖方向靠 enforcer（两条 execution 都绑在 validate 阶段），结构约束靠 ArchUnit。
+      # 这里刻意不写 enforcer:enforce —— 直接调插件目标用的是 default-cli 执行，
+      # 读不到 pom 里两个 execution 配置的规则，看上去在跑其实一条规则都没判。
+      - name: 依赖方向（enforcer）与结构约束（ArchUnit）
+        run: |
+          # pipefail 必须显式开：本步骤的 shell 是 bash -e，而一条管道的退出码是最后一个命令的，
+          # 于是 mvn 失败、tee 成功会让这一步「看起来跑过且通过」。
+          set -o pipefail
+          ./mvnw -B -ntp -T1C test-compile test \
+            -Dgroups=architecture \
+            -DskipTests=false -Dmaven.test.skip=false -DskipITs=false \
+            -Dcheckstyle.skip=false -Dspotbugs.skip=false -Denforcer.skip=false \
+            2>&1 | tee /tmp/gate3.log
+          # enforcer 没有结果文件，只有「规则跑过」这一件事需要证明，因此看日志：
+          # 两条 execution 都绑在 validate 阶段，任何一个没出现都说明它没参与这次构建。
+          for rule in enforce-baseline enforce-gates-have-no-escape-hatch; do
+            if ! grep -q "$rule" /tmp/gate3.log; then
+              echo "::error::enforcer 的 $rule 没有出现在构建日志里。规则没跑过与规则通过，退出码是一样的。"
+              exit 1
+            fi
+          done
+
+      # 门禁的逃生舱一共有四种形态：profile、pom 里的 skip 属性、抑制文件、关掉测试的注解。
+      # 抑制文件由 enforcer 的 requireFilesDontExist 判红，注解由结构测试判红，
+      # 这里判剩下两种 —— 它们一旦被加回来，前三个 gate 就都成了可以随手关掉的提示。
+      - name: 门禁没有 profile 与 skip 属性这两种逃生舱
+        run: |
+          offending=$(grep -rn --include=pom.xml -E \
+            "<profiles>|<profile>|checkstyle\.skip|spotbugs\.skip|enforcer\.skip|skipTests|maven\.test\.skip" \
+            . | grep -v "/legacy/" | grep -v "/target/")
+          if [ -n "$offending" ]; then
+            echo "::error::pom 里出现了 profile 或 skip 配置。来源项目正是靠它们让门禁事实上失效（ADR-0008）："
+            echo "$offending"
+            exit 1
+          fi
+
+      - name: 这一 gate 确实跑到了测试
+        run: |
+          total=$(python3 scripts/ci/count-ran-tests.py)
+          echo "gate 3 实际跑过 $total 个测试"
+          if [ "$total" -le 0 ]; then
+            echo "::error::结构约束一个都没跑。规则失效与规则通过，在这份报告里长得一样。"
+            exit 1
+          fi
+
+  # ── gate 4：集成测试 ────────────────────────────────────────────────────
+  # 前三个 gate 除依赖解析外不需要外部网络；只有这一个会真的往外打流量，
+  # 也只有它需要「端点」这种外部前提 —— 因此前提缺失时的处置必须写清楚。
+  gate-4-integration:
+    name: gate 4 · 集成测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 准备真实端点
+        env:
+          # 凭证只来自流水线密钥，不落在任何受跟踪文件里。
+          ENDPOINT_BASE_URL: ${{ secrets.AIROUTER_ENDPOINT_BASE_URL }}
+          ENDPOINT_API_KEY: ${{ secrets.AIROUTER_ENDPOINT_API_KEY }}
+          ENDPOINT_MODEL: ${{ secrets.AIROUTER_ENDPOINT_MODEL }}
+        run: |
+          if [ -n "$ENDPOINT_BASE_URL" ]; then
+            if [ -z "$ENDPOINT_API_KEY" ]; then
+              echo "::error::配了端点地址 $ENDPOINT_BASE_URL 却没有密钥。"
+              echo "::error::集成测试打的是真实端点，凭证只来自流水线密钥。"
+              echo "::error::密钥缺失时这一 gate 明确失败 —— 静默跳过等于这一 gate 不存在。"
+              exit 1
+            fi
+            echo "AIROUTER_ENDPOINT_BASE_URL=$ENDPOINT_BASE_URL" >> "$GITHUB_ENV"
+            echo "AIROUTER_ENDPOINT_API_KEY=$ENDPOINT_API_KEY" >> "$GITHUB_ENV"
+            echo "AIROUTER_ENDPOINT_MODEL=${ENDPOINT_MODEL:-qwen2.5:0.5b}" >> "$GITHUB_ENV"
+            echo "使用流水线配置的外部端点"
+            exit 0
+          fi
+          # 仓库没有配置外部端点：在 runner 本机起一个，而不是跳过这一 gate。
+          # 一个需要「有人先配好密钥」才跑的集成测试，在没有配过的仓库里等于永远不跑。
+          echo "没有配置外部端点 —— 在 runner 本机起一个（Ollama + 小模型）"
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:11434/api/tags > /dev/null; then break; fi
+            sleep 2
+          done
+          if ! curl -sf http://127.0.0.1:11434/api/tags > /dev/null; then
+            echo "::error::本机端点没起来。这一 gate 需要真实端点，起不来就红，不静默跳过。"
+            cat /tmp/ollama.log
+            exit 1
+          fi
+          ollama pull qwen2.5:0.5b
+          echo "AIROUTER_ENDPOINT_BASE_URL=http://127.0.0.1:11434/v1" >> "$GITHUB_ENV"
+          echo "AIROUTER_ENDPOINT_API_KEY=ollama" >> "$GITHUB_ENV"
+          echo "AIROUTER_ENDPOINT_MODEL=qwen2.5:0.5b" >> "$GITHUB_ENV"
+
+      - name: 跑集成测试
+        run: |
+          ./mvnw -B -ntp -T1C test \
+            -Dgroups=integration \
+            -DskipTests=false -Dmaven.test.skip=false -DskipITs=false \
+            -Dcheckstyle.skip=false -Dspotbugs.skip=false -Denforcer.skip=false
+
+      - name: 这一 gate 确实跑到了测试
+        run: |
+          total=$(python3 scripts/ci/count-ran-tests.py)
+          echo "gate 4 实际跑过 $total 个测试"
+          if [ "$total" -le 0 ]; then
+            echo "::error::集成测试一个都没跑 —— 那么「与真实端点的兼容性」从来没有被验证过。"
+            exit 1
+          fi

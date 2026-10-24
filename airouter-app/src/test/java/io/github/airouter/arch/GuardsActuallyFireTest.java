@@ -3,6 +3,7 @@ package io.github.airouter.arch;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.lang.ArchRule;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 都会让一条规则在不知不觉中变成永远通过。这里的样例违反了每一条规则，
  * 断言的是「规则确实判出来了」，而不是「规则写在那里」。
  */
+@Tag("architecture")
 class GuardsActuallyFireTest {
 
   private static final String LAYOUT_ROOT = "io.github.airouter.archtest.layout.violations";

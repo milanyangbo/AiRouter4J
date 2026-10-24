@@ -2,11 +2,11 @@
 
 本项目的领域词汇表。**coder agent 在输出中命名领域概念时必须用这里的词**（见 `docs/agents/domain.md`），避免同义词漂移。
 
-> 状态说明：`[已定]` 定义已稳定；`[待定]` 尚未实现，定义可能随 ADR 演进。
+> 状态说明：**默认即已定**；标 `[待定]` 的是尚未实现的词 —— 定义可能随实施调整，但**用词不许换**。
 
 ---
 
-## 一、网关拓扑：Face / Provider / Service
+## 一、网关拓扑：Face / Provider / Service / 实例
 
 **Face**（入站协议面）
 客户端与网关之间说的协议。一个 Face 负责一种 wire format 的 encode/decode。
@@ -22,15 +22,19 @@
 
 **Service**（逻辑服务名）
 客户端可见的逻辑模型名，如 `chat`、`embedding`。一个 Service 下挂若干实例。
+作用域类功能（限流 / 配额 / 规则路由）的 `service` 维度指的就是它。
 
 **ModelInstance**（实例）
-一个 Service 下的具体后端：`id` + `Endpoint`（baseUrl / 凭证 / 超时）+ `ProviderKind` + 权重 + 启用标志。
-> 禁用：不要叫 backend / node / replica。
+一个 Service 下的具体后端：`id` + `Endpoint`（baseUrl / 凭证 / 超时）+ 形态 + 权重 + 启用标志。
+**同一个 Service 下的实例可以有不同形态** —— 一台走 OpenAI 兼容、一台走原生，是合法配置（ADR-0013 第 1 节）。
+> 禁用：不要叫 backend / node / replica / provider。后两个尤其危险：`provider` 在本项目里指适配器实现。
 
 **Endpoint 的取值来源**
-`Endpoint` 的 baseUrl 与凭证**只从环境变量读取**（`AIROUTER_ENDPOINT_BASE_URL` / `AIROUTER_ENDPOINT_API_KEY` /
-`AIROUTER_ENDPOINT_MODEL` / `AIROUTER_ENDPOINT_PROVIDER`），
-配置文件里出现的只能是占位符，任何受跟踪文件中都不出现真实凭证。凭证只在形态需要它时才必填。
+`Endpoint` 的 baseUrl 与凭证**只从环境变量读取**，配置文件里只能是占位符，
+任何受跟踪文件中都不出现真实凭证；凭证只在形态需要它时才必填（[ADR-0013](./docs/adr/0013-configuration-model-and-runtime-registry.md) 第 6 节）。
+单实例档位的变量名是 `AIROUTER_ENDPOINT_BASE_URL` / `_API_KEY` / `_MODEL` / `_PROVIDER`，清单见 `.env.example`。
+> `[待定]` 多实例下「按实例 id 派生变量名」的规则尚未定（落在 `EndpointProperties`，Phase A）。
+> 在它定下来之前**配不出两个不同地址的实例** —— 现在写多实例配置只能配出同位地址的多份拷贝。
 
 **base-url 的形态约定**
 地址形态由**形态**决定：OpenAI 兼容端点以 `/v1` 结尾，Ollama 原生端点以 `/api` 结尾，都不带尾斜杠。
@@ -46,7 +50,8 @@ Spring AI 2.x 不再自动补这个后缀：少了它不在启动期报错，只
 **wire 形态**（`UpstreamShape`；旧词 `ProviderKind` 指同一件事，新版只用「形态」）
 对面**说哪一种话**。当前两种取值：`openai`（OpenAI 兼容端点）/ `ollama`（Ollama 原生接口）。
 它自己回答三个问题：地址该长什么样、这个协议要不要凭证、以及（经由各自的分帧器）流怎么结束。
-装配哪一个 Provider 由配置键 `airouter.endpoint.provider` 决定，不在调用路径上做分支。
+**形态是实例的属性，不是全局设置**：每个 `ModelInstance` 声明自己说哪一种话。
+单实例档位下 `airouter.endpoint.provider` 给出的是那个默认实例的形态；装配按实例进行，不在调用路径上分支。
 > 禁用：不要叫 provider type / vendor —— 「形态」说的是协议，不是厂商身份：
 > 同一个厂商可以同时提供两种形态（本机 Ollama 正是如此，见 [ADR-0009](./docs/adr/0009-second-wire-shape-and-shape-self-description.md)）。
 
@@ -154,16 +159,50 @@ Face 与 Provider 之间的**非流式**端口：Face 只认识它，Provider �
 
 ## 四、路由与流量治理
 
+**选择链**（selection chain）
+一个请求从进来到出网之间**固定的一条**编排，六步，顺序被断言（[ADR-0007](./docs/adr/0007-traffic-governance-model.md) 第 3 节）：
+
+```text
+① 认证与租户识别（API Key / JWT → client 标识）
+② 规则路由（条件匹配 → 目标服务，首命即止）
+③ 可用性闸门（InstanceAvailability）
+④ 实例选择（select，纯函数）
+⑤ 出网调用（transport）
+⑥ 失败转移（换实例重试，仅对可重试的失败）
+```
+
+它落在 `routing` 的**一处**编排里，不是散在若干个 handler 里 —— 「流式路径绕过了其中一步」
+正是来源项目最贵的一个缺陷，而分散是它的成因。
+> 禁用：不要叫 pipeline / chain of responsibility。前者与 Reactor 的流混淆，后者暗示每一步都能短路。
+
 **SelectionStrategy**（实例选择策略）
-`RANDOM` / `ROUND_ROBIN` / `WEIGHTED` / `LEAST_ACTIVE` / `FIRST_AVAILABLE`。
+目标态六种，取值与 legacy 对齐：`random` / `round-robin` / `least-connections` / `ip-hash` /
+`consistent-hash` / `latency`（EWMA 延迟感知，权重 ∝ `1/(1+ewma)`）。
+文档里出现过的 `WEIGHTED` / `FIRST_AVAILABLE` **不是独立策略**：权重是每个策略都会用到的参数；
+「第一个可用」是 ③ 的语义（走到 ④ 时候选全都可用），单列出来只会多出一条永远选到同一个实例的路径。
+> 数字以代码为准：legacy 的 `LoadBalancerManagementController` 对外报 **6 种**；
+> `StickyLoadBalancer` 是包装器、`CachedWeightedSelector` 是辅助类，都不构成第 7 种。
 
 **InstanceSelector**
-从候选实例中选一个。纯函数式决策，**不做 IO**。
+从候选实例中选一个。纯函数式决策：**只看 ③ 筛过的候选与权重，不看健康、不做 IO**。
+纯是为了可确定性断言 —— 给定候选与随机源，结果可复现，判「策略对不对」不需要起一个端点。
 
 **Availability**（可用性）
 实例是否可以被选中 = 被纳入健康管理 ∧ 熔断器未 OPEN ∧ 限流未拒绝。三个条件在**同一处**判定（`routing` 的 `InstanceAvailability`），
 判不过的请求在本地结束，不产生出网调用，也不产生结算。
 > 注意：legacy 里同一个 handler 对"健康"的默认值自相矛盾（一处默认健康、一处默认不健康），新版只有一条判定路径。
+
+**租户**（tenant）
+限流 / 配额 / 缓存键上的隔离维度，由 client 标识（API Key 或 JWT 的声明）退化而来。
+一个租户可以持有多把 API Key；配额与缓存按**租户**算而不是按 key 算 —— 否则多签一把 key 就等于绕开限额。
+> 禁用：不要叫 user / app / customer。`user` 是认证主体，租户是计费与限流主体，两者不必一一对应。
+
+**失败转移**（failover）
+把请求换到**同一 Service 的另一个实例**上再试一次。与「同实例退避重试」是两回事，两者会同时存在。
+只对可重试的失败生效，**白名单必须显式写出来并被断言** —— 写成「除了取消都重试」就是把 4xx 也重试一遍，
+于是「模型名写错」会变成一个要打满所有实例才返回的错误。
+结算纪律：**只结算最终那一次**；中间尝试计入指标，但不重复扣配额（[ADR-0007](./docs/adr/0007-traffic-governance-model.md) 第 3 节 ⑥）。
+> 禁用：不要叫 retry。混用之后「重试算几次结算」就没有答案了。
 
 **InstanceHealth**（健康管理名单）
 哪些实例被显式登记过。**未登记即不可用**（fail-closed）：配置漏项与"刚注册还没登记"落进同一侧，
@@ -186,7 +225,10 @@ Face 与 Provider 之间的**非流式**端口：Face 只认识它，Provider �
 OPEN 冷却结束后的试探态，放行有限数量的探测请求，决定是否回到 CLOSED。
 
 **RateLimiter**（限流器）
-按维度（API Key / Service / 实例 / 全局）限额。算法包括 `TokenBucket`、`SlidingWindow`、`LeakyBucket`、`WarmUp`。
+按作用域 `global / service / instance / client` 限额（`client` 即**租户**）。
+算法 `TokenBucket` / `SlidingWindow` / `LeakyBucket` / `WarmUp` 插在同一个端口下；
+后端两级：Redis 原子 Lua → 本地降级窗口（有额度上限、有 TTL）。
+**管理面限流不是另一套**：它是同一内核的另一条入口，作用域是管理面路径 / 管理员。
 
 **SlidingWindow** / **TokenBucket**
 限流算法实现，可插拔到同一个 `RateLimiter` 端口下。
@@ -280,14 +322,53 @@ Model Context Protocol。注解在 Spring AI 2.x 中已从社区包移入核心�
 
 ---
 
+## 七、配置、存储与多副本
+
+**注册表**（registry）
+「配置 → 运行时对象」的**唯一**持有者：服务、实例、形态，以及挂在实例上的熔断状态、延迟样本、健康登记。
+其它包不自己缓存这些东西 —— 一旦有两处持有，热重载必然漏改一处
+（[ADR-0013](./docs/adr/0013-configuration-model-and-runtime-registry.md) 第 5 节）。
+> 禁用：不要叫 ServiceRegistry / catalog / 目录。来源项目的 `ModelServiceRegistry` 是同一件事，
+> 但它的实现同时承担了选择与粘性路由，那不是注册表该做的事。
+
+**热重载**（hot reload）
+配置变更后**不重建 Spring 上下文**，只替换注册表里的对象。重建会丢掉在途的流、熔断计数与延迟样本 ——
+一次配置变更等于一次全站状态清零，那是重启，不是热重载。
+在途请求继续用它开始时拿到的那一份对象，直到结束。
+
+**配置版本**
+每次配置变更产生的一个不可变快照，带版本号。它回答两个问题：现在生效的是哪一版、能回滚到哪一版。
+多副本之间广播的是「变更事件 + 版本号」，**不是全量配置**。
+> 来源项目的 `HttpConfigPushService` 把全量配置推给一个并不存在的端点，不搬。
+
+**多副本**（multi-replica）
+同一个进程跑多份，共享 Redis 与数据库。Redis 承载三件事：配置变更事件广播、
+跨副本共享计数（限流 / 配额）、分布式锁。
+> `[待定]` 是否需要一个独立的「多副本档位」尚未决定。倾向**不设**：档位说的是端点性质（local / cloud），
+> 副本数是部署形态，两者正交；把它们塞进同一个开关会让「本机两副本」这种用法无处安放。
+
+**管理面**（admin plane）
+网关自己的配置与运维接口，与数据面（Face）分开。它是控制台的数据来源，也是 RBAC 的作用对象。
+> 禁用：不要把它和「控制台」混用 —— 管理面是接口，控制台是页面。
+
+**控制台**（console）
+管理面的 Web 界面。**最后做**，且是适配 legacy 的 92 个 `.vue` 页面而不是重写
+（[ADR-0001](./docs/adr/0001-project-scope-and-lineage.md) 第 5 节）；前置条件是管理面 API 契约已被契约测试钉住。
+
+---
+
 ## 术语缺口
 
 本表未覆盖、但你认为是真实概念的，先记在这里，由 `domain-modeling` 统一裁决，不要自行发明词。
 
-**待裁决（ADR 第 2 版重写过程中出现，尚未入表）**
+**待裁决**
 
-- **注册表**（registry）：配置 → 运行时对象的持有者（服务 / 实例 / 形态，含熔断状态与延迟样本）。
-  候选词：注册表 / 运行时目录 / 服务目录。见 [ADR-0013](./docs/adr/0013-configuration-model-and-runtime-registry.md)
-- **租户**（tenant）：限流、配额与缓存键上的隔离维度，由 client 标识退化而来。
-  候选词：租户 / 调用方 / client。见 [ADR-0007](./docs/adr/0007-traffic-governance-model.md) 第 3、9 节
-- **档位扩展**：`local` / `cloud` 之外是否需要一个「多副本」档位（依赖 Redis）。见 [ADR-0012](./docs/adr/0012-storage-migrations-and-cluster.md)
+（空。ADR 第 2 版带来的三个词已裁决，见下表。）
+
+### 已裁决（ADR 第 2 版）
+
+| 词 | 裁决 | 落在 |
+|---|---|---|
+| 注册表（registry） | 入表。**不要**用 `ServiceRegistry` 这个类名 —— 它会把来源项目那层「注册表兼做选择」一起带进来 | §七 |
+| 租户（tenant） | 入表，与作用域里的 `client` 指同一件事；正文用「租户」，键名与代码里用 `client` | §四 |
+| 「多副本」独立成档位 | **暂不**。档位描述端点性质，副本数描述部署形态，两者正交；记为 `[待定]` 留在 §七 | §七 |

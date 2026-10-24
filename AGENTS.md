@@ -16,6 +16,24 @@
 **「一律不搬」与「一律搬」同样不可接受**：前者浪费 149k 行里经过验证的部分，后者会把缺陷一起搬进来。
 裁决标准与三道关见 **ADR-0001 第 2、3 节**，逐项裁决记录在 `docs/planning/legacy-review.md`。
 
+## 目标态与阶段顺序
+
+**目标态 = legacy 的九类能力面**，不是「功能对等」（ADR-0001 第 1、7 节）：
+适配器 / 负载均衡 / 规则路由 / 韧性 / 配额 / 记录治理 / 可观测 / 持久化与多副本 / 控制台，外加认证与 RBAC。
+判断一项工作该不该做，先问它补的是哪一类能力面 —— 答不上来的，多半把实现细节当成了能力
+（「legacy 有 20 张表，我们也得有 20 张」不是对齐）。
+
+顺序是**硬约束**，不是排期建议（ADR-0001 第 5 节）：
+
+1. **实例维度先于一切作用域类功能。** 限流的作用域 `global/service/instance/client`、规则路由的目标服务、
+   失败转移的换谁重试、配额的维度，全部以「一个服务下有多个实例」为前提。
+   在实例维度建立之前做限流，做出来的是一个全局开关
+2. **A 地基**（存储与迁移 → 配置模型与注册表 → 实例选择链）→ **B 广度**（九类各铺一层，每类都有测试）→
+   **C 深度**（自适应阈值、EWMA 调优、配额对账；紧接 B，不得无限延后）→ **D 控制台**
+3. **控制台最后**，前置条件是管理面 API 契约已被契约测试钉住；且是**适配 legacy 前端**，不是重写页面
+
+阶段内的先后可以调，上面三条不行。要推翻它们就改 ADR-0001，不要在这里或票里改。
+
 ## 技术决策的权威来源
 
 **`docs/adr/` 是唯一权威。** 动手写一个模块之前，先读与之相关的 ADR。
@@ -27,24 +45,28 @@
 ## 仓库布局（目标态）
 
 Maven 多模块，**按端口与适配器（六边形）组织，不按技术角色分包**。
-
-| 模块 | 职责 | 状态 |
 以 **ADR-0003 为准：四个模块**。早先这里写过一份十几个模块的清单，它已被 ADR-0003 第 1 节否决
 （模块数量与项目规模不匹配，隔离度用包 + 包间规则同样拿得到），不要按那份清单开模块。
 
+| 模块 | 职责 | 现状 |
 |---|---|---|
-| `airouter-core` | 领域模型 + 端口接口（**依赖树里不许出现任何框架**） | ✔ 已建（无源码） |
-| `airouter-gateway` | faces / providers / transport / routing / governance / config / observe | ✔ 已建（仅包结构） |
-| `airouter-agent` | Spring AI 2.0.1：ChatClient 装配 + Advisor 链 + Subagent | ✔ 已建（壳） |
-| `airouter-app` | 启动装配 + **跨模块结构规则的唯一住所** | ✔ 已建 |
+| `airouter-core` | 领域模型 + 端口接口（**依赖树里不许出现任何框架**） | 18 个类，无测试（纯类型） |
+| `airouter-gateway` | 已建：faces / providers / transport / routing / governance / config / observe<br>待建（Phase A 起按序）：registry / select / store / cluster / admin | 42 个类 + 6 个测试 |
+| `airouter-agent` | Spring AI 2.0.1：ChatClient 装配 + Advisor 链 + Subagent | 壳，2 个类 |
+| `airouter-app` | 启动装配 + **跨模块结构规则的唯一住所** | 3 个类 + 79 个测试（端到端与契约都在这里） |
+
+「待建」的包不要提前开：空包会让结构规则看起来已覆盖了一块实际不存在的区域，也会诱导人先写壳后填肉。
 
 `gateway` 内部按端口与适配器分包，包职责写在各自的 `package-info.java` 里。
 
-依赖方向的核心约束（由 `airouter-app` 的测试用 ArchUnit 判红，**跑在默认 `verify` 路径上**）：
+依赖方向的核心约束（由 `airouter-app` 的结构测试判红，**跑在默认 `verify` 路径上**；
+底层是 ArchUnit 的库，但**不用它的 `@AnalyzeClasses` 引擎** —— 理由见本节末）：
 
 - `core` **不依赖任何模块**；它的依赖树里出现 Spring / Jackson / Reactor 即构建失败（Maven enforcer，见 `airouter-core/pom.xml`）
 - 没有模块可以依赖 `app`
 - `faces` 与 `providers` 互不感知；`routing` / `governance` 不做 IO、**也看不到 HTTP 状态码**；`transport` 不认识业务包
+- 待建包在建的那一刻就要满足：`select` 是**纯函数**（只看候选与权重，不看健康、不做 IO）；
+  `registry` 是「配置 → 运行时对象」的**唯一**持有者；`store` 不被 `faces` / `providers` 直接依赖
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 成败的结论只有一个出口：只有 `providers`（产生终态的那一处）可以构造 `Outcome`
 
@@ -53,7 +75,10 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 1. `providers/<形态>/` —— codec 与 provider（一帧字节 → 哪几个事件，是形态差异唯一该存在的位置）
 2. `transport` —— 只有当分帧方式不同时才加一种（SSE 与逐行 JSON 是并列的两种读法，不是一个读法的两种参数）
 3. `UpstreamShape` —— 加一个取值，回答「地址该长什么样」「要不要凭证」
-4. `UpstreamConfiguration` —— 加一个 `@ConditionalOnProperty` 的 `@Bean`，不用 `if`
+4. `UpstreamConfiguration` —— **现在（单实例）**：加一个 `@ConditionalOnProperty` 的 `@Bean`，不用 `if`；
+   **Phase A 起（注册表之后）**：改为在形态工厂里登记一个构造器，**不再新增 `@Bean`**
+   （[ADR-0013 第 5 节](./docs/adr/0013-configuration-model-and-runtime-registry.md)）。
+   两条路的共同点：形态差异由配置或登记决定，**不在调用路径上分支**
 
 `faces` 与 `core` **不在这个列表里**。它们一旦出现，说明抽象体表错了：回来修抽象，不要接受那份改动 ——
 `SecondProviderTouchesNoFaceTest` 用差异统计判红，红的时候会说清是哪个文件。
@@ -99,11 +124,13 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
   哪些不能用（流式工具调用在小模型上不确定，不能做 golden-file 断言）。本机地址写 `127.0.0.1` 不写 `localhost` —— Ollama 只监听 IPv4
 - **`verify` 需要本机模型端点在跑**：真实端点的那两条测试不做静默跳过（一个可以被跳过的兼容性测试等于没有）。
   端点没起来时它们会红并给出指路信息；起停见上面那份 runbook
-- **对外 wire format 的契约测试在 `airouter-app/src/test/resources/contract/`**：一个用例一个目录，
-  放 `upstream.json` + `expected.json` 两个文件即被发现，**不需要改任何测试代码**。
-  流式那一份在 **`contract-stream/`**，比的是**帧序列**且包含 `[DONE]` 哨兵本身
-  （`upstream.json` 里是 `{"status":..., "sse":"..."}`）。约定写在该目录的 `README.md` 里。
-  未来任何框架升级之后，最先能告诉你「序列化行为变了」的就是它们
+- **对外 wire format 的契约测试在 `airouter-app/src/test/resources/` 下的三个目录**，一个用例一个目录，
+  放 `upstream.json` + `expected.json` 两个文件即被发现，**不需要改任何测试代码**：
+  - `contract/` —— 非流式，比响应 JSON
+  - `contract-stream/` —— SSE，比的是**帧序列**且包含 `[DONE]` 哨兵本身（`upstream.json` 里是 `{"status":..., "sse":"..."}`）
+  - `contract-ollama/` —— Ollama 原生，流式用 `"ndjson"`（逐行 JSON，结束靠末帧 `done:true` 而非哨兵），
+    非流式用 `"body"`
+  约定写在各目录的 `README.md` 里。未来任何框架升级之后，最先能告诉你「序列化行为变了」的就是它们
 - **回放上游能控制到字节块一级**（`RecordedUpstream.replayStream(status, chunks, between)`）：
   可以造出「一个多字节字符被切在两个 TCP 段之间」「讲完但故意不发 `[DONE]`」这类真实端点给不出的样本。
   需要精确控制帧边界的测试用它，不要靠 sleep 去碰运气
@@ -124,6 +151,25 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 - 没有 jacoco：没有任何故事要求覆盖率下限，在没有生产代码的阶段摆一个阈值只会得到空数字。要加就先补故事
 
 违约的处置路径是**改代码**。确实无法避免的情形，处置路径是写一份 ADR —— 不是加一行抑制、一个排除块或一处 include 例外（ADR-0008 第 1 节）。
+
+## 持久化与配置（Phase A 起会碰到的硬约束）
+
+这几条都是「顺手违反、运行期才显形」的，写在这里而不是只写在 ADR 里：
+
+- **JDBC 直写，不引入 JPA**（ADR-0002）。懒加载与 flush 时机是流式路径上的隐形阻塞点
+- **Flyway 是 schema 的唯一变更路径**（ADR-0012 第 4 节）。没有 `ddl-auto`，没有手写建表脚本，
+  没有「先手动加一列、回头再补迁移」
+- **H2 默认 / PostgreSQL 按 `DATABASE_URL`，同一套迁移双方言**（ADR-0012 第 1 节）。
+  只在 PG 上验过的 SQL 不算数 —— 默认档位跑的是 H2
+- **依赖缺席是契约，不是兜底**（ADR-0012 第 2 节）。DB 或 Redis 不在时，行为必须是**被断言过**的那一种
+  （降级到哪一档、拒绝还是放行），而不是 NPE 之后被某个 `catch` 吞掉。
+  每一处新依赖都要有一条「它不在」的测试 —— 这是 ADR-0001 第 3 节第三道关的具体形式
+- **配置变更不重建 Spring 上下文**（ADR-0013 第 5 节）。重建会丢掉在途的流、熔断计数、延迟样本；
+  热重载的粒度是**替换注册表里的对象**，在途请求继续用它开始时拿到的那一份
+- **凭据只从环境变量来，且绝不下发下游**（ADR-0013 第 6 节、ADR-0007 第 8 节）。
+  网关自有的 `X-API-Key` / `Authorization` 出现在出站请求里就是缺陷，不是配置问题
+- **新增一家 OpenAI 兼容厂商是一份配置，不是一个类**（ADR-0013 第 2 节）。
+  只有 wire 形态真的不同（Anthropic Messages、Gemini `generateContent`）才写 codec
 
 ## Agent skills
 

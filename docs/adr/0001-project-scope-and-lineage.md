@@ -45,7 +45,7 @@
 ### 2. legacy 是设计素材库：逐项裁决，而不是一律不搬或一律搬
 
 **「不搬运 legacy 代码」与「直接搬过来」都是错的。** 前者把 149k 行里经过生产验证的部分
-（限流 Lua 脚本、7 种负载均衡策略、无锁熔断状态机、`usageStrict` 语义）当成不存在，
+（限流 Lua 脚本、6 种负载均衡策略、无锁熔断状态机、`usageStrict` 语义）当成不存在，
 代价是重新踩一遍它踩过的坑；后者会把缺陷一起搬进来（两套限流、4 套 store、缺失的流式终态）。
 
 每一项 legacy 能力按四类裁决，**逐项写进 `docs/planning/legacy-review.md`**：
@@ -100,7 +100,7 @@
 | 能力 | legacy 现状 | 我们此刻 | 目标态 |
 |---|---|---|---|
 | 适配器 | 9 个内置，其中仅 Ollama / Gemini / Claude 为真实现，其余是同一套 OpenAI 兼容 + 默认地址差异 | 2 种形态（`openai` / `ollama`），单端点 | 形态自述扩展；兼容厂商由配置承担，原生形态才写 codec（[0009](./0009-second-wire-shape-and-shape-self-description.md)） |
-| 负载均衡 | 7 种策略 | 不存在（只有一个实例） | 策略集搬到 `select`，纯函数、可确定性断言（[0007](./0007-traffic-governance-model.md)） |
+| 负载均衡 | 6 种：`random` / `round-robin` / `least-connections` / `ip-hash` / `consistent-hash` / `latency`（EWMA）。另有一个粘性包装器与一个缓存权重选择器，不是独立策略 | 不存在（只有一个实例） | 策略集搬到 `select`，纯函数、可确定性断言（[0007](./0007-traffic-governance-model.md)） |
 | 规则路由 | 条件路由 + 命中统计 | 不存在 | 首命即止、优先级稳定；命中只在决策生效点计数一次 |
 | 韧性 | 熔断 / 失败转移 / 限流 / 缓存；限流两套并存零共享 | 熔断与可用性闸门已有；结算闭环已有 | 失败转移、缓存补齐；限流与配额合成一个内核 |
 | 配额 | 4 段 Lua + `usageStrict`（读不到用量绝不当 0）+ fail-open 分层 | 不存在 | 搬 Lua 与 `usageStrict`；fail-open 分层改为显式契约 |

@@ -63,9 +63,14 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 - JDK 21（当前 `java -version` = 21.0.12.1）；Maven 3.9.16 在 `~/soft/apache-maven-3.9.16`
 - Maven Wrapper 已入库，**统一用 `./mvnw`**，不要用系统里的 `mvn`（版本可能与门禁要求不符）
 - 默认构建路径即全部门禁：`./mvnw clean verify`。**不带任何 skip 参数** —— 门禁没有接受 skip 的配置入口
-- 跑起来：`java -jar airouter-app/target/airouter-app-0.1.0-SNAPSHOT.jar`，健康入口在 `/actuator/health`
+- 跑起来：`java -jar airouter-app/target/airouter-app-0.1.0-SNAPSHOT.jar`，健康入口在 `/actuator/health`。
+  **注意端口不一定是 yml 里写的 8080**：会话环境若带着 `SERVER__PORT` / `SERVER__HOST`，Spring 的宽松绑定会静默覆盖 `server.*`
+  （实测一次是 57456）。要么显式传 `--server.port=`，要么 `env -u SERVER__PORT -u SERVER__HOST` 再跑
 - 档位：`local`（默认，本机 Ollama，不需要网络）/ `cloud`（真实厂商端点，三个变量全部必填）。
   切换只改 profile 或环境变量，**不改代码**；变量名清单见 `.env.example` 与 `EndpointProperties` 的常量
+- **本机端点的安装、起停与实测能力边界见 `docs/runbook/local-openai-endpoint.md`**。
+  需要打真实 model 在线协议形状之前先读第 6 节台账：那里记了哪些用法能用（`include_usage` 会来一帧 `choices` 为空数组的纯用量帧），
+  哪些不能用（流式工具调用在小模型上不确定，不能做 golden-file 断言）。本机地址写 `127.0.0.1` 不写 `localhost` —— Ollama 只监听 IPv4
 - 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
   外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么

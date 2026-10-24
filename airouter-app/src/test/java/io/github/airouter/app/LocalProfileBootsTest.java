@@ -47,9 +47,13 @@ final class LocalProfileBootsTest {
   }
 
   @Test
-  @DisplayName("本地档位的端点是本机地址：它能起来这件事不依赖任何外部服务")
-  void endpointPointsAtLocalhost(@Autowired EndpointProperties endpoint) {
-    assertThat(endpoint.baseUrl()).startsWith("http://localhost:");
+  @DisplayName("本地档位的端点是本机 IPv4 字面量：既能起来不依赖外部服务，也不经过 DNS 解析")
+  void endpointPointsAtLoopbackIpv4(@Autowired EndpointProperties endpoint) {
+    // 写 127.0.0.1 而不是 localhost：Ollama 只监听 IPv4，而 localhost 在 macOS 上同时解析出
+    // 127.0.0.1 与 ::1。这条必须断住 —— 改回 localhost 会让 IPv6 那一侧先试一次，
+    // 症状是偶发的连接失败，而不是稳定的报错。出处见 docs/runbook/local-openai-endpoint.md 第 9 节。
+    assertThat(endpoint.baseUrl()).startsWith("http://127.0.0.1:");
+    assertThat(endpoint.baseUrl()).doesNotContain("localhost");
     assertThat(endpoint.baseUrl()).endsWith("/v1");
   }
 }

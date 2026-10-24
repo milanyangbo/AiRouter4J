@@ -41,7 +41,9 @@ spring:
 
 airouter:
   endpoint:
-    base-url: ${AIROUTER_ENDPOINT_BASE_URL:http://localhost:11434/v1}
+    # 写 127.0.0.1 而不是 localhost：Ollama 只监听 IPv4，而 localhost 在 macOS 上同时解析出
+    # 127.0.0.1 与 ::1。少一步解析就少一处抖动 —— 这条细节的出处见 docs/runbook/local-openai-endpoint.md 第 9 节。
+    base-url: ${AIROUTER_ENDPOINT_BASE_URL:http://127.0.0.1:11434/v1}
     # Ollama 忽略密钥，这里给的是占位串，不是凭证。真实凭证只存在于环境里。
     api-key: ${AIROUTER_ENDPOINT_API_KEY:ollama}
     model: ${AIROUTER_ENDPOINT_MODEL:qwen2.5:0.5b}

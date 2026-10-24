@@ -165,12 +165,14 @@ CLIENT_CANCELLED   → 不计入
 
 这几条必须都是**自动化**的，不是人工确认：
 
-- [ ] **流式失败驱动熔断**：连续 N 次让上游流式中途失败，熔断器进入 OPEN 状态。改动来源是原来的"永不 OPEN"
+- [x] **流式失败驱动熔断**：连续 N 次让上游流式中途失败，熔断器进入 OPEN 状态。改动来源是原来的"永不 OPEN"。
+      由 `CircuitBreakerEndToEndTest` 断言，且与「打开之后不再出网」成对出现 ——
+      只读状态只能证明它记得自己是开的，证明不了请求没发出去
 - [x] **延迟语义**：上报的 `latency` 是到收到终态为止的真实耗时，流式样本不再恒为零。
       由 `StreamingEndToEndTest`（上游停顿已知）与 `LocalModelStreamingEndToEndTest`（真实端点）断言
-- [x] **取消不判为实例故障**：客户端在中途断开，结算的是 `CLIENT_CANCELLED` 而不是失败
-      （熔断器本身还没有实现，因此「状态不变」改为断言它**没有被记成上游故障** ——
-      那正是会让熔断器误伤健康实例的那一种误记）。由 `CancellationEndToEndTest` 断言
+- [x] **取消不判为实例故障**：客户端在中途断开，结算的是 `CLIENT_CANCELLED` 而不是失败；
+      熔断器实现之后这一条升级为**状态断言**：反复取消同一个实例，它保持 `CLOSED`，
+      连续失败计数保持为零。由 `CircuitBreakerEndToEndTest` 与 `CancellationEndToEndTest` 断言
 - [x] **终态唯一**：正常结束、「上游未发哨兵即关闭」、超时、取消四条路径各恰好结算一次。
       按请求标识挑出结算记录来数，避免被别的用例干扰；
       「终态之后立刻断开」另有定向用例（`ExactlyOneSettlementTest`），

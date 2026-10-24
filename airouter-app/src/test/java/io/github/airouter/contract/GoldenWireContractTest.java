@@ -11,7 +11,7 @@ import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.GenerationParams;
 import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.InFlightStreams;
@@ -119,7 +119,7 @@ final class GoldenWireContractTest {
             "golden-key",
             MODEL,
             recorded.baseUrl(),
-            new RecordingOutcomeObserver(),
+            new SettlementObserver(),
             new ChunkParseCounter());
     try {
       CanonicalResponse response = provider.complete(request).toCompletableFuture().join();

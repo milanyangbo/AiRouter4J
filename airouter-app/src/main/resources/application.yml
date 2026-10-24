@@ -34,6 +34,12 @@ airouter:
     # 流式路径上的帧间静默上限，不是总时长：一条流可以很长，只要上游一直在说话。
     idle-timeout: ${AIROUTER_ENDPOINT_IDLE_TIMEOUT:15s}
 
+  # 可用性相关的阈值。默认值集中在一处（governance 的 AvailabilityPolicy），
+  # 这里只是把它们接到环境变量上 —— 不要在别处再写一遍同名常量。
+  governance:
+    failure-threshold: ${AIROUTER_GOVERNANCE_FAILURE_THRESHOLD:3}
+    cooldown: ${AIROUTER_GOVERNANCE_COOLDOWN:15s}
+
 ---
 # 本地档位：无网络也能起来，也不向任何外部服务发起连接。
 # 三个值都可以被同名环境变量覆盖 —— 意味着「换一台有卡的机器跑本地模型」同样不需要改代码。

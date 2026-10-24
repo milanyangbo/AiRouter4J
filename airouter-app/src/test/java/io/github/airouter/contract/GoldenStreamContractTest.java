@@ -9,7 +9,7 @@ import io.github.airouter.core.CanonicalRole;
 import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.GenerationParams;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.InFlightStreams;
@@ -130,7 +130,7 @@ final class GoldenStreamContractTest {
         "golden-key",
         MODEL,
         recorded.baseUrl(),
-        new RecordingOutcomeObserver(),
+        new SettlementObserver(),
         new ChunkParseCounter());
 
     List<CanonicalStreamEvent> events = Flux

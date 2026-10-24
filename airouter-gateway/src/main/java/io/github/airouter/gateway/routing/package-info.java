@@ -3,5 +3,9 @@
  *
  * <p>只操作 Canonical 与抽象状态，不做 IO：这里的东西要能在没有容器、没有网络的情况下被单测。
  * 由结构规则 R4 判红。
+ *
+ * <p>「实例接不接流量」在这里判定一次，别处不再有第二处。判定的输入同样只有
+ * {@code Outcome} —— 未纳入健康管理的实例一律不可用（ADR-0007 第 2 节的 fail-closed），
+ * 因此配置漏项表现为不可用，而不是静默放行。
  */
 package io.github.airouter.gateway.routing;

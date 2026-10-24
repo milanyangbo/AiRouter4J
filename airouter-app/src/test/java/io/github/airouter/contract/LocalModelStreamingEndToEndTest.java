@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.fail;
 import io.github.airouter.app.AiRouterApplication;
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -43,7 +43,7 @@ final class LocalModelStreamingEndToEndTest {
   private static final String RUNBOOK = "docs/runbook/local-openai-endpoint.md";
 
   @Autowired
-  private RecordingOutcomeObserver outcomes;
+  private SettlementObserver outcomes;
 
   private WebTestClient client;
 

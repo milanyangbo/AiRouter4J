@@ -3,11 +3,16 @@ package io.github.airouter.gateway.config;
 import io.github.airouter.core.CompletionPort;
 import io.github.airouter.core.OutcomeObserver;
 import io.github.airouter.core.StreamingCompletionPort;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.governance.CircuitBreakerObserver;
+import io.github.airouter.gateway.governance.CircuitBreakers;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
+import io.github.airouter.gateway.routing.AvailabilityGate;
+import io.github.airouter.gateway.routing.InstanceAvailability;
 import io.github.airouter.gateway.transport.InFlightStreams;
 import io.github.airouter.gateway.transport.OutboundWire;
+import java.util.List;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -38,10 +43,20 @@ public final class UpstreamConfiguration {
     return new ChunkParseCounter();
   }
 
-  /** 结算点的唯一实现。第二个消费者（熔断器）出现时是**再加一个实现**，不是替换这一个。 */
+  /**
+   * 结算点。它是**唯一**的 {@code OutcomeObserver} bean。
+   *
+   * <p>熔断器作为消费者登记在它上面，而不是自己成为一个 bean：
+   * 那样「注入一个 {@code OutcomeObserver}」会同时匹配两个候选，装配歧义只能靠
+   * {@code @Primary} 压下去，而那个注解的含义是「有多个候选时选我」 ——
+   * 与「结算点只有一个」正好相反。
+   *
+   * @param breakers 熔断状态总表，治理侧的唯一消费者需要它
+   * @return 结算点
+   */
   @Bean
-  public OutcomeObserver outcomeObserver() {
-    return new RecordingOutcomeObserver();
+  public OutcomeObserver outcomeObserver(CircuitBreakers breakers) {
+    return new SettlementObserver(List.of(new CircuitBreakerObserver(breakers)));
   }
 
   /**
@@ -69,15 +84,16 @@ public final class UpstreamConfiguration {
   }
 
   /**
-   * 唯一的 Provider 实例，两个端口都由它提供。
+   * Face 看到的两个端口，由同一个对象提供。
    *
-   * <p>返回类型是具体类而不是两个接口之一，这是**容器的类型预测**决定的，不是随意的：
-   * 按某一个接口声明返回类型，另一个接口在注入点就找不到候选 ——
-   * 容器在实例化之前只知道方法声明的返回类型；而注册两个 bean 也不行，
-   * 那两个 bean 各自都同时满足两个接口，注入点立刻变成二选一的歧义。
+   * <p>它是**闸门**而不是 Provider 本身：不放行的请求在闸门这里就结束，Provider 甚至不会被问到。
+   * Provider 因此**不是 bean** —— 让它同时成为一个 bean，注入 {@code CompletionPort}
+   * 就会同时匹配闸门与 Provider 两个候选，装配歧义只能靠 {@code @Primary} 压下去。
    *
-   * <p>这不意味着 Face 看得到实现：Face 的构造参数声明的是接口，
-   * 它拿到的东西在它自己的类型系统里就是接口，多出来的方法它引用不到。
+   * <p>返回类型是具体类 {@link AvailabilityGate} 而不是两个接口之一，
+   * 这是**容器的类型预测**决定的：按某一个接口声明返回类型，另一个接口在注入点就找不到候选 ——
+   * 容器在实例化之前只知道方法声明的返回类型。而一个同时实现两个接口的类，
+   * 两个注入点各自都只匹配它一个。
    *
    * <p>实例标识先用端点地址：现阶段没有实例注册表，而地址确实唯一地标识了一个上游。
    * 注册表出现之后这里换成它的 id，其它地方一行都不用改。
@@ -86,14 +102,17 @@ public final class UpstreamConfiguration {
    * @param properties Endpoint 的地址、凭证、默认模型与超时 —— 全部来自环境变量
    * @param observer 结算点
    * @param counter 帧解析计数
-   * @return Provider
+   * @param availability 唯一那道闸门
+   * @return 两个端口
    */
   @Bean
-  public OpenAiCompatibleProvider completionPort(OutboundWire wire,
-                                                 EndpointProperties properties,
-                                                 OutcomeObserver observer,
-                                                 ChunkParseCounter counter) {
-    return new OpenAiCompatibleProvider(
+  public AvailabilityGate completionPort(OutboundWire wire,
+                                         EndpointProperties properties,
+                                         OutcomeObserver observer,
+                                         ChunkParseCounter counter,
+                                         InstanceAvailability availability) {
+    OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
         wire, properties.apiKey(), properties.model(), properties.baseUrl(), observer, counter);
+    return new AvailabilityGate(provider, provider, availability, properties.baseUrl());
   }
 }

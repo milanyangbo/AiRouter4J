@@ -19,11 +19,14 @@ class GuardsActuallyFireTest {
 
   private static final String LAYOUT_ROOT = "io.github.airouter.archtest.layout.violations";
   private static final String WIRING_ROOT = "io.github.airouter.archtest.wiring.violations";
+  private static final String SETTLEMENT_ROOT = "io.github.airouter.archtest.settlement.violations";
 
   private static final JavaClasses LAYOUT =
       new ClassFileImporter().importPackages(LAYOUT_ROOT);
   private static final JavaClasses WIRING =
       new ClassFileImporter().importPackages(WIRING_ROOT);
+  private static final JavaClasses SETTLEMENT =
+      new ClassFileImporter().importPackages(SETTLEMENT_ROOT);
 
   @Test
   void facesDependingOnProvidersIsRejected() {
@@ -63,6 +66,16 @@ class GuardsActuallyFireTest {
   @Test
   void beanLookupByTypeIsRejected() {
     assertFires(StructuralRules.noBeanLookupByType(resideInAPackage(WIRING_ROOT + "..")), WIRING);
+  }
+
+  @Test
+  void governanceReadingHttpStatusToJudgeSuccessIsRejected() {
+    assertFires(StructuralRules.routingAndGovernanceDoNoIo(SETTLEMENT_ROOT), SETTLEMENT);
+  }
+
+  @Test
+  void outcomeBuiltOutsideTheTerminalProducerIsRejected() {
+    assertFires(StructuralRules.settlementHasOneExit(SETTLEMENT_ROOT), SETTLEMENT);
   }
 
   private static void assertFires(ArchRule rule, JavaClasses classes) {

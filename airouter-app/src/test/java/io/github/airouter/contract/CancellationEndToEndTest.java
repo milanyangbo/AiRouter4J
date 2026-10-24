@@ -6,7 +6,7 @@ import io.github.airouter.app.AiRouterApplication;
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
 import io.github.airouter.gateway.faces.openai.OpenAiFace;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import io.github.airouter.gateway.transport.InFlightStreams;
 import java.io.IOException;
 import java.time.Duration;
@@ -59,7 +59,7 @@ final class CancellationEndToEndTest {
   private static final RecordedUpstream UPSTREAM = startUpstream();
 
   @Autowired
-  private RecordingOutcomeObserver outcomes;
+  private SettlementObserver outcomes;
 
   @Autowired
   private InFlightStreams inFlight;

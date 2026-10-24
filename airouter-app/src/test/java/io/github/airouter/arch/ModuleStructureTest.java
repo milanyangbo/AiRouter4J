@@ -50,4 +50,7 @@ final class ModuleStructureTest {
   @ArchTest
   static final ArchRule no_bean_lookup_by_type =
       StructuralRules.noBeanLookupByType(StructuralRules.productionClasses());
+
+  @ArchTest
+  static final ArchRule settlement_has_one_exit = StructuralRules.settlementHasOneExit(GATEWAY);
 }

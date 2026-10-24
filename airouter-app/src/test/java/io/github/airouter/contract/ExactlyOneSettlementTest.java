@@ -9,7 +9,7 @@ import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.GenerationParams;
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.InFlightStreams;
@@ -54,7 +54,7 @@ final class ExactlyOneSettlementTest {
           SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
           SseCall.bytes(SseCall.doneFrame())), Duration.ZERO);
 
-      RecordingOutcomeObserver outcomes = new RecordingOutcomeObserver();
+      SettlementObserver outcomes = new SettlementObserver();
       OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
           new OutboundWire(upstream.baseUrl(), TIMEOUT, TIMEOUT, new InFlightStreams()),
           "golden-key",

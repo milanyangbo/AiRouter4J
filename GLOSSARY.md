@@ -147,14 +147,26 @@ Face 与 Provider 之间的**非流式**端口：Face 只认识它，Provider �
 从候选实例中选一个。纯函数式决策，**不做 IO**。
 
 **Availability**（可用性）
-实例是否可以被选中 = 启用 ∧ 健康检查通过 ∧ 熔断器未 OPEN ∧ 限流未拒绝。
+实例是否可以被选中 = 被纳入健康管理 ∧ 熔断器未 OPEN ∧ 限流未拒绝。三个条件在**同一处**判定（`routing` 的 `InstanceAvailability`），
+判不过的请求在本地结束，不产生出网调用，也不产生结算。
 > 注意：legacy 里同一个 handler 对"健康"的默认值自相矛盾（一处默认健康、一处默认不健康），新版只有一条判定路径。
+
+**InstanceHealth**（健康管理名单）
+哪些实例被显式登记过。**未登记即不可用**（fail-closed）：配置漏项与"刚注册还没登记"落进同一侧，
+表现为不可用，而不是静默放行。见 §四 **Fail-closed / Fail-open**。
 
 **CircuitBreaker**（熔断器）
 按实例粒度的状态机：`CLOSED` → `OPEN` → `HALF_OPEN` → `CLOSED`。OPEN 期间请求不被选中。
+它**只消费 `Outcome`**：看不到状态码，也看不到异常类型。状态用 `AtomicReference + CAS` 无锁更新并带版本号，
+迁移记录里带着触发它的那个 `requestId` —— 「什么时候开的」能回答，排查时有用的是「谁把它打开的」。
 
 **CircuitState**
-`CLOSED` / `OPEN` / `HALF_OPEN`。
+`CLOSED` / `OPEN` / `HALF_OPEN`。`OPEN` 在冷却结束之后被**读成** `HALF_OPEN`：
+「可以再试一次」是时间推出来的事实，不需要先发一次请求来触发。
+
+**RateLimitDecisionPoint**（限流决策点）
+限流的**唯一**判定接口，挂在可用性那一道闸上，与熔断由同一条管道消费。
+本阶段只有接口没有算法 —— 接口先定下来的价值是：将来那个算法只能长在这一处。
 
 **HalfOpen**
 OPEN 冷却结束后的试探态，放行有限数量的探测请求，决定是否回到 CLOSED。
@@ -175,6 +187,11 @@ OPEN 冷却结束后的试探态，放行有限数量的探测请求，决定是
 **OutcomeObserver**（结果结算点）
 **唯一的**成功/失败/取消观测点。所有协作组件（熔断器、延迟感知负载均衡、指标、配额结算）都只从这里取结果，**不得各自观测**。
 > 这是修复 legacy P0-1 的架构手段：流式只要在 Terminal/Failed/Cancel 时才到达这里。
+
+**SettlementObserver**（结算点在本阶段的形态）
+容器里**唯一**一个 `OutcomeObserver` bean：留一份样本，并把结论投递给登记在它上面的消费者（熔断器）。
+第二个消费者出现时是登记在这里，不是另起一个 bean —— 两个 bean 会让"注入一个 `OutcomeObserver`"变成二选一的歧义。
+投递**互相隔离**：一个消费者抛异常不会让后面的消费者失去这次结果。
 
 **Outcome**
 一次调用的结算结果：`requestId` / `serviceId` / `instanceId` / `OutcomeKind` / `latency` / `usage` / `error`。

@@ -58,6 +58,9 @@ public final class RecordedUpstream implements AutoCloseable {
 
   private final AtomicInteger writtenChunks = new AtomicInteger();
 
+  /** 收到了几次请求。它是「有没有出网」的判定依据，见 {@link #requests()}。 */
+  private final AtomicInteger requests = new AtomicInteger();
+
   /**
    * @param port 端口，传 0 表示由内核分配
    * @param status 回放的状态码
@@ -72,6 +75,7 @@ public final class RecordedUpstream implements AutoCloseable {
     this.status = status;
     this.body = body;
     this.server.createContext("/", exchange -> {
+      RecordedUpstream.this.requests.incrementAndGet();
       RecordedUpstream.this.lastRequestBody =
           new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
       List<byte[]> pending = RecordedUpstream.this.chunks;
@@ -154,6 +158,22 @@ public final class RecordedUpstream implements AutoCloseable {
   /** 把写出计数归零。每个用例自己从零开始，免得前一个用例的数字混进来。 */
   public void resetWrittenChunks() {
     writtenChunks.set(0);
+  }
+
+  /**
+   * 收到过几次请求。
+   *
+   * <p>它是「本地快速失败」唯一的硬证据：读熔断器自己的状态只能证明它记得自己是开的，
+   * 不能证明**请求没有被发出去**。这两件事在来源项目里恰恰是分开的 ——
+   * 状态记了，请求照发。
+   */
+  public int requests() {
+    return requests.get();
+  }
+
+  /** 把请求计数归零。 */
+  public void resetRequests() {
+    requests.set(0);
   }
 
   /**

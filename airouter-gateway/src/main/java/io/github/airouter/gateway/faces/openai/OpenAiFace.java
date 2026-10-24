@@ -8,6 +8,7 @@ import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.core.UpstreamFailure;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -139,17 +140,31 @@ public final class OpenAiFace {
   }
 
   private static GatewayError describe(Throwable failure) {
-    if (failure instanceof UpstreamFailure upstream) {
+    Throwable cause = unwrap(failure);
+    if (cause instanceof UpstreamFailure upstream) {
       GatewayError error = upstream.error();
       if (error.httpStatus() != null) {
         return error;
       }
       return new GatewayError(error.type(), error.message(), 502);
     }
-    if (failure instanceof IllegalArgumentException) {
+    if (cause instanceof IllegalArgumentException) {
       return new GatewayError("bad_request", "请求体无法被解析", 400);
     }
     return new GatewayError("internal", "网关内部错误", 500);
+  }
+
+  /**
+   * 剥掉异步传播加上去的那一层。
+   *
+   * <p>经过 {@code CompletableFuture} 的失败会被包一层 {@code CompletionException}：
+   * 不剥掉它，「本地拒绝」这一类我们自己判的失败会在这一层被认成内部错误，
+   * 于是 503 变成 500 —— 状态码是对客户端说的第一句话，说错了后面都不用看。
+   */
+  private static Throwable unwrap(Throwable failure) {
+    return failure instanceof CompletionException && failure.getCause() != null
+        ? failure.getCause()
+        : failure;
   }
 
   /** 一条流在编码过程中需要记住的三个字段。它们属于这一次订阅，因此跟着 {@code defer} 一起新建。 */

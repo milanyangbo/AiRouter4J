@@ -40,10 +40,11 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 
 - `core` **不依赖任何模块**；它的依赖树里出现 Spring / Jackson / Reactor 即构建失败（Maven enforcer，见 `airouter-core/pom.xml`）
 - 没有模块可以依赖 `app`
-- `faces` 与 `providers` 互不感知；`routing` / `governance` 不做 IO；`transport` 不认识业务包
+- `faces` 与 `providers` 互不感知；`routing` / `governance` 不做 IO、**也看不到 HTTP 状态码**；`transport` 不认识业务包
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
+- 成败的结论只有一个出口：只有 `providers`（产生终态的那一处）可以构造 `Outcome`
 
-规则一共八条，定义在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`。
+规则一共九条，定义在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`。
 **新增规则前先读那里的表格**：规则越多，越容易走到「加个例外算了」那条路上。
 规则旁边必须写清它保护什么；「规则真的会红」由 `GuardsActuallyFireTest` 断言，不靠人记得试一次。
 
@@ -59,6 +60,11 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
    帧间静默超上限同样是 `Failed`（`UPSTREAM_TIMEOUT`）。
    调用方中途断开没有事件可发（接收方已经不在了），但**必须结算成 `CLIENT_CANCELLED`**：
    少记一次与记成成功，对下游的熔断器是同一种误导。一条流恰好结算一次由 `StreamState.claim()` 保证。
+   熔断、限流、健康管理的输入**只有 `Outcome`**：治理组件读状态码、读异常类型、或自己造一个 `Outcome`，
+   都会让构建变红（R4 / R9）。"这个实例现在接不接流量"只在 `routing` 的 `InstanceAvailability` 判一次：
+   判不过的请求在本地结束 —— **不出网，也不结算**（本地拒绝不是一次上游调用，
+   把它算作失败会让它继续喂熔断器，打开的熔断器就再也等不到冷却结束的那次成功探测）。
+   未被纳入健康管理的实例一律不可用（fail-closed），因此配置漏项表现为不可用而不是静默放行。
 3. **任何流式路径上的处理逻辑必须同时有同步路径的对应实现。** 只做一半 = 静默失效。
 4. **禁止在 Reactor 事件循环线程上做阻塞 IO。**
 5. **配置文件里不得出现 API 密钥**，一律走环境变量。
@@ -89,6 +95,10 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
   需要精确控制帧边界的测试用它，不要靠 sleep 去碰运气
 - 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
   外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
+- **故意制造上游失败的用例必须显式交代它与熔断的关系**：默认阈值是 3，同一个测试类里三条失败就会把熔断器打开，
+  于是后面某条用例收到的是 `instance_unavailable` 而不是它想看的上游错误 —— 表现为一条**与执行顺序有关**的偶发红。
+  断言的是「失败的归类与形状」的类（`FailureAndTimeoutEndToEndTest` 等）把阈值调高并写明理由；
+  断言熔断本身的类（`CircuitBreakerEndToEndTest`）在 `@BeforeEach` 里用生产路径把电路恢复到闭合
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么
 - 没有 jacoco：没有任何故事要求覆盖率下限，在没有生产代码的阶段摆一个阈值只会得到空数字。要加就先补故事
 

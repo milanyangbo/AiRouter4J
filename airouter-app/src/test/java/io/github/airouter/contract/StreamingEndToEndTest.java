@@ -6,7 +6,7 @@ import io.github.airouter.app.AiRouterApplication;
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
-import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.observe.SettlementObserver;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -51,7 +51,7 @@ final class StreamingEndToEndTest {
   private static final RecordedUpstream UPSTREAM = startUpstream();
 
   @Autowired
-  private RecordingOutcomeObserver outcomes;
+  private SettlementObserver outcomes;
 
   @Autowired
   private ChunkParseCounter parseCounter;
@@ -73,6 +73,11 @@ final class StreamingEndToEndTest {
     registry.add("airouter.endpoint.model", () -> "recorded-model");
     registry.add("airouter.endpoint.request-timeout", () -> "5s");
     registry.add("airouter.endpoint.idle-timeout", () -> "2s");
+    // 熔断的阈值在这里调到打不开：这些用例要的是「失败的归类与形状」，
+    // 而上游失败在它们这里是**被测行为**，不是熔断的输入。
+    // 少了这一行，同一个类里的几条失败会累计到阈值，于是后面某条用例收到的是
+    // instance_unavailable —— 表现为一条与顺序有关的偶发红。
+    registry.add("airouter.governance.failure-threshold", () -> "1000");
   }
 
   @BeforeEach

@@ -39,6 +39,7 @@ class OrdinarySpringUsageIsNotFlaggedTest {
     assertPasses(StructuralRules.routingAndGovernanceDoNoIo(LAYOUT_ROOT), LAYOUT);
     assertPasses(StructuralRules.transportKnowsNoBusiness(LAYOUT_ROOT), LAYOUT);
     assertPasses(StructuralRules.nothingDependsOnApp(LAYOUT_ROOT), LAYOUT);
+    assertPasses(StructuralRules.settlementHasOneExit(LAYOUT_ROOT), LAYOUT);
   }
 
   private static void assertPasses(ArchRule rule, JavaClasses classes) {

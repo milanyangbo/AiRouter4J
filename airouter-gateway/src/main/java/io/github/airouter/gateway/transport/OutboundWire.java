@@ -1,6 +1,7 @@
 package io.github.airouter.gateway.transport;
 
 import io.github.airouter.core.GatewayError;
+import io.github.airouter.core.OutcomeKind;
 import io.github.airouter.core.UpstreamFailure;
 import java.time.Duration;
 import java.util.Map;
@@ -37,16 +38,22 @@ public final class OutboundWire {
   private final WebClient client;
   private final Duration responseTimeout;
   private final Duration idleTimeout;
+  private final InFlightStreams inFlight;
 
   /**
    * @param baseUrl 上游基地址，含 {@code /v1} 之类的前缀
    * @param responseTimeout 非流式调用的总上限
    * @param idleTimeout 流式调用允许的帧间静默时长
+   * @param inFlight 在途流的计数，由 {@code config} 装配；本类只负责在开与收的时刻通知它
    */
-  public OutboundWire(String baseUrl, Duration responseTimeout, Duration idleTimeout) {
+  public OutboundWire(String baseUrl,
+                      Duration responseTimeout,
+                      Duration idleTimeout,
+                      InFlightStreams inFlight) {
     this.client = WebClient.builder().baseUrl(baseUrl).build();
     this.responseTimeout = responseTimeout;
     this.idleTimeout = idleTimeout;
+    this.inFlight = inFlight;
   }
 
   /**
@@ -68,6 +75,7 @@ public final class OutboundWire {
             .map(body -> new UpstreamReply(response.statusCode().value(), body)))
         .timeout(responseTimeout)
         .onErrorMap(TimeoutException.class, cause -> new UpstreamFailure(
+            OutcomeKind.UPSTREAM_TIMEOUT,
             new GatewayError(TIMEOUT, "上游在 " + responseTimeout + " 内没有完成响应", 504), cause))
         .onErrorMap(cause -> !(cause instanceof UpstreamFailure), cause -> new UpstreamFailure(
             new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause));
@@ -82,6 +90,12 @@ public final class OutboundWire {
    *
    * <p>非 2xx 以 {@link UpstreamRejection} 结束这条流而不是静默给一个空流：
    * 「上游明确拒绝」与「上游什么都没说」在客户端那里是两种结果，必须能被区分。
+   *
+   * <p>收尾的两个钩子是这一票新加的，位置刻意放在**整条链的最后一环**：
+   * 记「开出」放在 {@code transform} 之后，是为了让计数只在帧流真的被订阅时才发生 ——
+   * 记在前面会把「构造了一个 Flux」也算成一条流；记「收回」用 {@code doFinally} 而不是
+   * 分头写 {@code doOnComplete / doOnError / doOnCancel}，是因为漏掉取消那一种正是本票要防的事，
+   * 而把它交给调用方三处各写一遍，迟早会漏。
    *
    * @param path 相对路径
    * @param headers 请求头
@@ -103,9 +117,12 @@ public final class OutboundWire {
         .transform(SseFrameReader::read)
         .timeout(idleTimeout)
         .onErrorMap(TimeoutException.class, cause -> new UpstreamFailure(
+            OutcomeKind.UPSTREAM_TIMEOUT,
             new GatewayError(TIMEOUT, "上游在 " + idleTimeout + " 内没有再发来任何帧", 504), cause))
         .onErrorMap(cause -> !(cause instanceof UpstreamFailure)
             && !(cause instanceof UpstreamRejection), cause -> new UpstreamFailure(
-            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause));
+            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause))
+        .doOnSubscribe(subscription -> inFlight.streamOpened())
+        .doFinally(signal -> inFlight.streamClosed());
   }
 }

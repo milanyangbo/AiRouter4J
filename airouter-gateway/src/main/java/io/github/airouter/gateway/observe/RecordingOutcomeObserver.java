@@ -51,4 +51,17 @@ public final class RecordingOutcomeObserver implements OutcomeObserver {
     List<Outcome> outcomes = recent();
     return outcomes.isEmpty() ? Optional.empty() : Optional.of(outcomes.get(outcomes.size() - 1));
   }
+
+  /**
+   * 某一次请求的全部结算结果。
+   *
+   * <p>「一条流恰好结算一次」这条断言只有在能按请求把结果挑出来的时候才成立：
+   * 看总数会被别的用例干扰，看最近一次则发现不了多出来的那一条。
+   *
+   * @param requestId 请求标识，与响应头 {@code X-Airouter-Request-Id} 里的那个一致
+   * @return 这一次请求产生的结算，按发生顺序；一次都没有时是空列表
+   */
+  public List<Outcome> forRequest(String requestId) {
+    return recent().stream().filter(outcome -> outcome.requestId().equals(requestId)).toList();
+  }
 }

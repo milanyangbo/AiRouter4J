@@ -37,11 +37,12 @@ import reactor.core.publisher.Flux;
  * <p>这里的变量名与注释都不提具体厂商的名字：同一个实现覆盖所有 OpenAI 兼容端点，
  * 差别被留在 Endpoint 的配置里，而不是派生出一批近乎相同的子类。
  *
- * <p>流式路径上它多担一份责任：**保证任何一条流都有且只有一个终态**（ADR-0006 第 1 节）。
- * 上游正常发来结束哨兵时终态是 {@code Terminal}；上游在发出哨兵之前就关闭连接时补发
- * {@code Failed}；帧间静默超过上限时同样是 {@code Failed}。
- * 这份责任不能被推给「流如何结束」去推断 —— 那正是来源项目「流式恒为成功」的成因。
- */
+   * <p>流式路径上它多担一份责任：**保证任何一条流都恰好结算一次**（ADR-0006 第 1 节）。
+   * 上游正常发来结束哨兵时终态是 {@code Terminal}；上游在发出哨兵之前就关闭连接时补发
+   * {@code Failed}；帧间静默超过上限时同样是 {@code Failed}；调用方中途断开时没有事件可发，
+   * 但仍然要结算成 {@code CLIENT_CANCELLED}。
+   * 这份责任不能被推给「流如何结束」去推断 —— 那正是来源项目「流式恒为成功」的成因。
+   */
 public final class OpenAiCompatibleProvider implements CompletionPort, StreamingCompletionPort {
 
   /** 状态码在 400 到 499 之间时，把上游的状态原样交给客户端。 */
@@ -102,6 +103,11 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
    * <p>{@code defer} 是刻意的：每一份累积状态都属于**一次订阅**。少了它，第二次订阅
    * 会接着上一次的「是否已发终态」往下走，而那一次的流已经结束了 ——
    * 表现为第二次订阅永久挂起，且不报错。
+   *
+   * <p>{@code takeUntil} 断言的是「终态是这条流的最后一个事件」：上游在结束哨兵之后
+   * 又发了帧（合规的客户端不会这样，但字节层面的东西不受客户端约束），
+   * 少了它那些帧会变成**终态之后的内容帧**，而消费方按「终态之后不会再有内容」写代码。
+   * 终态唯一与终态最后不是同一件事，这一行管的是后者。
    */
   private Flux<CanonicalStreamEvent> streamEvents(CanonicalRequest request) {
     String body = OpenAiUpstreamCodec.encodeRequest(request);
@@ -111,7 +117,9 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
           .concatMap(payload -> Flux.fromIterable(toEvents(payload, state)))
           .concatWith(Flux.defer(state::closeWithoutTerminal))
           .onErrorResume(failure -> Flux.just(failedEvent(state, failure)))
-          .doOnNext(event -> observe(request, state, event));
+          .takeUntil(CanonicalStreamEvent.Terminal.class::isInstance)
+          .doOnNext(event -> observe(request, state, event))
+          .doOnCancel(() -> observeCancelled(request, state));
     });
   }
 
@@ -144,19 +152,66 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
     return events;
   }
 
-  /** 终态到达时的结算：这是这条流唯一一次上报结果的地方。 */
+  /**
+   * 终态事件到达时的结算。
+   *
+   * <p>取消没有对应的事件：**事件的接收方已经不在了**，往一个已经断开的下游发事件
+   * 既不成立也没有意义。但结算仍然要发生 —— 取消是一次调用的一种结局，
+   * 而「少记一次」与「记成成功」对下游的熔断器是同一种误导。见 {@link #observeCancelled}。
+   */
   private void observe(CanonicalRequest request, StreamState state, CanonicalStreamEvent event) {
     if (event instanceof CanonicalStreamEvent.Terminal terminal) {
-      observer.onTerminal(new Outcome(
-          request.requestId(), request.serviceId(), instanceId, OutcomeKind.SUCCESS,
-          state.latency(), terminal.usage(), null));
+      settle(request, state, OutcomeKind.SUCCESS, terminal.usage(), null);
       return;
     }
     if (event instanceof CanonicalStreamEvent.Failed failed) {
-      observer.onTerminal(new Outcome(
-          request.requestId(), request.serviceId(), instanceId, state.failureKind(),
-          state.latency(), null, failed.error()));
+      settle(request, state, state.failureKind(), null, failed.error());
     }
+  }
+
+  /**
+   * 调用方中途断开时的结算。
+   *
+   * <p>它被记成 {@link OutcomeKind#CLIENT_CANCELLED} 而不是失败，理由在 OutcomeKind 那里：
+   * 移动端切后台、用户关页面都会产生取消，把它算作上游故障会让一次共享网络的抖动
+   * 熔断掉一个健康的实例。
+   */
+  private void observeCancelled(CanonicalRequest request, StreamState state) {
+    settle(request, state, OutcomeKind.CLIENT_CANCELLED, null, cancelled());
+  }
+
+  /**
+   * 取消的错误形态。
+   *
+   * <p>它没有状态码：取消发生时接收方已经不在了，「对客户端给什么状态码」这件事不成立。
+   * 但错误形态本身必须存在 —— {@link Outcome} 要求 SUCCESS 之外都带着原因，
+   * 而这条不变式的价值就在于下游永远不必处理「失败了但说不出为什么」这一种情形。
+   * 为取消开一个洞，等于把这种情形重新放回来。
+   */
+  private static GatewayError cancelled() {
+    return new GatewayError("client_cancelled", "调用方在收到终态之前断开：这条流没有走完", null);
+  }
+
+  /**
+   * 上报一次结果，并**保证一条流只上报一次**。
+   *
+   * <p>{@code claim()} 这一道守卫不是防御性编程而是契约的一部分：
+   * 「恰好结算一次」是 ADR-0006 的核心断言，而到达这里的路径有四条
+   * （终态事件、失败事件、补发的失败、取消），其中任意两条在同一条流上先后发生时，
+   * 少一道守卫就会变成两条结算记录 —— 表现为一次调用被计成两次，
+   * 而这一类错误没有任何报错，只会让指标与熔断阈值慢慢失真。
+   */
+  private void settle(CanonicalRequest request,
+                      StreamState state,
+                      OutcomeKind kind,
+                      CanonicalUsage usage,
+                      GatewayError error) {
+    if (!state.claim()) {
+      return;
+    }
+    observer.onTerminal(new Outcome(
+        request.requestId(), request.serviceId(), instanceId, kind,
+        state.latency(), usage, error));
   }
 
   /** 非流式的结算，与流式共用同一个 {@link OutcomeObserver}：两条路径的结果口径必须是一个。 */
@@ -281,6 +336,8 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
 
     private boolean terminated;
 
+    private boolean settled;
+
     private OutcomeKind failureKind = OutcomeKind.UPSTREAM_FAILURE;
 
     private CanonicalFinishReason finishReason;
@@ -320,6 +377,19 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
 
     void terminate() {
       terminated = true;
+    }
+
+    /**
+     * 抢下「这一次结算」的名额。
+     *
+     * @return 抢到了返回 true；这条流已经结算过返回 false
+     */
+    boolean claim() {
+      if (settled) {
+        return false;
+      }
+      settled = true;
+      return true;
     }
 
     String id() {

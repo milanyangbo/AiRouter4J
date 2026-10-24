@@ -17,7 +17,11 @@ import java.util.Objects;
  *                来源项目在响应头写出时就结算，流式样本因此恒为零，
  *                延迟感知负载均衡拿到的 EWMA 输入是假的
  * @param usage token 用量，上游没给时为 null，网关不估算
- * @param error 错误形态，{@code SUCCESS} 时为 null
+ * @param error 错误形态，{@code SUCCESS} 时为 null。
+ *               {@code CLIENT_CANCELLED} 也带着一个，但那一个没有状态码 ——
+ *               取消发生时接收方已经不在了，「给客户端什么状态码」这件事不成立。
+ *               它存在是为了让「非成功必有原因」这条不变式不留豁口：
+ *               下游因此永远不必处理「失败了但说不出为什么」这一种情形
  */
 public record Outcome(
     String requestId,

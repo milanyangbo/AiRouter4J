@@ -12,6 +12,7 @@ import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
 import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
+import io.github.airouter.gateway.transport.InFlightStreams;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -125,7 +126,7 @@ final class GoldenStreamContractTest {
    */
   private static List<String> produce(CanonicalRequest request, RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
-        new OutboundWire(recorded.baseUrl(), TIMEOUT, TIMEOUT),
+        new OutboundWire(recorded.baseUrl(), TIMEOUT, TIMEOUT, new InFlightStreams()),
         "golden-key",
         MODEL,
         recorded.baseUrl(),

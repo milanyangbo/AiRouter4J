@@ -26,8 +26,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.FluxExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Flux;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * 流式路径的端到端行为：**从入站 HTTP 打进去**，内部不 mock 任何组件。
@@ -42,8 +40,6 @@ import tools.jackson.databind.json.JsonMapper;
 @SpringBootTest(classes = AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 final class StreamingEndToEndTest {
-
-  private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
   private static final Duration BETWEEN_CHUNKS = Duration.ofMillis(80);
 
@@ -91,10 +87,10 @@ final class StreamingEndToEndTest {
   @DisplayName("流式请求一帧一帧地到达，而不是等上游说完了一次性收到一个整体")
   void framesArriveOneByOneWhileTheStreamIsStillOpen() {
     UPSTREAM.replayStream(200, List.of(
-        bytes(deltaFrame("你")),
-        bytes(deltaFrame("好")),
-        bytes(stopFrame()),
-        bytes("data: [DONE]\n\n")), BETWEEN_CHUNKS);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
+        SseCall.bytes(SseCall.doneFrame())), BETWEEN_CHUNKS);
 
     Arrivals arrivals = exchange(REQUEST);
 
@@ -110,47 +106,62 @@ final class StreamingEndToEndTest {
   @Test
   @DisplayName("逐帧拼接后的文本与上游产出的一致 —— 包括多字节字符被切在块边界的情形")
   void textSurvivesBeingSplitAcrossChunks() {
-    byte[] frame = bytes(deltaFrame("你"));
+    byte[] frame = SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你"));
     int cut = cutInsideMultibyteCharacter(frame);
     UPSTREAM.replayStream(200, List.of(
         head(frame, cut),
         tail(frame, cut),
-        bytes(deltaFrame("好")),
-        bytes(stopFrame()),
-        bytes("data: [DONE]\n\n")), Duration.ZERO);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
+        SseCall.bytes(SseCall.doneFrame())), Duration.ZERO);
 
     Arrivals arrivals = exchange(REQUEST);
 
-    assertThat(concatenatedTextOf(arrivals.payloads())).isEqualTo("你好");
+    assertThat(SseCall.concatenatedTextOf(arrivals.payloads())).isEqualTo("你好");
   }
 
   @Test
   @DisplayName("一条流有且只有一个终态，[DONE] 是最后一帧且只出现一次")
   void exactlyOneTerminalFollowedByExactlyOneDone() {
     UPSTREAM.replayStream(200, List.of(
-        bytes(deltaFrame("你")),
-        bytes(deltaFrame("好")),
-        bytes(stopFrame()),
-        bytes("data: [DONE]\n\n")), Duration.ZERO);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
+        SseCall.bytes(SseCall.doneFrame())), Duration.ZERO);
 
     Arrivals arrivals = exchange(REQUEST);
 
     assertThat(arrivals.payloads()).last().isEqualTo("[DONE]");
     assertThat(Collections.frequency(arrivals.payloads(), "[DONE]")).isEqualTo(1);
-    assertThat(finishReasonsOf(arrivals.payloads())).containsExactly("stop");
+    assertThat(SseCall.finishReasonsOf(arrivals.payloads())).containsExactly("stop");
+  }
+
+  @Test
+  @DisplayName("上游在结束哨兵之后又发了帧：终态是最后一个事件，那些帧不再出现在客户端")
+  void nothingFollowsTheTerminalEvenWhenTheUpstreamKeepsTalking() {
+    UPSTREAM.replayStream(200, List.of(
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.doneFrame()),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model"))), Duration.ZERO);
+
+    Arrivals arrivals = exchange(REQUEST);
+
+    assertThat(SseCall.concatenatedTextOf(arrivals.payloads())).isEqualTo("你");
+    assertThat(arrivals.payloads()).last().isEqualTo("[DONE]");
   }
 
   @Test
   @DisplayName("上游把话说完但没发结束哨兵就关闭连接时，补发 Failed 而不是让流静默结束")
   void upstreamClosingWithoutSentinelIsAFailureNotASilentEnd() {
     UPSTREAM.replayStream(200, List.of(
-        bytes(deltaFrame("你")),
-        bytes(deltaFrame("好"))), Duration.ZERO);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好"))), Duration.ZERO);
 
     Arrivals arrivals = exchange(REQUEST);
 
     assertThat(arrivals.payloads()).last().isEqualTo("[DONE]");
-    List<String> errors = errorTypesOf(arrivals.payloads());
+    List<String> errors = SseCall.errorTypesOf(arrivals.payloads());
     assertThat(errors).containsExactly("upstream_closed");
 
     Outcome outcome = lastOutcome();
@@ -162,10 +173,10 @@ final class StreamingEndToEndTest {
   @DisplayName("上报的延迟是到收到终态为止的真实耗时，不是零")
   void latencyIsMeasuredUntilTheTerminalArrives() {
     UPSTREAM.replayStream(200, List.of(
-        bytes(deltaFrame("你")),
-        bytes(deltaFrame("好")),
-        bytes(stopFrame()),
-        bytes("data: [DONE]\n\n")), BETWEEN_CHUNKS);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
+        SseCall.bytes(SseCall.doneFrame())), BETWEEN_CHUNKS);
 
     exchange(REQUEST);
 
@@ -179,10 +190,10 @@ final class StreamingEndToEndTest {
   void everyUpstreamFrameIsParsedExactlyOnce() {
     long before = parseCounter.parsedFrames();
     UPSTREAM.replayStream(200, List.of(
-        bytes(deltaFrame("你")),
-        bytes(deltaFrame("好")),
-        bytes(stopFrame()),
-        bytes("data: [DONE]\n\n")), Duration.ZERO);
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "你")),
+        SseCall.bytes(SseCall.deltaFrame("chatcmpl-1", "recorded-model", "好")),
+        SseCall.bytes(SseCall.stopFrame("chatcmpl-1", "recorded-model")),
+        SseCall.bytes(SseCall.doneFrame())), Duration.ZERO);
 
     exchange(REQUEST);
 
@@ -216,7 +227,7 @@ final class StreamingEndToEndTest {
         String.valueOf(result.getResponseHeaders().getContentType()),
         result.getResponseHeaders().getFirst("X-Airouter-Request-Id"),
         times,
-        dataPayloadsOf(raw.toString()));
+        SseCall.dataPayloadsOf(raw.toString()));
   }
 
   /** 一次流式响应的观测结果。 */
@@ -225,22 +236,6 @@ final class StreamingEndToEndTest {
                           String requestIdHeader,
                           List<Instant> arrivalTimes,
                           List<String> payloads) {
-  }
-
-  private static String deltaFrame(String content) {
-    return "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,"
-        + "\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\""
-        + content + "\"},\"finish_reason\":null}]}\n\n";
-  }
-
-  private static String stopFrame() {
-    return "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,"
-        + "\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"
-        + "\n\n";
-  }
-
-  private static byte[] bytes(String text) {
-    return text.getBytes(StandardCharsets.UTF_8);
   }
 
   /** 找到 UTF-8 多字节序列的起始，切在它第一个字节之后 —— 这就是「字符被切在块边界」。 */
@@ -263,66 +258,5 @@ final class StreamingEndToEndTest {
     byte[] tail = new byte[source.length - cut];
     System.arraycopy(source, cut, tail, 0, tail.length);
     return tail;
-  }
-
-  /** 从 SSE 原文里取出每一个 {@code data:} 载荷。 */
-  private static List<String> dataPayloadsOf(String raw) {
-    List<String> payloads = new ArrayList<>();
-    for (String event : raw.split("\n\n")) {
-      String line = event.trim();
-      if (line.startsWith("data:")) {
-        payloads.add(line.substring("data:".length()).trim());
-      }
-    }
-    return payloads;
-  }
-
-  private static String concatenatedTextOf(List<String> payloads) {
-    StringBuilder text = new StringBuilder();
-    for (String payload : payloads) {
-      if (payload.equals("[DONE]")) {
-        continue;
-      }
-      JsonNode node = readTree(payload);
-      if (node.path("error").isObject()) {
-        continue;
-      }
-      for (JsonNode choice : node.path("choices")) {
-        text.append(choice.path("delta").path("content").asString(""));
-      }
-    }
-    return text.toString();
-  }
-
-  private static List<String> finishReasonsOf(List<String> payloads) {
-    List<String> reasons = new ArrayList<>();
-    for (String payload : payloads) {
-      if (payload.equals("[DONE]")) {
-        continue;
-      }
-      JsonNode node = readTree(payload);
-      if (node.path("choices").get(0).hasNonNull("finish_reason")) {
-        reasons.add(node.path("choices").get(0).path("finish_reason").asString());
-      }
-    }
-    return reasons;
-  }
-
-  private static List<String> errorTypesOf(List<String> payloads) {
-    List<String> types = new ArrayList<>();
-    for (String payload : payloads) {
-      if (payload.equals("[DONE]")) {
-        continue;
-      }
-      JsonNode node = readTree(payload);
-      if (node.path("error").isObject()) {
-        types.add(node.path("error").path("type").asString());
-      }
-    }
-    return types;
-  }
-
-  private static JsonNode readTree(String payload) {
-    return MAPPER.readTree(payload);
   }
 }

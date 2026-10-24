@@ -6,6 +6,7 @@ import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
 import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
+import io.github.airouter.gateway.transport.InFlightStreams;
 import io.github.airouter.gateway.transport.OutboundWire;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,14 +45,27 @@ public final class UpstreamConfiguration {
   }
 
   /**
+   * 在途流的计数。
+   *
+   * <p>与 {@link #chunkParseCounter()} 同理，它也是一个 bean：只有能从一个正在运行的应用里
+   * 读到它，「取消之后资源被收回」才是被验证着的，而不是被声称着的。
+   */
+  @Bean
+  public InFlightStreams inFlightStreams() {
+    return new InFlightStreams();
+  }
+
+  /**
    * 唯一的出站口。
    *
    * @param properties 地址与两个超时，全部来自环境变量
+   * @param inFlight 在途流的计数
    * @return 出站管道
    */
   @Bean
-  public OutboundWire outboundWire(EndpointProperties properties) {
-    return new OutboundWire(properties.baseUrl(), properties.requestTimeout(), properties.idleTimeout());
+  public OutboundWire outboundWire(EndpointProperties properties, InFlightStreams inFlight) {
+    return new OutboundWire(
+        properties.baseUrl(), properties.requestTimeout(), properties.idleTimeout(), inFlight);
   }
 
   /**

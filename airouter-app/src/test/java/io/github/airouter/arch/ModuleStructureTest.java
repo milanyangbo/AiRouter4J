@@ -12,10 +12,13 @@ import com.tngtech.archunit.lang.ArchRule;
  * 这里只声明规则，规则的定义与理由在 {@link StructuralRules}。
  */
 @AnalyzeClasses(packages = StructuralRules.ROOT, importOptions = ImportOption.DoNotIncludeTests.class)
-class ModuleStructureTest {
+final class ModuleStructureTest {
 
   private static final String ROOT = StructuralRules.ROOT;
   private static final String GATEWAY = ROOT + ".gateway";
+
+  private ModuleStructureTest() {
+  }
 
   @ArchTest
   static final ArchRule nothing_depends_on_app = StructuralRules.nothingDependsOnApp(ROOT);

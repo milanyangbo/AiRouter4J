@@ -62,10 +62,13 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 
 - JDK 21（当前 `java -version` = 21.0.12.1）；Maven 3.9.16 在 `~/soft/apache-maven-3.9.16`
 - Maven Wrapper 已入库，**统一用 `./mvnw`**，不要用系统里的 `mvn`（版本可能与门禁要求不符）
-- 编译 + 测试：`./mvnw verify`
-- CI 四道 gate 必须 fail-fast：checkstyle（error 级）/ spotbugs / test / jacoco
+- 默认构建路径即全部门禁：`./mvnw clean verify`。**不带任何 skip 参数** —— 门禁没有接受 skip 的配置入口
+- 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
+  外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
+- **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么
+- 没有 jacoco：没有任何故事要求覆盖率下限，在没有生产代码的阶段摆一个阈值只会得到空数字。要加就先补故事
 
-**新增模块时记得同步 CI，否则它不会被纳入构建与扫描。**
+违约的处置路径是**改代码**。确实无法避免的情形，处置路径是写一份 ADR —— 不是加一行抑制、一个排除块或一处 include 例外（ADR-0008 第 1 节）。
 
 ## Agent skills
 

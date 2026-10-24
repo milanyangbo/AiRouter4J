@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  这份规则集刻意只有十几条。
+
+  来源项目用的是另一条路：一份 186 行的抑制文件对 .*\.java 关闭了文件长度、命名与 NeedBraces，
+  于是 checkstyle 存在，但从来没有一条规则和实际代码相遇过（见 ADR-0008）。
+  这里没有抑制文件，也没有任何过滤块 —— 想让一条规则闭嘴，唯一的合法手段是改代码，
+  或者写一份 ADR 说明为什么这条规则在这个项目里不成立。
+
+  每条规则旁边都写了它为什么存在。没有理由的规则不进这份文件。
+-->
+<module name="Checker">
+
+  <property name="severity" value="error"/>
+  <property name="fileExtensions" value="java"/>
+
+  <!-- 行长上限。网关里到处是协议常量与配置键，不设上限的话这些行会一路长到没法并排审阅。 -->
+  <module name="LineLength">
+    <property name="max" value="120"/>
+    <property name="ignorePattern" value="^package .*;$"/>
+  </module>
+
+  <!-- 禁止制表符。tab 与空格混用会让同一份代码在不同编辑器里呈现不同缩进，
+       这类差异只体现在 diff 里，不体现在功能上，却会持续消耗审阅注意力。 -->
+  <module name="FileTabCharacter"/>
+
+  <!-- 文件末尾必须有换行。缺了它，每次在文件尾部追加都会产生一行「无换行符」的噪声 diff。 -->
+  <module name="NewlineAtEndOfFile"/>
+
+  <!-- 行尾空白。同上：它不改动任何行为，但会让 diff 里出现无法解释的空改动。 -->
+  <module name="RegexpSingleline">
+    <property name="format" value="\s+$"/>
+    <property name="message" value="行尾有多余空白"/>
+  </module>
+
+  <!-- 包必须有 package-info。网关按端口与适配器分包，
+       每个包「知道多少外部世界」是归属判断的唯一依据，这个判断必须写下来，
+       而不是靠读包里的类去反推。 -->
+  <module name="JavadocPackage"/>
+
+  <module name="TreeWalker">
+
+    <!-- 未使用的导入。迁移期最容易留下的垃圾：一次 Jackson 2 → 3 的包名更换之后，
+         残留的导入会让人误判这个类还依赖着什么 —— 这与本项目的依赖方向主题直接冲突。 -->
+    <module name="UnusedImports">
+      <property name="processJavadoc" value="true"/>
+    </module>
+
+    <!-- 冗余导入（java.lang.*、当前包内的类）。同上：让「这个类依赖谁」这件事保持可读。 -->
+    <module name="RedundantImport"/>
+
+    <!-- 禁止导入内部 API（sun.*）。它们在 JDK 之间不保证存在，而本项目要长期跟随 JDK 演进。 -->
+    <module name="IllegalImport"/>
+
+    <!-- 缺失大括号。来源项目正是抑制了这一条；单行 if 后面追加语句是合并冲突与误读的经典来源。 -->
+    <module name="NeedBraces"/>
+
+    <!-- 空的 catch 块。吞掉异常就是「静默失效」的教科书形态：
+         对网关来说，一次被吞掉的解析失败会表现为一条没有终态的流（见 ADR-0006）。
+         确实要忽略时，把异常变量命名为 expected / ignored，或写清为什么。 -->
+    <module name="EmptyCatchBlock">
+      <property name="exceptionVariableName" value="expected|ignored|ignore"/>
+    </module>
+
+    <!-- 空的块（if / for / try 等）。同上：空块要么是没写完，要么需要一个说明。 -->
+    <module name="EmptyBlock">
+      <property name="option" value="text"/>
+    </module>
+
+    <!-- switch 缺 default。终态分发（Opening / Delta / Terminal / Failed）一旦漏掉分支，
+         后果是某条流没有终态 —— 这类缺陷不会报错，只会一直悬着。 -->
+    <module name="MissingSwitchDefault"/>
+
+    <!-- switch 分支贯穿。与上一条是同一件事的另一半：显式 break / return，别靠顺序。 -->
+    <module name="FallThrough"/>
+
+    <!-- equals 与 hashCode 成对实现。领域模型会进集合与缓存，
+         只实现一半会导致「放进去了取不出来」，而且只在特定路径上出现。 -->
+    <module name="EqualsHashCode"/>
+
+    <!-- 一个文件一个顶层类。让类名与文件名保持一致，查找与审阅都不用猜。 -->
+    <module name="OneTopLevelClass"/>
+
+    <!-- 数组类型写成 String[] 而不是 String args[]。签名要一眼能读出类型。 -->
+    <module name="ArrayTypeStyle"/>
+
+    <!-- 长整型用 L 不用 l。1 与 l 在等宽字体下几乎无法区分。 -->
+    <module name="UpperEll"/>
+
+    <!-- 修饰符顺序。签名的读法统一之后，扫一眼就能看出可见性与可变性。 -->
+    <module name="ModifierOrder"/>
+
+    <!-- 只有私有构造器的类应当是 final。否则子类可以破坏工具类的语义。 -->
+    <module name="FinalClass"/>
+
+    <!-- 工具类必须有私有构造器。一个全是静态方法的类如果被实例化，
+         说明有人把它当成了有状态对象来用。 -->
+    <module name="HideUtilityClassConstructor"/>
+
+  </module>
+
+</module>

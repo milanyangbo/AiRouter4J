@@ -19,9 +19,10 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
  *
  * <table>
  *   <caption>八条规则与它们各自保护的东西</caption>
- *   <tr><td>R1</td><td>core 的依赖树里没有框架</td><td>Maven enforcer，见 airouter-core/pom.xml</td></tr>
+ *   <tr><td>R1</td><td>core 的依赖树里没有框架</td><td>Maven enforcer</td></tr>
  *   <tr><td>R2</td><td>没有模块依赖 app</td><td>{@link #nothingDependsOnApp}</td></tr>
- *   <tr><td>R3</td><td>faces 与 providers 互不感知</td><td>{@link #facesDoNotDependOnProviders} / {@link #providersDoNotDependOnFaces}</td></tr>
+ *   <tr><td>R3</td><td>faces 与 providers 互不感知</td>
+ *       <td>{@link #facesDoNotDependOnProviders} / {@link #providersDoNotDependOnFaces}</td></tr>
  *   <tr><td>R4</td><td>routing 与 governance 不碰协议与 IO</td><td>{@link #routingAndGovernanceDoNoIo}</td></tr>
  *   <tr><td>R5</td><td>transport 不知道业务包</td><td>{@link #transportKnowsNoBusiness}</td></tr>
  *   <tr><td>R6</td><td>禁止 @Lazy</td><td>{@link #noLazyWiring}</td></tr>

@@ -30,3 +30,6 @@ secrets/
 ### 日志 ###
 *.log
 logs/
+
+### agent 会话状态：WorkBuddy 的记忆与日志不是源码，不进构建也不进审阅 ###
+.workbuddy/

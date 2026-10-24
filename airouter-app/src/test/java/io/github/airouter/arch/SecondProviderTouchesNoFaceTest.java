@@ -97,12 +97,20 @@ final class SecondProviderTouchesNoFaceTest {
             || path.startsWith(FIRST_PROVIDER_STREAM_BASELINES));
   }
 
+  /**
+   * 自基线以来被改动过的文件。
+   *
+   * <p>用 {@code git diff --name-only <基线> HEAD} 而不是 {@code git status --porcelain}。
+   * 后者看的是工作区与索引的差，在 CI 的干净检出上恒为空 —— 于是上面两条断言
+   * **一条文件都看不到**，表现是全绿。这正是本票在流水线上第一次跑出来的情形：
+   * 判定对象错了，「没有越界」与「什么都没比」长得一模一样。
+   *
+   * <p>比 committed 的历史而不是工作区，还有一个附带好处：本地跑的时候不必
+   * 先把改动提交上去才能得到结论。代价是尚未提交的工作不参与统计 ——
+   * 而「加一个 Provider 有没有碰到 Face」本来问的就是这一票落下来的结果。
+   */
   private static List<String> changedFiles() {
-    return git("status", "--porcelain").stream()
-        .map(line -> line.length() > 3 ? line.substring(3) : line)
-        // 重命名在 porcelain 里是两行（旧路径与新路径），都算被改动。
-        .map(line -> line.contains(" -> ") ? line.substring(line.indexOf(" -> ") + 4) : line)
-        .toList();
+    return git("diff", "--name-only", BASELINE + ".." + "HEAD");
   }
 
   /**

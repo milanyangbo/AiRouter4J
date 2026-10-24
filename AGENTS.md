@@ -109,6 +109,13 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
   于是后面某条用例收到的是 `instance_unavailable` 而不是它想看的上游错误 —— 表现为一条**与执行顺序有关**的偶发红。
   断言的是「失败的归类与形状」的类（`FailureAndTimeoutEndToEndTest` 等）把阈值调高并写明理由；
   断言熔断本身的类（`CircuitBreakerEndToEndTest`）在 `@BeforeEach` 里用生产路径把电路恢复到闭合
+- **每个测试类都必须用 `@Tag` 标出自己属于哪一道 CI gate**：`unit` / `integration` / `architecture`
+  三选一，标准是**启不启容器、出不出网**。忘标会让这个类不进入任何一道 gate，
+  而这类遗漏由结构 gate 判红（`EveryTestBelongsToAGateTest`），不靠人记得
+- **不要用 ArchUnit 自带的引擎**（`@AnalyzeClasses` + `@ArchTest`）：它看不见类上的 `@Tag`，
+  按 gate 筛选时整个类会被静默漏掉（`ModuleStructureTest` 就是这样被漏过一次）
+- **时间相关的断言要等条件成立，不要睡固定时长再比数字**：内核缓冲区大小这类环境差异
+  会让本机的数字在 CI 上翻倍。判「停住了」就等它停，判「有没有把整条流吃进来」就看样本写没写到头
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么
 - 没有 jacoco：没有任何故事要求覆盖率下限，在没有生产代码的阶段摆一个阈值只会得到空数字。要加就先补故事
 

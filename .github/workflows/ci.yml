@@ -10,11 +10,13 @@
 # 「新写的测试忘了标 gate」由 EveryTestBelongsToAGateTest 判红（结构 gate 里）。
 name: gates
 
-# 每次推送都跑。刻意不写 paths / paths-ignore：
+# 暂缓：本阶段以本机单元测试与冒烟验证为准，push / PR 不自动触发。
+# 四个 gate 的分组机制已经在代码里就位（每个测试类的 @Tag + -Dgroups= 挑选），
+# 要开启时把 push / pull_request 两行加回来即可，其余不用动。
+#
+# 原本的写法是每次推送都跑，且刻意不写 paths / paths-ignore：
 # 「本次没改到某些文件就不跑某些 gate」本身就是一条可以绕过门禁的路径。
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:

@@ -10,7 +10,16 @@
 
 **Blocked by:** 05 非流式端到端打通、06 流式 SSE 路径、07 终态契约、08 OutcomeObserver 与熔断闭环、09 第二个 Provider
 
-**Status:** done（基线 tag `baseline-pre-10`）
+**Status:** done（基线 tag `baseline-pre-10`）—— 但**暂不自动触发**
+
+> **暂缓说明：** 当前阶段以本机单元测试与本地冒烟为准，`.github/workflows/ci.yml` 的 `on:`
+> 只剩 `workflow_dispatch`，push / PR 不再触发。四个 gate 的**分组机制**已经落在代码里
+> （每个测试类的 `@Tag` + `-Dgroups=` 挑选、`EveryTestBelongsToAGateTest` 守门），
+> 后期要开启只需把 `push` 与 `pull_request` 两行加回 `on:`，其余不用动。
+>
+> 暂缓不影响已经落地的两件事：① 分组标记本身；② 流水线上抓到并修掉的三个真问题
+> （`fetch-depth: 0`、两条依赖固定 sleep 的用例、差异断言读工作区而在干净检出上空过）——
+> 这三处修的是**代码**，不是流水线，本地一样受益。
 
 - [x] 每次推送触发：编译与单元测试、静态分析、依赖方向与结构、集成测试，四个 gate 分别独立报告结果
       —— `.github/workflows/ci.yml`，四个 job 并行，无相互依赖

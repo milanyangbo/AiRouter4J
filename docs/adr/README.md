@@ -8,62 +8,71 @@
 写 ADR 的门槛：只有当某个决定**未来会有人想推翻、且推翻它需要付出代价**时才值得写。
 纯实现细节不写 ADR，写进代码注释即可。
 
+> **2026-10-25 整体重写。** 第 1 版（11 篇）写在「骨架能不能立住还不知道」的前提下；
+> 骨架交付后目标态从「验证骨架」变为「按 legacy 能力面补齐」，前提失效，故整体重写。
+> 旧版保留在 [`archive/`](./archive/)，用于追溯，不再作为权威。编号沿用，
+> 因此 `AGENTS.md`、`GLOSSARY.md` 与 issue 里对 ADR 编号的引用仍然成立。
+
 ## 索引
 
 | 编号 | 标题 | 状态 | 影响范围 |
 |---|---|---|---|
-| [0001](./0001-project-scope-and-lineage.md) | 项目定位、血统与二开边界 | 已接受 | 全项目 |
-| [0002](./0002-tech-stack-and-version-pinning.md) | 技术栈与版本锁定 | 已接受 | 全项目，构建层 |
-| [0003](./0003-module-structure-and-dependency-direction.md) | 模块结构与依赖方向 | 已接受 | 全项目，包与模块划分 |
-| [0004](./0004-spring-ai-boundary.md) | Spring AI 在分层中的边界 | 已接受 | 网关核心（不引入）/ Agent 层（全量引入） |
-| [0005](./0005-canonical-intermediate-representation.md) | Canonical 中间表示 | 已接受 | 协议转换层 |
-| [0006](./0006-streaming-terminal-outcome-contract.md) | 流式终态上报契约 | 已接受 | 流式链路、熔断、指标、配额 |
-| [0007](./0007-traffic-governance-model.md) | 流量治理模型 | 已接受 | 熔断、限流、健康判定、配额 |
-| [0008](./0008-verification-and-quality-gates.md) | 验证策略与质量门禁 | 已接受 | 构建、CI、测试金字塔 |
-| [0009](./0009-second-wire-shape-and-shape-self-description.md) | 第二种 wire 形态与「形态自述」 | 已接受 | Provider、transport 分帧、配置校验 |
-| [0010](./0010-ci-four-gates.md) | CI 四个 gate 的边界与不可绕过 | 已接受（暂不自动触发） | 流水线、测试归类、保护分支 |
-| [0011](./0011-feature-roadmap-and-migration-boundary.md) | 功能路线图与迁移边界 | 已接受 | 全部功能阶段的排期与取舍 |
+| [0001](./0001-project-scope-and-lineage.md) | **项目定位、目标态与 legacy 边界**（总纲） | 已接受 | 全项目；九类能力的目标态、搬/改/新增/不搬的裁决、阶段顺序约束 |
+| [0002](./0002-tech-stack-and-version-pinning.md) | 技术栈与版本锁定 | 已接受 | 全项目，构建层；Flyway+JDBC、Redis、Micrometer/OTel 的选型 |
+| [0003](./0003-module-structure-and-dependency-direction.md) | 模块结构与依赖方向 | 已接受 | 四个模块、gateway 目标态包清单、九条结构规则 |
+| [0004](./0004-spring-ai-boundary.md) | Spring AI 在分层中的边界 | 已接受 | 网关侧（不引入）/ Agent 层（全量引入） |
+| [0005](./0005-canonical-intermediate-representation.md) | Canonical 中间表示 | 已接受（已落地） | 协议转换层、N+M 扩展 |
+| [0006](./0006-streaming-terminal-outcome-contract.md) | **流式终态与结算契约** | 已接受（已落地） | 流式链路、熔断、指标、配额 —— **全套最重要的一篇** |
+| [0007](./0007-traffic-governance-model.md) | 实例维度、选择链与流量治理 | 已接受 | 熔断、限流、配额、健康判定、认证与凭据隔离 |
+| [0008](./0008-verification-and-quality-gates.md) | 验证策略与质量门禁 | 已接受 | 构建、测试金字塔、三条核心契约、真实依赖 |
+| [0009](./0009-second-wire-shape-and-shape-self-description.md) | 第二种 wire 形态与「形态自述」 | 已接受（已落地） | Provider、transport 分帧、配置校验 |
+| [0010](./0010-ci-four-gates.md) | CI gate：边界、暂缓与恢复条件 | 已接受（**暂缓自动触发**） | 流水线、测试归类、保护分支 |
+| [0011](./0011-feature-roadmap-and-migration-boundary.md) | 能力面补齐的阶段与顺序 | 已接受 | Phase A–D 的落地顺序与验收要点 |
+| [0012](./0012-storage-migrations-and-cluster.md) | 存储、迁移与多副本 | 已接受（新增） | H2/PG+Flyway、缺席降级、事件广播/共享计数/分布式锁 |
+| [0013](./0013-configuration-model-and-runtime-registry.md) | 配置模型与运行时注册表 | 已接受（新增） | 服务/实例/形态三级模型、热重载粒度、配置来源可追溯 |
 
 ## 依赖关系
 
 ```text
-0001 定位
-  ├── 0002 技术栈 ──┬── 0003 模块结构
+0001 定位、目标态与 legacy 边界  ← 总纲，其余各篇的前提
+  │
+  ├── 0002 技术栈 ──┬── 0003 模块结构 ──── 0013 配置模型与注册表
   │                 ├── 0004 Spring AI 边界
+  │                 ├── 0012 存储与多副本 ── 0007 治理（共享计数与降级）
   │                 └── 0008 验证策略（决定能否安全地做这次迁移）
   │
   ├── 0005 Canonical ───── 0006 流式终态（终态事件定义在 Canonical 里）
-  │                    │
-  │                    └── 0007 流量治理（健康判定的输入来自终态）
+  │        │                    │
+  │        │                    ├── 0007 治理（唯一输入是 Outcome）
+  │        │                    └── 0008 三条核心契约之一
+  │        │
+  │        └── 0009 形态自述（「加 Provider 不碰 Face」的实证，
+  │                          并顺带决定分帧方式属于形态）
   │
-  ├── 0009 第二种 wire 形态（0005 那条「加 Provider 不碰 Face」的实证，
-  │                        并顺带决定分帧方式属于形态）
+  ├── 0007 治理 ──── 0013（实例维度是作用域类功能的前提）
   │
   ├── 0008 验证策略（0005/0006/0007 的契约都由它锁定）
   │       │
-  │       └── 0010 CI 四个 gate（0008 里「至少四个 gate」这一条的落地，
-  │                             含「绿但什么都没跑」的两种形态怎么判）
+  │       └── 0010 CI gate（0008 里「至少四个 gate」的落地，
+  │                         含「绿但什么都没跑」的两种形态怎么判）
   │
-  └── 0010 ── 保护分支上的 required status check
-
-0011 功能路线图（P0 切片之后）：它不是某一条技术的决定，
-  而是「接下来按什么顺序把功能补齐」的排期依据 ——
-  先建实例维度（11/12/13），再广度铺九类（14–24），
-  然后回头做深（25/26），控制台最后接（27/28）。
-  它同时锁定四条边界：存储一次到位但必须可缺席、不搬运 legacy 代码只搬运维资产、
-  适配器由配置承担而非一个类一家、告警只出指标与日志。
+  └── 0011 阶段与顺序（0001 里锁定的顺序约束的落地清单）
 ```
 
-**0006 是全套里最重要的一篇。** 它修的是从来源项目带回的最严重缺陷，
-而它定义的终态是 0007 健康判定的输入，也是 0008 三条核心契约之一。
+**0006 是全套里最重要的一篇。** 它修的是从来源项目带回的最严重缺陷
+（流式调用从不产生失败记录），而它定义的终态是 0007 的唯一输入，也是 0008 三条核心契约之一。
 如果只看一篇，看 0006。
+
+0001 与 0011 的分工：0001 锁**目标态与顺序约束**（这两条会被人想推翻，属于 ADR）；
+0011 给**落地顺序与验收要点**（细节调整不需要开新 ADR）。
 
 0002 与 0008 是绑定的：0002 选定的版本迁移会产生**编译通过但行为变化的静默变更**，
 没有 0008 的契约测试就无法识别它们 —— 所以 0008 必须先于迁移落地，不能事后补。
 
 ## 相关文档
 
-- 来源项目评审（含行号级证据）：[`docs/planning/legacy-review.md`](../planning/legacy-review.md)
+- 来源项目评审（含行号级证据，每项要给出搬/改/新增/不搬的裁决）：[`docs/planning/legacy-review.md`](../planning/legacy-review.md)
 - 本次目标对齐记录：[`docs/planning/retro-2026-10-23.md`](../planning/retro-2026-10-23.md)
 - 术语表：[`GLOSSARY.md`](../../GLOSSARY.md)
 - Agent 工程约定：[`AGENTS.md`](../../AGENTS.md)
+- 第 1 版 ADR（2026-10-23 ~ 10-24，已归档）：[`archive/`](./archive/)

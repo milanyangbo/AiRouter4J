@@ -1,133 +1,111 @@
 # ADR-0005: Canonical 中间表示
 
-- **状态**：已接受
-- **日期**：2026-10-23
-- **相关**：[0003 模块结构](./0003-module-structure-and-dependency-direction.md)、[0004 Spring AI 边界](./0004-spring-ai-boundary.md)、[0006 流式终态](./0006-streaming-terminal-outcome-contract.md)
+- **状态**：已接受（第 2 版，2026-10-25 重写；已落地）
+- **日期**：2026-10-25
+- **相关**：[0003 模块结构](./0003-module-structure-and-dependency-direction.md)、[0006 流式终态](./0006-streaming-terminal-outcome-contract.md)、[0009 形态自述](./0009-second-wire-shape-and-shape-self-description.md)
 
 ## 背景
 
-来源项目的协议翻译是**两两直接互译**。`BaseAdapter` 526 行 + 15 个实现 + 若干 transformer，
-其中 Anthropic 方向的两个翻译器分别有 723 行与 923 行。
+网关两侧都不止一种协议：入站至少有 OpenAI 兼容与 Anthropic Messages，
+出站至少有 OpenAI 兼容、Ollama 原生、Gemini 原生。
 
-这种结构的成本随协议数量**相乘**增长：N 个 face × M 个 provider 意味着 N×M 条翻译路径。
-每加一个 provider，就要为每一个已支持的 face 补一条路径。
-
-还有一个更隐蔽的成本：**同一个流式 chunk 被反复解析**。评审里记录到的情况是同一份 JSON
-在一次处理流程中被 `readTree` 四次 —— 每一处只取自己需要的几个字段，且分散在不同类里，谁也不知道别人已经解过一次。这不是设计决定，是没有收口点的自然结果。
+如果每一对入站/出站都写一份翻译，是 **N×M** 份实现，且新增一侧要让另一侧全部跟着改。
+来源项目就是这么做的（它在两侧各写一套 transformer，于是「加一家 OpenAI 兼容厂商」变成写一对新类）。
 
 ## 决策
 
-### 1. 引入 Canonical 作为唯一收口点
-
-方向变成 N + M 而不是 N×M：
+### 1. 一切翻译都经过 Canonical：N+M 而不是 N×M
 
 ```text
-外部请求 ──face──▶ CanonicalRequest ──provider──▶ 厂商 wire format
-厂商响应 ──provider──▶ CanonicalStreamEvent ──face──▶ 外部响应
+Face（入站协议）──→ CanonicalRequest ──→ Provider（出站协议）──→ 厂商 wire format
+Face ←── CanonicalResponse / CanonicalStreamEvent ←── Provider
 ```
 
-Canonical 定义在 `airouter-core`，是不带任何框架标注的 Java 类型。
+新增一个 Face 或 Provider 都只是加一个类，另一侧零改动。这条不是口号，
+它由 `SecondProviderTouchesNoFaceTest` 判红（统计 `git diff` 的差异文件，红的时候会说清是哪个文件）。
 
-```java
-public record CanonicalRequest(
-    String requestId,
-    String serviceId,
-    String model,
-    List<CanonicalMessage> messages,
-    List<CanonicalTool> tools,
-    GenerationParams params,      // temperature / maxTokens / ...
-    boolean stream,
-    Map<String, String> passthrough  // 无法归一的厂商扩展字段
-) {}
-```
+### 2. Canonical 的类型是 sealed 的
 
-`passthrough` 是刻意的：协议里总存在无法映射的厂商自有字段，
-如果没有这个地方，它们会被塞进某个不合适的字段里，然后很难再取出来。
+`CanonicalStreamEvent` 是 `sealed interface`，子类型只有六个：
+`Opening` / `TextDelta` / `Usage` / `Ping` / `Terminal` / `Failed`。
 
-### 2. 流式事件类型
+sealed 的理由具体到终态上：**漏处理一个分支是编译错误，而不是线上悬置**。
+终态漏处理的后果是「一条流永远没有结果」，而没有任何编译器会在那种情况下提醒你。
 
-```java
-public sealed interface CanonicalStreamEvent permits
-    CanonicalStreamEvent.Opening,
-    CanonicalStreamEvent.TextDelta,
-    CanonicalStreamEvent.Usage,
-    CanonicalStreamEvent.Ping,
-    CanonicalStreamEvent.Terminal,
-    CanonicalStreamEvent.Failed {}
-```
+### 3. 三个「不像内容」的事件被单独建模
 
-`Terminal` 与 `Failed` 是 [ADR-0006](./0006-streaming-terminal-outcome-contract.md) 的载体 ——
-终态是事件模型的一等成员，而不是在 Reactor 的操作符里隐含。
+| 事件 | 为什么单独建模 |
+|---|---|
+| `Opening` | id / model / created 属于**整条流**而不是某一帧；后续每一帧都要带着它们出境。而「第一个增量帧」这个时机在遇到空内容流时并不存在 |
+| `Usage` | 厂商常在流末尾单独发一帧纯用量（开了 `stream_options` 时更常见），那一帧里 `choices` 是空数组。把它当内容帧处理会得到一个 content 为空的假增量 |
+| `Ping` | 保活注释行在语义上不是内容，**也不是终态判断的依据**：只发注释的上游是活的但没说话，与「连接已断」是两回事。后者由空闲超时判，前者不该触发它 |
 
-`Ping` 保留为显式类型：部分上游会定期发送注释行保活，它们在语义上不是内容帧，
-也不应该被当成终态判断的依据。
+**刻意不建 `ToolCallDelta`**：工具调用的增量形态取决于上游真实怎么发，而现在没有能稳定复现它的端点。
+与其先画一个未经验证的类型，不如等有了可回放的上游再补 —— 那时它是被样本钉住的，不是被想象出来的。
 
-**与本文初稿的差两处，实现时确定如下**（以 GLOSSARY 的概念分层 Opening / Delta / Terminal / Failed 为准）：
+### 4. Passthrough 装「网关不解释但必须转发」的字段
 
-| 本文初稿 | 实现 | 理由 |
-|---|---|---|
-| 未列 `Opening` | 有 | id / model / created 属于整条流而不是某一帧；客户端（含官方 SDK）在每一帧上都读它们。没有它，这些信息只能挂在「第一个增量帧」上，而空内容流没有那一帧 |
-| 列了 `ToolCallDelta` | 暂缺 | 工具调用的增量形态取决于上游真实怎么发，而现阶段没有能稳定复现它的端点。与其先画一个未经验证的类型，不如等有了可回放的上游再补，那时它是被样本钉住的 |
+`Map<String, String>`，**值是 JSON 原文**而不是解析后的对象 —— 因为 `core` 不许依赖 Jackson
+（[0003](./0003-module-structure-and-dependency-direction.md) R1），只能是文本，解码时再解析一次。
 
-### 3. 一次解析，多次使用
+它挂在四个位置：响应顶层、每个候选、每条消息、usage 内部。厂商在这些位置挂私有字段都很常见，
+而丢掉它们的代价是「某个客户端突然少了一个字段」，且这种丢失不会报错。
 
-**CHUNK_PARSE_COUNT = 1**：同一次处理流程中，同一份上游字节只允许被解析一次。
-provider 的职责是把字节变成 `CanonicalStreamEvent`；此后所有 consumer（脱敏、指标、
-配额、会话记录、face 编码）都操作已经成形的对象。
+### 5. 端口返回 JDK 类型，不返回 Reactor 类型
 
-这条可以直接被计数型集成测试验证。
+| 端口 | 返回 |
+|---|---|
+| `CompletionPort` | `CompletionStage<CanonicalResponse>` |
+| `StreamingCompletionPort` | `java.util.concurrent.Flow.Publisher<CanonicalStreamEvent>` |
 
-### 4. 为什么不用 Spring AI 的消息模型代替
+不返回 `Mono` / `Flux`：Reactor 进入 `core` 的依赖树会被 enforcer 判红。
+两侧各用一次 `JdkFlowAdapter` 转换即可接上 —— 一次转换的成本，换 `core` 在零容器下可单测。
 
-见 [ADR-0004](./0004-spring-ai-boundary.md)：那是沿另一个方向设计的模型（应用侧消费），
-并且带着的行为假设与网关冲突。Canonical 必须能表达网关才关心的东西 ——
-上游偏差、未知字段、保活帧、缺终态 —— 这些在应用侧模型里没有位置。
+### 6. 错误只有一处形态：GatewayError
 
-### 5. 渐进收口，不一次性铺满
+从传输层故障到上游 4xx/5xx，最终收敛成一个 `GatewayError`（`type` / `message` / `httpStatus`）到达 Face。
+`UpstreamFailure` 是携带它的 **unchecked** 异常：调用链上的中间层都不打算处理它，只有 Face 在边界上收口一次。
 
-**这是本 ADR 里最重要的取舍。**
+### 7. 一份字节只允许解析一次（CHUNK_PARSE_COUNT = 1）
 
-Canonical 不会因为它的引入而立刻消灭所有翻译路径。推进顺序：
+一次流式 pipeline 中同一个 chunk 被解析的次数**必须恒为 1**。允许同一份封装有多个 reader，
+不允许重复 parse。来源项目的 Anthropic 流式路径对同一个 chunk 做了 4 次 `readTree` + 2 次 `writeValueAsString`。
 
-| 阶段 | 做什么 | 依据 |
-|---|---|---|
-| 第一步 | 所有 **provider 的响应**统一译成 `CanonicalStreamEvent` | 这是终态契约（0006）的前提，也是 CHUNK_PARSE_COUNT=1 的前提；这一步收益最大、影响面最清晰 |
-| 第二步 | 所有 **provider 的请求**统一从 `CanonicalRequest` 编码 | 请求侧没有流式的复杂性，风险低于响应侧 |
-| 第三步 | face 侧收口 | **只有在真正出现第三个 face 时才做**。两个 face 时收口的收益还不足以抵消重写已验证页面的风险 |
-
-现阶段 face 只有两个（OpenAI 兼容、Anthropic）。过早把已经通的 face 重画一遍，
-是把低风险的东西变成高风险改动，不划算。
+这条由 `ChunkParseCounter` 断言，是三条核心契约之一（[0008](./0008-verification-and-quality-gates.md) 第 3 节）。
 
 ## 被否决的方案
 
 | 方案 | 否决原因 |
 |---|---|
-| 保持两两互译 | 加 provider 的成本是乘以 face 数量的；且无法解决重复解析问题 |
-| 引入 Canonical 的同时把所有 face / provider 重画 | 已经在工作的代码变成未验证代码；收益（对称美）撑不住这个风险 |
-| 让 Canonical 直接复用某个厂商的请求格式（如直接用 OpenAI 格式当中枢） | 会让中枢带着某一方的偏见：另一方协议里表达不了的东西会变形，且这个变形很难被发现 |
-| 用 Map / JsonNode 作为中间表示，不定义类型 | 编译检查全失；改一处字段名不会报错，只会在线上静默失效 |
-| 把所有厂商字段都显式建模，不设 passthrough | 每次对接新实例都要改 Canonical；而这些字段网关本身并不解释，建模只会带来维护负担 |
+| 入站与出站直接互转（N×M 翻译） | 新增一侧要让另一侧全部跟着改；来源项目正是这么做的 |
+| 用 `Map<String, Object>` 当中间表示 | 字段的存在性只能靠运行时发现；而「某个客户端少了一个字段」这类缺陷正是最难查的 |
+| 事件用普通接口而非 sealed | 漏处理一个分支不报错；对终态尤其危险 |
+| 把 `Usage` 塞进 `Terminal` | 厂商会单独发一帧纯用量，那一帧之后还有别的帧；塞进终态会丢掉顺序信息 |
+| 把保活帧当内容或直接忽略掉 | 当内容会产生假增量；直接忽略会让「上游活着但没说话」与「上游断了吗」在类型上不可区分 |
+| 现在就建 `ToolCallDelta` | 没有可复现的端点，形状是猜的；猜出来的类型一旦落地就很难改 |
+| `core` 里用 `Mono` / `Flux` | `core` 依赖树会出现 Reactor，[0003](./0003-module-structure-and-dependency-direction.md) R1 判红 |
+| Passthrough 存解析后的对象 | 需要 Jackson；而 `core` 不许依赖它 |
 
 ## 后果
 
 **正面**
 
-- 新增 provider 不需要动任何 face 的代码（可测）
-- CHUNK_PARSE_COUNT=1 直接降低 CPU 开销，在高并发流式场景是实打实的
-- 流式终态、脱敏、配额等后继能力有了统一的挂载点
+- 加协议只加一侧；这条可被测试直接验证
+- `core` 可以在没有容器的情况下单测：领域模型不依赖任何框架
+- 终态是类型系统的一部分，「一条流没有结果」这类缺陷在编译期就少了一条路
 
 **负面**
 
-- 多一层转换意味着**多一点开销与一点延迟**。这是真实成本，换来的是可扩展性
-- Canonical 的设计一旦定错，纠正成本比两两互译高很多（所有方向都受影响）——
-  因此第一步只收口 provider 响应，就是在给这个设计争取验证时间
-- `passthrough` 是个逃逸口，缺乏约束时会被滥用。
+- 多一次翻译：入站一次、出站一次。这是 N+M 的固有成本
+- Passthrough 是文本，用它之前要再解析一次（高频路径上的额外开销，可控但要意识到）
+- Canonical 覆盖不到的厂商特性只能走 Passthrough，而 Passthrough 里的东西**网关不解释** ——
+  任何需要理解某个字段才能生效的功能（比如按内容脱敏）都不能只靠它
 
 ## 如何验证
 
-- [x] 存在 golden-file 契约测试：同一份上游字节 → 期望的事件序列
-      （非流式 `contract/`，流式 `contract-stream/`，后者含 `[DONE]` 哨兵本身）
-- [x] 计数断言：一次流式处理中对同一 chunk 的 JSON 解析次数为 1
-      （`ChunkParseCounter` 是容器里的一个 bean，由端到端测试从运行中的应用里读出来比对）
-- [ ] 新增一个 provider 的改动集中在 `providers` 包内，`faces` 包零改动
-- [ ] `airouter-core` 中的 Canonical 类型不含任何 Jackson / Spring 标注
+- [x] 新增一个 Provider 时 `faces` 包零改动（`SecondProviderTouchesNoFaceTest`）
+- [x] `CHUNK_PARSE_COUNT` 恒为 1（`ChunkParseCounter` 断言；换错分帧器时会变成 0 并被捕获）
+- [x] `core` 的依赖树中不出现 Spring / Jackson / Reactor（enforcer + 结构规则 R1）
+- [x] 对外 wire format 由 golden-file 契约测试锁定（`contract/` 与 `contract-ollama/`，一个用例一个目录，放两个文件即被发现）
+- [x] 流式契约比的是**帧序列**且包含 `[DONE]` 哨兵本身（`contract-stream/`）
+- [ ] 出现 `ToolCallDelta` 时，它必须由一份可回放的真实上游样本引入，不能凭协议文档推测

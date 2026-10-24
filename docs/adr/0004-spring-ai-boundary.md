@@ -1,91 +1,111 @@
 # ADR-0004: Spring AI 在分层中的边界
 
-- **状态**：已接受
-- **日期**：2026-10-23
-- **相关**：[0002 技术栈](./0002-tech-stack-and-version-pinning.md)、[0003 模块结构](./0003-module-structure-and-dependency-direction.md)、[0005 Canonical](./0005-canonical-intermediate-representation.md)
+- **状态**：已接受（第 2 版，2026-10-25 重写）
+- **日期**：2026-10-25
+- **相关**：[0002 技术栈](./0002-tech-stack-and-version-pinning.md)、[0003 模块结构](./0003-module-structure-and-dependency-direction.md)
 
 ## 背景
 
-项目同时存在两种与模型交互的角色，容易被混为一谈：
+Spring AI 2.x 是本项目引入 Agent 能力的理由（[0002](./0002-tech-stack-and-version-pinning.md)），
+但它带来的依赖是重的：`ChatClient`、Advisor 链、向量存储、MCP、会话与压缩。
 
-| 角色 | 方向 | 要做什么 |
-|---|---|---|
-| **网关本体** | 既 *from* 客户端，又 *to* 上游厂商 | 接受外部请求、路由到实例、转发、把响应原样（或翻译后）返回 |
-| **Agent 层** | *from* 某个模型 | 编排工具调用、管理会话记忆、产出结构化结果 |
+这里有一个真实的诱惑：既然 Spring AI 已经会「调模型」，那网关的出站调用干脆也用它 ——
+一次引入，两处复用。来源项目没有这个问题（它不依赖 Spring AI），所以没有可继承的答案。
 
-Spring AI 是为第二个角色设计的。它是**应用侧的消费抽象**：给出一个统一的 Java API，
-让应用不必关心厂商差异地调用模型。它的假设是自己处于调用链的最上游。
-
-网关本体不满足这个假设，有两个具体冲突：
-
-**冲突一：网关要产出 wire format，Spring AI 只消费它。**
-网关对客户端暴露的是 OpenAI 兼容端点 —— 需要自己生成 SSE 帧、自己约定 `[DONE]` 的形态、
-自己决定错误帧怎么写。Spring AI 不提供 server 侧的 OpenAI 端点实现，这部分没有捷径。
-
-**冲突二：网关必须容忍上游的脏数据，Spring AI 倾向于严格要求。**
-网关后面挂的是 vLLM、Ollama、以及各种声称 OpenAI 兼容但实际有偏差的实例。
-少一个字段、Content-Type 不标准、半个 SSE 帧就断开，这些都是现实。
-网关必须把这些当正常输入处理；而模型抽象层遇到不符合契约的响应通常直接失败 ——
-这对应用是合理的（早失败早发现），对网关则意味着**上游的每一个小偏差都变成一次全局故障**。
+另一个必须回答的问题是**数据方向**：本项目的 Agent 主场景是 **Ops Agent**（查实例健康 / 熔断限流状态 /
+调用历史 / 异常事件 / 配置变更审计），而它要查的数据全部由网关产生。
+Agent 在依赖树上位于 `app → agent → core`，**不 Java 依赖 `gateway`** —— 那么它怎么拿到这些数据？
 
 ## 决策
 
-### 1. 三层分工
+### 1. 网关侧不引入 Spring AI，一点都不引入
 
-| 层 | 用不用 Spring AI | 用什么 |
-|---|---|---|
-| 协议翻译与路由（faces / providers / routing / governance） | **不用** | 纯 Java + Reactor + Jackson 3 |
-| Agent 层（`airouter-agent`） | **全量使用** | ChatClient + Advisor 链 + 各类 Tool |
-| 两者之间的连接 | — | Agent 的 chat model `base-url` 指向**网关自己的 OpenAI 兼容端点** |
+| 位置 | Spring AI |
+|---|---|
+| `airouter-core` | **禁止**（依赖树零框架，[0003](./0003-module-structure-and-dependency-direction.md) R1） |
+| `airouter-gateway` | **不引入** |
+| `airouter-agent` | 全量引入 |
 
-第三条是关键：**Agent 的每一次模型调用都要穿过网关自身的限流、熔断、配额与路由。**
-这让 Agent 层从第一天起就在真实治理之下运行，而不是有一条绕过网关的直连路径。
+理由：网关的核心价值是「协议翻译 + 路由 + 治理」，这三件事 Spring AI 都不做，
+而 `ChatModel` 的抽象恰好会盖住网关最需要的东西 —— **逐帧的字节与精确的错误分类**。
+用 `ChatModel` 调模型，拿不到「上游 429 的那一帧长什么样」，也就无法把失败归因
+（[0006](./0006-streaming-terminal-outcome-contract.md)）；拿不到分帧控制权，就无法保证
+`CHUNK_PARSE_COUNT = 1`。
 
-### 2. 网关为什么不用，具体到每一行的影响
+代价是出站调用要自己写（`transport` + `providers`）。这个代价是刻意承担的：
+它换来的是错误可归因、分帧可控、以及不把网关绑在某个 AI 抽象的版本节奏上。
 
-- 有了 `ChatModel` 抽象，网关就不得不在自己的模型和 Spring AI 的消息模型之间做一次显式转换，
-  而转换发生的时机（何时生成工具调用消息、SSE 帧如何切分）恰恰是网关需要自己控制的部分
-- 引入它会把一类**不在网关控制内的升级**带进核心链路 —— Spring AI 的行为变更会直接改变网关的对外行为
+### 2. Agent 不 Java 依赖 gateway；需要网关数据时走 core 里的端口
 
-### 3. Agent 层为什么全量用
+`agent` 与 `gateway` 在依赖树上平行，唯一的交汇点是 `core`（端口）与 `app`（装配）。
 
-反过来，Agent 层正是 Spring AI 的适用域：工具调用循环、Advisor 链的顺序语义、
-结构化输出的自纠错、会话记忆压缩 —— 这些都是 Spring AI 已经有的东西，
-自己实现一份不会更好，只会更差且没人维护。
+Ops Agent 要的运维数据（实例健康、熔断状态、调用历史、配置变更）通过 **core 里定义的查询端口**获取，
+由 `gateway` 提供实现，`app` 装配。
 
-### 4. 一个小但高频的配置陷阱
+```text
+agent ──(依赖)──→ core ──(接口 OpsQueryPort)──┐
+                                              ├── 实现在 gateway，装配在 app
+gateway ─(依赖)──→ core ───────────────────────┘
+```
 
-Agent 层接的是 OpenAI 兼容端点。Spring AI 2.x 底层的 OpenAI 集成**不会自动补全路径里的 `/v1`** ——
-`base-url` 写成 `http://host:9090` 会直接 404，必须写成 `http://host:9090/v1`。
-这条要在配置校验里显式处理：启动时检查 `base-url` 形态，给出可读的错误提示，而不是让它在第一次调用时才爆掉。
+**不选择「Agent 通过 HTTP 调自己的管理面 API」**，理由：
+
+- 回环调用引入鉴权负担（Agent 要持有一份凭据去调自己）
+- 链路里多一跳网络，而这个调用发生在同进程内
+- 管理面 API 的形状会随控制台需求变化，让它成为 Agent 的耦合对象会把两件事绑在一起
+
+管理面 API 的消费者是**控制台与外部系统**，不是 Agent。两者的形状需求不同，不要复用成一条。
+
+### 3. Advisor 链：安全语义必须双实现
+
+`CallAdvisor` 与 `StreamAdvisor` 是**两个独立接口**（不是同一接口的可选方法）。
+任何有安全语义的 Advisor（鉴权、脱敏、审计）必须**同时实现两者**，否则流式路径被静默跳过且不报错 ——
+这是来源项目踩过的同一类坑（"只做一半 = 静默失效"）在 Agent 层的镜像。
+
+这条由结构规则或测试断言，不靠 review 记得。
+
+### 4. 会话与压缩：Trigger 与 Strategy 成对
+
+长期对话需要压缩。压缩由 **Trigger（何时压）+ Strategy（怎么压）** 成对驱动，两者必须同时设置：
+只设 Strategy 等于永不压缩，只设 Trigger 等于压缩时不知道怎么压 —— 两种情况都不报错。
+
+压缩的最小原子粒度是 **Turn**（一个 UserMessage 之后的所有事件），
+保证保留窗口永远从用户消息开始，不会切断工具调用序列。
+
+### 5. Subagent 的定义是配置文件，不是代码
+
+专职 Agent（Subagent）由 Markdown 配置定义，主 Agent 通过 Task 工具委派，只把结论返回主上下文。
+这让「加一个专职角色」是一次配置变更，不是一次代码变更。
 
 ## 被否决的方案
 
 | 方案 | 否决原因 |
 |---|---|
-| 网关核心也用 Spring AI 的 `ChatModel` 做请求构造 | 冲突一 + 冲突二：既要再包一层转换，又会把不容忍偏差的行为带进网关 |
-| Agent 层自己手写工具调用循环 | 循环、重试、并发限制、消息追加规则都要自己实现一遍，是纯粹的重复劳动 |
-| Agent 层直连云端模型、绕过网关 | 会让 Agent 成为一条不受治理的旁路；也失去了"自己吃自己"的验证价值 |
-| Agent 以 Java 依赖的方式直接调用 gateway 的类 | 两个模块会重新耦合起来。边界应该是 HTTP：Agent 就是网关的一个普通客户端 |
+| 网关出站也用 Spring AI 的 `ChatModel` | 盖住逐帧字节与精确错误分类；而这两者正是网关要修的核心缺陷（[0006](./0006-streaming-terminal-outcome-contract.md)） |
+| Agent 直接 Java 依赖 gateway 拿数据 | 破坏依赖方向；`agent` 会随 `gateway` 的包重构而碎 |
+| Agent 通过 HTTP 调自己的管理面 API | 回环 + 鉴权负担 + 与管理面 API 形状耦合 |
+| 只实现 `CallAdvisor` | 流式路径被静默跳过，且不报错 |
+| 只设压缩 Strategy 不设 Trigger | 等于永不压缩，且不报错 |
+| Subagent 用 Java 类定义 | 加一个角色变成一次代码变更与一次发版 |
 
 ## 后果
 
 **正面**
 
-- 网关核心的行为完全由自己控制，不受外部框架的发布节奏影响
-- Agent 层的每次调用自动获得限流、熔断、配额、审计
-- 两层可以独立演进：换 Agent 框架不影响网关，改网关不影响 Agent 的内部编排
+- 网关的错误归因与分帧控制权不被 AI 抽象稀释
+- Agent 层可以独立演进 Spring AI 版本（受 [0002](./0002-tech-stack-and-version-pinning.md) 的协同变更约束）
+- Ops Agent 的数据源就是本网关自己的可观测数据，演示时自洽
 
 **负面**
 
-- 协议翻译层的工作量无法回避：faces 与 providers 的解/编码必须自己写，并通过契约测试锁住（见 ADR-0008）
-- Agent 依赖网关自身端点，**本地开发时网关必须先起来**。需要提供一条命令起全套，
-  并提供一个不依赖真实模型的 mock provider profile，否则无网络环境下无法开发
-- OpenAI 兼容契约（尤其是 SSE 帧格式）是否需要 Agent 侧与网关侧分别对齐，需要持续留意
+- 出站调用全部自己写，`transport` 与 `providers` 的代码量无法靠框架省掉
+- core 里要定义运维查询端口，等于为 Agent 增加了一组接口；这组接口是与 `gateway` 的契约，改动成本不低
+- 两套「调模型」的方式并存（网关自写、Agent 用 Spring AI），新人需要理解为什么
 
 ## 如何验证
 
-- [ ] `airouter-gateway` 的依赖树中不出现 `org.springframework.ai` 的任何 artifact
-- [ ] `airouter-agent` 的 chat model `base-url` 指向自身的 `/v1`，且该配置走环境变量而非硬编码
-- [ ] 启动时 `base-url` 缺少 `/v1` 后缀能给出可读错误，而不是等到调用时才 404
-- [ ] 关掉 Agent 层，网关仍能独立启动并正常代理请求（证明依赖方向是单向的）
+- [ ] `airouter-core` 与 `airouter-gateway` 的依赖树中不出现 `org.springframework.ai`
+- [ ] `airouter-agent` 不 Java 依赖 `airouter-gateway`（结构规则 R2 / R7）
+- [ ] 有安全语义的 Advisor 同时实现 `CallAdvisor` 与 `StreamAdvisor`（测试或结构规则断言）
+- [ ] 压缩的 Trigger 与 Strategy 缺失其一时启动期报错
+- [ ] Ops Agent 的运维查询走 core 端口，测试里不需要起 HTTP 服务即可断言

@@ -1,183 +1,134 @@
-# ADR-0006: 流式终态上报契约
+# ADR-0006: 流式终态与结算契约
 
-- **状态**：已接受
-- **日期**：2026-10-23
-- **相关**：[0005 Canonical](./0005-canonical-intermediate-representation.md)、[0007 流量治理](./0007-traffic-governance-model.md)、[0008 验证策略](./0008-verification-and-quality-gates.md)
-
-> **这是全套 ADR 里最重要的一篇。** 它修的是从来源项目带回的最严重缺陷，
-> 而且 `0005` 的事件模型、`0007` 的健康状态判定都依赖这里的定义。
+- **状态**：已接受（第 2 版，2026-10-25 重写；已落地）
+- **日期**：2026-10-25
+- **相关**：[0005 Canonical](./0005-canonical-intermediate-representation.md)、[0007 治理模型](./0007-traffic-governance-model.md)、[0008 验证策略](./0008-verification-and-quality-gates.md)
+- **重要性**：**这是全套里最重要的一篇。** 它修的是从来源项目带回的最严重缺陷，
+  而它定义的终态是治理层（[0007](./0007-traffic-governance-model.md)）的唯一输入。如果只看一篇，看这篇。
 
 ## 背景
 
-来源项目的流式请求，其三处代码单独看都合理，连起来构成故障。
+来源项目的流式路径**从不产生失败记录**。实测的具体形态：
 
-**第一段**：流式请求在写出响应头之后立刻返回成功。
-
-```java
-// StreamingRequestProcessor.java:412-414
-return Mono.just(ResponseEntity.ok()
-        .contentType(TEXT_EVENT_STREAM)
-        .body(v1Stream));
-```
-
-此时流还没有开始输出任何内容。
-
-**第二段**：外层的 `doOnSuccess` 据此结算。
-
-```java
-// BaseAdapter.java:191-203
-.doOnSuccess(response -> {
-    long duration = System.currentTimeMillis() - startTime;      // ≈ 0ms
-    boolean success = response.getStatusCode().is2xxSuccessful(); // true
-    metricsRecorder.recordCompleteCallStats(..., success, ...);
-})
-```
-
-**第三段**：成功直接穿透到熔断器。
-
-```java
-// ModelServiceRegistry.java:466
-circuitBreakerManager.recordSuccess(instanceId, baseUrl);
-```
-
-而流式中途失败走的是另一条路径（`:474-485` `recordStreamingError`）——
-它记录指标，**但不碰熔断器、不更新错误追踪、不触发降级**。
-
-### 由此产生的三个实际后果
-
-| 后果 | 说明 |
+| 现象 | 后果 |
 |---|---|
-| **熔断器永不 OPEN** | 实例只要还能返回 200 响应头 + 半个 SSE 帧，就一直被评为健康，请求会持续被路由过去 |
-| **延迟感知负载均衡被污染** | 流式样本恒为 ≈0ms，`LatencyAwareLoadBalancer` 的 EWMA 输入是假的，在流式为主的负载下退化成随机选择 |
-| **降级逻辑是死代码** | `processRequestWithFallback`（`BaseAdapter:250-289`）对流式路径从来不会生效 |
+| 流式响应一旦写出响应头，无论后面发生什么都记为成功 | 熔断器的输入里没有流式失败 |
+| `[DONE]` 哨兵只在成功路径发出；错误路径**绝不补** | 客户端只能靠连接断开来推断「可能出错了」 |
+| 首块之前的失败（如 429）反而保真了状态码 | 于是「失败」这件事只在首块前可见，进入流之后就消失了 |
+| 流式绕过结算点 | 配额不扣、限流不回放、延迟不统计 |
 
-### 根因
+结论：**在修好输入之前，讨论治理参数是没有意义的。** 熔断器的计数里根本没有流式失败这一项，
+调阈值只是让一个残缺的输入被放大或缩小。
 
-不是某一处少写了一行 `recordFailure`。逐个补这三处也只是把错误平移。
-
-真正的根因是**缺少统一的终态概念**：每个组件各自在自己能够观测到的时机判定结果，
-而对流式来说，那些时机都是错的 —— 响应头写出成功不代表下游成功，上游关闭连接也不等于失败。
+第二个背景是「成功/失败」这个词本身在流式下是含糊的：响应头写出成功不等于说完了，
+连接断开不等于失败，客户端主动断开更不是失败。必须先把「什么叫一次调用的结局」定义清楚。
 
 ## 决策
 
-### 1. 终态必须显式发出，禁止隐式推断
+### 1. 终态是事件模型的一等成员，显式发出，不允许推断
 
-`CanonicalStreamEvent` 的两个终态子类型（`Terminal` / `Failed`）**必须由 provider 显式发出**。
+`CanonicalStreamEvent.Terminal / Failed` 是终态的**唯一**形态，由 Provider **显式发出**；
+不允许从 Reactor 的 `onComplete` / `onError` 里推断。
 
-- **禁止**依赖 Reactor 的 `onComplete` / `onError` 推断流的结果。
-  上游可能在发出 `[DONE]` 之前就关闭连接；也可能先报错、随后又补发正常帧。
-  这两种情况下，"流如何结束"都无法从操作符层面判断。
+终态同时是这条流的**最后一个**事件：上游在结束哨兵之后又发来的帧不出现在客户端。
 
-- **兜底**：超过 idleTimeout 仍未收到终态时，由框架层补发 `Failed`（归类为 `UPSTREAM_TIMEOUT`），
-  保证任何一条流最终都有且只有一个终态。
+不允许推断的理由：`onComplete` 只说明「流结束了」，不说明「说完了」还是「断了」。
+这两者对熔断器是相反的输入。
 
-- **终态是这条流的最后一个事件**：上游在 `[DONE]` 之后又发来的帧不进入事件流。
-  「终态唯一」与「终态最后」不是同一件事 —— 前者管的是条数，后者管的是位置，
-  而消费方（含客户端与未来的脱敏管线）都是按「终态之后不会再有内容」写的。
+### 2. 结算的唯一收口是 `OutcomeObserver`，一条流恰好结算一次
 
-### 2. `OutcomeObserver` 是全链路唯一的结果结算点
+所有协作组件（熔断器、延迟感知选择、指标、配额）**只从 `OutcomeObserver` 取结果**，不得各自观测。
+一条流恰好结算一次由 `StreamSettlement.claim()` 保证（`ExactlyOneSettlementTest`）。
 
-```java
-public interface OutcomeObserver {
-    void onTerminal(Outcome outcome);
-}
+容器里 `SettlementObserver` 是**唯一**一个 `OutcomeObserver` bean：第二个消费者出现时登记到它上面，
+不另起一个 bean —— 两个 bean 会让「注入一个 `OutcomeObserver`」变成二选一的歧义。
+投递**互相隔离**：一个消费者抛异常不会让后面的消费者失去这次结果。
 
-public record Outcome(
-    String requestId,
-    String serviceId,
-    String instanceId,
-    OutcomeKind kind,                 // SUCCESS | UPSTREAM_FAILURE | UPSTREAM_TIMEOUT | CLIENT_CANCELLED
-    Duration latency,                 // 从请求发出到收到终态的时长
-    CanonicalUsage usage,             // 可能未上报，允许为空
-    GatewayError error                // SUCCESS 时为 null
-) {}
-```
+`Outcome` 的内容：`requestId` / `serviceId` / `instanceId` / `OutcomeKind` / `latency` / `usage` / `error`。
+**`latency` 一律算到收到终态为止**，这让流式与非流式的延迟具有可比性。
 
-> **一处用词在实现时统一**：这里原写 `TokenUsage`，实现用的是 ADR-0005 的 `CanonicalUsage`。
-> 两者指同一个东西，而 Canonical 已经有表达「上游没给就是没给」的类型，
-> 为一个字段再定义一个同构类型只会带来一次无意义的转换。
+### 3. 上游没发结束哨兵就把连接收了 → 补发 `Failed(upstream_closed)`
 
-规则：
+那**不是成功**：内容是否完整无从判断。这条对应来源项目「错误路径绝不补 `[DONE]`」的另一面 ——
+我们不补哨兵给客户端，但在内部补一次失败结算给治理层。
 
-- **熔断器、限流回放、健康检查、指标、配额结算，全部只从 `OutcomeObserver` 取结果。**
-  任何组件不得自行判断一次调用是成功还是失败。这一条由依赖方向测试（ADR-0003）强制。
-- `latency` 一律计算到收到终态为止。这让流式与非流式的延迟具有可比性，
-  延迟感知负载均衡重新拿到真实的 EWMA 输入。
-- 订阅 `Outcome` 是廉价的：它们统一在收到终态事件之后才投递，不在热路径上
+### 4. 帧间静默超上限 → `Failed(UPSTREAM_TIMEOUT)`
 
-### 3. 客户端取消是独立的第三种终态
+`idleTimeout` 是**块间空闲超时**，不是总时长。与之相对的 `ResponseTimeout`（总响应超时）
+**对 `text/event-stream` 的下游响应禁止设置** —— 来源项目在 60s 处被基础设施掐断过长流。
 
-```text
-CLIENT_CANCELLED  ——  影响资源回收与部分指标，但不判为实例故障
-```
+### 5. 取消：没有事件，但必须结算成 `CLIENT_CANCELLED`
 
-理由很直接：移动端切后台、用户关页面都会产生 cancel。
-如果把它算作上游失败，一次共享网络的抖动就能熔断掉一个健康的实例。
+客户端断连时不产生事件 —— 接收方已经不在了，往一个已断开的下游发事件既不成立也没有意义。
+但它**仍然要结算**：少记一次与记成成功，对下游的熔断器是同一种误导。
 
-**它不产生事件，只产生结算。** 取消发生时接收方已经不在了 —— 往一个断开的下游发事件
-既不成立也没有意义。但结算仍然必须发生：少记一次与记成成功，对下游的熔断器是同一种误导。
-因此「终态唯一」这条断言落在**结算点**上，不落在事件序列上：
+它是**唯一一种「有结算而无事件」的终态**。因此「终态恰好一次」这条断言落在**结算点**上，
+不落在事件序列上。
 
-- 事件序列上，取消的那条流没有终态事件（也没有任何后续事件）；
-- 结算点上，它恰好产生一条 `CLIENT_CANCELLED`。
+`OutcomeKind` 四态互斥且穷尽：`SUCCESS` / `UPSTREAM_FAILURE` / `UPSTREAM_TIMEOUT` / `CLIENT_CANCELLED`。
+**熔断口径：前两者计入熔断，`CLIENT_CANCELLED` 不计入** —— 移动端切后台、用户关页面都会产生取消，
+把它算作上游失败会让一次共享网络的抖动熔断掉一个健康的实例。
 
-**一条流恰好结算一次由显式守卫保证**，不是靠「两条路径不会同时发生」这种假设：
-终态事件、失败事件、补发的失败、取消这四条路径里任意两条在同一条流上先后发生时，
-守卫让第二条被丢弃。少了它，一次调用会被计成两次，而这类错误不报错，
-只会让指标与熔断阈值慢慢失真（有反向验证：去掉守卫，定向测试立刻由 1 条结算变成 2 条）。
+### 6. 本地拒绝：不出网，**也不结算**
 
-### 4. 熔断器只看归因到自己身上的失败
+「这个实例现在接不接流量」只在 `routing` 的 `InstanceAvailability` 判一次。判不过的请求在本地结束。
 
-```java
-// 判定口径：只有 causedByUpstream = true 的失败才进入熔断统计
-UPSTREAM_FAILURE   → 计入
-UPSTREAM_TIMEOUT   → 计入
-CLIENT_CANCELLED   → 不计入
-```
+**不结算的理由是具体而不是原则性的**：本地拒绝不是一次上游调用，把它算作失败会让它继续喂熔断器，
+于是打开的熔断器**再也等不到冷却结束的那次成功探测** —— 一个自我维持的死循环。
+
+### 7. 治理组件的输入只有 `Outcome`
+
+任何治理组件读 HTTP 状态码、读异常类型、或自己造一个 `Outcome`，都会让构建变红
+（结构规则 R4：治理与路由看不到 HTTP 状态码；R9：只有产生终态的那一处能构造 `Outcome`）。
+两条各有「故意违规」的样例保证它们真的会红（`GuardsActuallyFireTest`）。
+
+### 8. 结算是幂等的
+
+同一 `requestId` 重复结算不应产生第二次扣减 —— 这让重试与网络抖动不至于重复计费。
+（配额落地时由 [0007](./0007-traffic-governance-model.md) 消费这条。）
 
 ## 被否决的方案
 
-| 方案 | 否决原因 |
+| 方案 | 否决理由 |
 |---|---|
-| 在三处证据点分别补一句 `recordFailure` | 根因没变：组件仍在各自观测各自的结果。下一次加一个观测点，同样的事会再发生一遍 |
-| 把响应体整体 buffer 完再返回 | 那就不再是流式网关了 |
-| 用一个后台线程定时扫描未完成流并标记失败 | 引入了"多久算失败"的第二套时间语义，与 idleTimeout 竞争；而且失败判定会比实际晚很多 |
-| 取消不计入任何统计 | 资源泄漏与部分计费会丢失；观测侧无法区分"正常结束"和"无声无息地没有了" |
-| 让每个订阅组件自己处理终态 | 那就是没有收口点，回到原状 |
+| 靠 `onComplete` / `onError` 推断终态 | 区分不出「说完了」与「断了」，而这两者对熔断是相反输入 |
+| 响应头写出成功即记为成功 | 正是来源项目的缺陷；内容是否完整无从判断 |
+| 上游提前断连时按成功处理 | 同上；且会让「内容被截断」表现为一次健康调用 |
+| 把取消算作上游失败 | 移动端切后台会熔断健康实例 |
+| 把本地拒绝算作失败 | 打开的熔断器等不到冷却后的成功探测，形成自我维持的死循环 |
+| 取消时也发一个事件 | 接收方已断开，事件无处可去；且会破坏「终态是最后一个事件」 |
+| 每个治理组件各自订阅上游事件 | 各自观测各自的结果，口径必然发散 —— 这正是来源项目的根因 |
+| 对 `text/event-stream` 设总响应超时 | 长流会在超时点被掐断（来源项目在 60s 处踩过） |
+| 多个 `OutcomeObserver` bean | 注入点变成二选一的歧义 |
+| 允许 fail-open 的结算（读不到就算成功） | 与「少记一次」是同一种误导；读不到用量绝不当 0 |
 
 ## 后果
 
 **正面**
 
-- 熔断器开始对流式故障真实生效（这是能被集成测试直观验证的：连续让上游流式失败，熔断器必须 OPEN）
-- 延迟指标可用，延迟感知负载均衡恢复有效性
-- 降级路径不再是死代码
-- 不再出现"某个组件恒认为成功"的可能：成功只有一个来源
+- 熔断器的输入从此完整：流式失败会打开熔断（`CircuitBreakerEndToEndTest` 端到端断言）
+- 「同一个请求在 A 组件看来成功、在 B 组件看来失败」不再可能
+- 取消与失败被区分开，共享网络抖动不再熔断健康实例
 
 **负面**
 
-- provider 实现多了一份责任：必须保证在任何结束方式下都发出终态。
-  漏发是新的故障模式，因此必须有兜底 + 必须有针对"上游异常关闭"的测试
-- `Outcome` 是整个治理层的输入，它的字段变更会影响多个下游组件，需要谨慎演进
-- 相比原来的实现多了一次事件投递，虽然不在热路径上，但这是真实的额外开销
+- 每条流都要显式发终态，Provider 的实现负担增加（这是必要的：不发就是缺陷）
+- 「恰好结算一次」需要 `claim()` 这条机制，而它本身是一个需要被测试的状态机
+- 本地拒绝不结算意味着**这类拒绝在指标里是哑的**：它不出现在成功率的分母里。
+  要观测它得走独立的计数（[0007](./0007-traffic-governance-model.md)），不能靠结算数据反推
+- 取消的延迟统计会偏短（用户主动放弃），做延迟感知选择时要把它排除在样本外
 
 ## 如何验证
 
-这几条必须都是**自动化**的，不是人工确认：
-
-- [x] **流式失败驱动熔断**：连续 N 次让上游流式中途失败，熔断器进入 OPEN 状态。改动来源是原来的"永不 OPEN"。
-      由 `CircuitBreakerEndToEndTest` 断言，且与「打开之后不再出网」成对出现 ——
-      只读状态只能证明它记得自己是开的，证明不了请求没发出去
-- [x] **延迟语义**：上报的 `latency` 是到收到终态为止的真实耗时，流式样本不再恒为零。
-      由 `StreamingEndToEndTest`（上游停顿已知）与 `LocalModelStreamingEndToEndTest`（真实端点）断言
-- [x] **取消不判为实例故障**：客户端在中途断开，结算的是 `CLIENT_CANCELLED` 而不是失败；
-      熔断器实现之后这一条升级为**状态断言**：反复取消同一个实例，它保持 `CLOSED`，
-      连续失败计数保持为零。由 `CircuitBreakerEndToEndTest` 与 `CancellationEndToEndTest` 断言
-- [x] **终态唯一**：正常结束、「上游未发哨兵即关闭」、超时、取消四条路径各恰好结算一次。
-      按请求标识挑出结算记录来数，避免被别的用例干扰；
-      「终态之后立刻断开」另有定向用例（`ExactlyOneSettlementTest`），
-      反向验证过去掉唯一性守卫会由 1 条变成 2 条
-- [x] **取消之后资源收回**：重复取消若干次，在途条数每次都回到零，不随次数增长。
-      由 `InFlightStreams` 与 `CancellationEndToEndTest` 断言；
-      同一个用例还断言了断开之后网关不再从上游取数据（回放停在原处）
-- [ ] **唯一结算点校验**：没有任何组件在 `OutcomeObserver` 之外提交成功/失败。这是代码实现层面的约束，由依赖方向扫描保证
+- [x] 一条流恰好结算一次（`ExactlyOneSettlementTest`；`StreamSettlement.claim()`）
+- [x] 终态是最后一个事件，且取消路径下 `Terminal` 不出现（`StreamingEndToEndTest` / `CancellationEndToEndTest`）
+- [x] 取消结算为 `CLIENT_CANCELLED` 且不改变熔断状态（`CancellationEndToEndTest`）
+- [x] 上游提前关闭连接 → `Failed(upstream_closed)`，不是成功（`FailureAndTimeoutEndToEndTest`）
+- [x] 帧间静默超上限 → `Failed(UPSTREAM_TIMEOUT)`（`FailureAndTimeoutEndToEndTest`）
+- [x] 连续若干次上游失败后熔断进入 OPEN，此后请求本地快速失败且**不再出网**；冷却结束进 `HALF_OPEN`，一次成功闭合（`CircuitBreakerEndToEndTest`）
+- [x] 未纳入健康管理的实例不接收流量（fail-closed；反向验证：去掉那一次登记，用例立刻变红）
+- [x] 没有任何治理组件在 `OutcomeObserver` 之外获取成功/失败（结构规则 R4 / R9，各配违规样例）
+- [x] 流式失败会驱动熔断（来源项目里这条永远不会通过）
+- [x] 本地拒绝不出网、不结算（可用性闸门判一次）
+- [ ] 同一 `requestId` 重复结算只扣一次（配额落地时断言）
+- [ ] 取消的延迟样本不计入延迟感知选择的 EWMA

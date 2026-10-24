@@ -283,3 +283,11 @@ Model Context Protocol。注解在 Spring AI 2.x 中已从社区包移入核心�
 ## 术语缺口
 
 本表未覆盖、但你认为是真实概念的，先记在这里，由 `domain-modeling` 统一裁决，不要自行发明词。
+
+**待裁决（ADR 第 2 版重写过程中出现，尚未入表）**
+
+- **注册表**（registry）：配置 → 运行时对象的持有者（服务 / 实例 / 形态，含熔断状态与延迟样本）。
+  候选词：注册表 / 运行时目录 / 服务目录。见 [ADR-0013](./docs/adr/0013-configuration-model-and-runtime-registry.md)
+- **租户**（tenant）：限流、配额与缓存键上的隔离维度，由 client 标识退化而来。
+  候选词：租户 / 调用方 / client。见 [ADR-0007](./docs/adr/0007-traffic-governance-model.md) 第 3、9 节
+- **档位扩展**：`local` / `cloud` 之外是否需要一个「多副本」档位（依赖 Redis）。见 [ADR-0012](./docs/adr/0012-storage-migrations-and-cluster.md)

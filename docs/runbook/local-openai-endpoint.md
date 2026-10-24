@@ -132,6 +132,11 @@ data: {"id":"chatcmpl-30","object":"chat.completion.chunk",...,"choices":[],"usa
 
 **延迟基线**（同一台机器、同一模型）：冷加载首次调用 0.60 s，热调用 0.07 s。写超时相关的测试时，用的是后者的量级，但它们之间差了近十倍——所以 `OLLAMA_KEEP_ALIVE=-1` 值得开。
 
+**经网关打一次流式**（`LocalModelStreamingEndToEndTest` 实跑）：`POST /v1/chat/completions` 带 `"stream":true`，
+客户端收到多条 `data: {...}` + 末尾一条 `data: [DONE]`，`X-Airouter-Request-Id` 在场，
+结算点上报的 `latency` 是**百毫秒量级而不是 0**。最后这一条是 ADR-0006 那个缺陷的反面证据：
+来源项目在响应头写出时就结算，流式样本因此恒为零。
+
 ## 7. 接进本项目的 local 档位
 
 `airouter-app/src/main/resources/application.yml` 的 `local` 段已经指向这个端点：

@@ -11,6 +11,8 @@ import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.GenerationParams;
 import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
+import io.github.airouter.gateway.observe.RecordingOutcomeObserver;
+import io.github.airouter.gateway.providers.ChunkParseCounter;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
@@ -46,6 +48,8 @@ final class GoldenWireContractTest {
   private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
+
+  private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(5);
 
   private static final String MODEL = "recorded-model";
 
@@ -109,7 +113,13 @@ final class GoldenWireContractTest {
 
   private static Actual run(CanonicalRequest request, RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider =
-        new OpenAiCompatibleProvider(new OutboundWire(recorded.baseUrl(), TIMEOUT), "golden-key", MODEL);
+        new OpenAiCompatibleProvider(
+            new OutboundWire(recorded.baseUrl(), TIMEOUT, IDLE_TIMEOUT),
+            "golden-key",
+            MODEL,
+            recorded.baseUrl(),
+            new RecordingOutcomeObserver(),
+            new ChunkParseCounter());
     try {
       CanonicalResponse response = provider.complete(request).toCompletableFuture().join();
       return new Actual(200, OpenAiInboundCodec.encodeResponse(response));

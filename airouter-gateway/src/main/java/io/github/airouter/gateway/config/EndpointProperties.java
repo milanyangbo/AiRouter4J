@@ -57,20 +57,35 @@ public record EndpointProperties(
      * 那时更不能有一个含糊的默认值挡在前面。
      */
     @NotNull(message = "缺少调用超时：请在环境变量 AIROUTER_ENDPOINT_TIMEOUT 里给出")
-    Duration requestTimeout) {
+    Duration requestTimeout,
+
+    /**
+     * 流式调用的帧间静默上限（GLOSSARY 的 {@code IdleTimeout}）。**它不是总时长**：
+     * 一条流可以持续很久，只要上游一直在说话。给流设总时长上限等于替调用方决定
+     * 「模型最多想多久」，而那件事网关无权决定。
+     *
+     * <p>默认值给了它，与 {@code requestTimeout} 不同：帧间静默是一个只有流式路径才有的概念，
+     * 让它跟着总时长走会得到一个要么太松（长流被掐断）要么太紧（冷启动被判死）的数。
+     */
+    @NotNull(message = "缺少帧间空闲超时：请在环境变量 AIROUTER_ENDPOINT_IDLE_TIMEOUT 里给出")
+    Duration idleTimeout) {
 
   /**
-   * 必须是正数。
+   * 两个超时都必须是正数。
    *
    * <p>这里用构造器检查而不是 Bean Validation：手上的 validator 已经没有 Duration 范围的约束了，
    * 而「等到第一次调用才因为 0 或负数炸掉」正是本项目要避开的那类失败。放在这里至少是起不来。
    *
-   * @throws IllegalArgumentException 超时为 0 或负数时抛出
+   * @throws IllegalArgumentException 任一个超时为 0 或负数时抛出
    */
   public EndpointProperties {
-    if (requestTimeout != null && (requestTimeout.isZero() || requestTimeout.isNegative())) {
-      throw new IllegalArgumentException(
-          "环境变量 " + TIMEOUT_ENV + " 必须是正数，收到的是 " + requestTimeout);
+    requirePositive(requestTimeout, TIMEOUT_ENV);
+    requirePositive(idleTimeout, IDLE_TIMEOUT_ENV);
+  }
+
+  private static void requirePositive(Duration value, String env) {
+    if (value != null && (value.isZero() || value.isNegative())) {
+      throw new IllegalArgumentException("环境变量 " + env + " 必须是正数，收到的是 " + value);
     }
   }
 
@@ -89,6 +104,18 @@ public record EndpointProperties(
   /** request-timeout 的环境变量名。 */
   public static final String TIMEOUT_ENV = "AIROUTER_ENDPOINT_TIMEOUT";
 
-  /** 默认超时。它只是兜底，不替代显式配置。 */
+  /** idle-timeout 的环境变量名。 */
+  public static final String IDLE_TIMEOUT_ENV = "AIROUTER_ENDPOINT_IDLE_TIMEOUT";
+
+  /** 默认总超时。它只是兜底，不替代显式配置。 */
   public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
+  /**
+   * 默认的帧间静默上限。
+   *
+   * <p>取 15 秒的依据是「上游停下来思考」与「上游没了」的分界：
+   * 真实端点在冷启动与长推理之间出现十几秒静默是常态，而超过这个量级还不说话通常已经是故障。
+   * 它不是调优结论，是一个可配置的起点 —— 真正的取值要等有了流式样本之后再定。
+   */
+  public static final Duration DEFAULT_IDLE_TIMEOUT = Duration.ofSeconds(15);
 }

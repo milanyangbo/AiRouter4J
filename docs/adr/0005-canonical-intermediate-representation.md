@@ -48,8 +48,8 @@ public record CanonicalRequest(
 
 ```java
 public sealed interface CanonicalStreamEvent permits
+    CanonicalStreamEvent.Opening,
     CanonicalStreamEvent.TextDelta,
-    CanonicalStreamEvent.ToolCallDelta,
     CanonicalStreamEvent.Usage,
     CanonicalStreamEvent.Ping,
     CanonicalStreamEvent.Terminal,
@@ -61,6 +61,13 @@ public sealed interface CanonicalStreamEvent permits
 
 `Ping` 保留为显式类型：部分上游会定期发送注释行保活，它们在语义上不是内容帧，
 也不应该被当成终态判断的依据。
+
+**与本文初稿的差两处，实现时确定如下**（以 GLOSSARY 的概念分层 Opening / Delta / Terminal / Failed 为准）：
+
+| 本文初稿 | 实现 | 理由 |
+|---|---|---|
+| 未列 `Opening` | 有 | id / model / created 属于整条流而不是某一帧；客户端（含官方 SDK）在每一帧上都读它们。没有它，这些信息只能挂在「第一个增量帧」上，而空内容流没有那一帧 |
+| 列了 `ToolCallDelta` | 暂缺 | 工具调用的增量形态取决于上游真实怎么发，而现阶段没有能稳定复现它的端点。与其先画一个未经验证的类型，不如等有了可回放的上游再补，那时它是被样本钉住的 |
 
 ### 3. 一次解析，多次使用
 
@@ -118,7 +125,9 @@ Canonical 不会因为它的引入而立刻消灭所有翻译路径。推进顺�
 
 ## 如何验证
 
-- [ ] 存在 golden-file 契约测试：同一份上游字节 → 期望的 `CanonicalStreamEvent` 序列
-- [ ] 计数断言：一次流式处理中对同一 chunk 的 JSON 解析次数为 1
+- [x] 存在 golden-file 契约测试：同一份上游字节 → 期望的事件序列
+      （非流式 `contract/`，流式 `contract-stream/`，后者含 `[DONE]` 哨兵本身）
+- [x] 计数断言：一次流式处理中对同一 chunk 的 JSON 解析次数为 1
+      （`ChunkParseCounter` 是容器里的一个 bean，由端到端测试从运行中的应用里读出来比对）
 - [ ] 新增一个 provider 的改动集中在 `providers` 包内，`faces` 包零改动
 - [ ] `airouter-core` 中的 Canonical 类型不含任何 Jackson / Spring 标注

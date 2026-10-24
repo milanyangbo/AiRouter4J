@@ -30,7 +30,7 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 
 |---|---|---|
 | `airouter-core` | 领域模型 + 端口接口（**依赖树里不许出现任何框架**） | ✔ 已建（无源码） |
-| `airouter-gateway` | faces / providers / transport / routing / governance / config | ✔ 已建（仅包结构） |
+| `airouter-gateway` | faces / providers / transport / routing / governance / config / observe | ✔ 已建（仅包结构） |
 | `airouter-agent` | Spring AI 2.0.1：ChatClient 装配 + Advisor 链 + Subagent | ✔ 已建（壳） |
 | `airouter-app` | 启动装配 + **跨模块结构规则的唯一住所** | ✔ 已建 |
 
@@ -53,6 +53,10 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
 
 1. **禁止用 `@Lazy` / setter 注入 / `ApplicationContextProvider.getBean()` 压住循环依赖。** 需要反向依赖就抽端口。一旦出现装配顺序隐式化，后面的单测就只能全 mock。
 2. **流式响应必须在终态才结算结果。** 不得因为"响应头写出成功"就记为成功。终态由谁观测、怎么观测，见 `docs/adr/` 中关于流式终态上报的 ADR。
+   落到代码上：`CanonicalStreamEvent.Terminal / Failed` 是终态的**唯一**形态，由 Provider 显式发出；
+   `OutcomeObserver` 是结算的唯一收口点，**任何组件不得自己去看状态码或异常来判定成败**。
+   上游没发结束哨兵就把连接收了时补发 `Failed`（`upstream_closed`）—— 那不是成功，内容是否完整无从判断。
+   帧间静默超上限同样是 `Failed`（`UPSTREAM_TIMEOUT`）。
 3. **任何流式路径上的处理逻辑必须同时有同步路径的对应实现。** 只做一半 = 静默失效。
 4. **禁止在 Reactor 事件循环线程上做阻塞 IO。**
 5. **配置文件里不得出现 API 密钥**，一律走环境变量。
@@ -75,7 +79,12 @@ Maven 多模块，**按端口与适配器（六边形）组织，不按技术角
   端点没起来时它们会红并给出指路信息；起停见上面那份 runbook
 - **对外 wire format 的契约测试在 `airouter-app/src/test/resources/contract/`**：一个用例一个目录，
   放 `upstream.json` + `expected.json` 两个文件即被发现，**不需要改任何测试代码**。
-  约定写在该目录的 `README.md` 里。未来任何框架升级之后，最先能告诉你「序列化行为变了」的就是它们
+  流式那一份在 **`contract-stream/`**，比的是**帧序列**且包含 `[DONE]` 哨兵本身
+  （`upstream.json` 里是 `{"status":..., "sse":"..."}`）。约定写在该目录的 `README.md` 里。
+  未来任何框架升级之后，最先能告诉你「序列化行为变了」的就是它们
+- **回放上游能控制到字节块一级**（`RecordedUpstream.replayStream(status, chunks, between)`）：
+  可以造出「一个多字节字符被切在两个 TCP 段之间」「讲完但故意不发 `[DONE]`」这类真实端点给不出的样本。
+  需要精确控制帧边界的测试用它，不要靠 sleep 去碰运气
 - 门禁：`checkstyle`（error 级，规则在 `config/checkstyle/checkstyle.xml`）、`spotbugs`、`surefire`（含结构规则），
   外加 `validate` 阶段的 enforcer（版本、JDK、重复的上界依赖、插件版本、禁止出現抑制文件）
 - **两个静态分析的作用域都包含测试源码**。因此新建一个包（含测试里的样例包）就要补 `package-info.java`，写清这个包知道什么、不该知道什么

@@ -1,0 +1,26 @@
+{
+  "frames": [
+    {
+      "id": "chatcmpl-3",
+      "object": "chat.completion.chunk",
+      "created": 1700000002,
+      "model": "recorded-model",
+      "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": null}]
+    },
+    {
+      "id": "chatcmpl-3",
+      "object": "chat.completion.chunk",
+      "created": 1700000002,
+      "model": "recorded-model",
+      "choices": [{"index": 0, "delta": {"content": "好"}, "finish_reason": null}]
+    },
+    {
+      "error": {
+        "message": "上游在发出结束哨兵之前关闭了连接：这条流的内容可能不完整",
+        "type": "upstream_closed",
+        "code": null
+      }
+    },
+    "[DONE]"
+  ]
+}

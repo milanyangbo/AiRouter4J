@@ -1,11 +1,14 @@
 package io.github.airouter.gateway.faces.openai;
 
 import io.github.airouter.core.CanonicalChoice;
+import io.github.airouter.core.CanonicalFinishReason;
 import io.github.airouter.core.CanonicalMessage;
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
 import io.github.airouter.core.CanonicalRole;
+import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.CanonicalTool;
+import io.github.airouter.core.CanonicalUsage;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.GenerationParams;
 import java.util.ArrayList;
@@ -30,6 +33,15 @@ public final class OpenAiInboundCodec {
 
   /** 这一票只打通一个 Service，它是入站路径决定的，不来自请求。 */
   public static final String SERVICE_ID = "chat";
+
+  /**
+   * 告诉客户端「这条流结束了」的哨兵载荷。
+   *
+   * <p>它与上游那一个同名但不是同一个东西：上游的哨兵是上游说的话，
+   * 这一个是我们对客户端说的话。中间隔着一整套终态判断（ADR-0006），
+   * 因此它不是「把上游的哨兵转过来」，而是「在我们确认有终态之后才发出」。
+   */
+  public static final String DONE_SENTINEL = "[DONE]";
 
   private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
@@ -80,15 +92,51 @@ public final class OpenAiInboundCodec {
     root.put("model", response.model());
     root.set("choices", encodeChoices(response.choices()));
     if (response.usage() != null) {
-      ObjectNode usage = MAPPER.createObjectNode();
-      usage.put("prompt_tokens", response.usage().promptTokens());
-      usage.put("completion_tokens", response.usage().completionTokens());
-      usage.put("total_tokens", response.usage().totalTokens());
-      response.usage().passthrough().forEach((key, rawJson) -> usage.set(key, parseRaw(key, rawJson)));
-      root.set("usage", usage);
+      root.set("usage", encodeUsage(response.usage()));
     }
     response.passthrough().forEach((key, rawJson) -> root.set(key, parseRaw(key, rawJson)));
     return root.toString();
+  }
+
+  /**
+   * 一个流式事件 → 客户端那一帧的 {@code data} 载荷。
+   *
+   * <p>{@code id / model / created} 由调用方给出而不是从事件里取：它们属于整条流，
+   * 只有 {@code Opening} 带着它们，而后续的每一帧都要带上。
+   * 这个分工让事件模型不必在每一个事件上重复这三个字段。
+   *
+   * <p>返回 null 表示这一帧不产生任何输出。两种情况：
+   * <ul>
+   *   <li>{@code Opening} —— 它只是把身份交给调用方，本身不构成客户端看到的一帧；
+   *   <li>{@code Ping} —— 上游的保活注释**不转发**。它被转发之后就不再是可以忽略的注释了：
+   *       SSE 的写出把这一种帧与数据帧区分开，而客户端没有理由去解析它。
+   *       上游保活的意义在于维持它自己那一条连接，那条连接的生死由网关的空闲超时判断，
+   *       不需要客户端参与。
+   * </ul>
+   *
+   * <p>分发写成穷尽的模式匹配而不是一串 {@code instanceof}：漏掉一个事件类型的后果
+   * 是「某一条流少了一帧」，而那一类缺陷不会报错。穷尽匹配让它变成编译错误。
+   *
+   * @param event 流式事件
+   * @param id 流标识
+   * @param model 模型名
+   * @param created 创建时间，上游没给时为 null
+   * @return 那一帧的载荷；null 表示这一帧不产出
+   */
+  public static String encodeStreamEvent(CanonicalStreamEvent event,
+                                         String id,
+                                         String model,
+                                         Long created) {
+    return switch (event) {
+      case CanonicalStreamEvent.Opening opening -> null;
+      case CanonicalStreamEvent.Ping ping -> null;
+      case CanonicalStreamEvent.TextDelta delta ->
+          chunk(id, model, created, delta.index(), delta.text(), null, null);
+      case CanonicalStreamEvent.Usage usage -> usageFrame(id, model, created, usage.usage());
+      case CanonicalStreamEvent.Terminal terminal ->
+          chunk(id, model, created, 0, null, terminal.reason(), terminal.usage());
+      case CanonicalStreamEvent.Failed failed -> encodeError(failed.error());
+    };
   }
 
   /**
@@ -108,6 +156,74 @@ public final class OpenAiInboundCodec {
     ObjectNode root = MAPPER.createObjectNode();
     root.set("error", payload);
     return root.toString();
+  }
+
+  /**
+   * 一个增量帧或终态帧。
+   *
+   * <p>{@code finish_reason} 在非终态帧上是显式的 null 而不是缺席：客户端（含官方 SDK）
+   * 按这个字段判断一条流是否结束，缺席与 null 在它们那里的处理并不一致。
+   */
+  private static String chunk(String id,
+                              String model,
+                              Long created,
+                              int index,
+                              String content,
+                              CanonicalFinishReason reason,
+                              CanonicalUsage usage) {
+    ObjectNode root = frame(id, model, created);
+    ObjectNode delta = MAPPER.createObjectNode();
+    if (content != null) {
+      delta.put("content", content);
+    }
+    ObjectNode choice = MAPPER.createObjectNode();
+    choice.put("index", index);
+    choice.set("delta", delta);
+    if (reason == null) {
+      choice.putNull("finish_reason");
+    } else {
+      choice.put("finish_reason", reason.raw());
+    }
+    ArrayNode choices = MAPPER.createArrayNode();
+    choices.add(choice);
+    root.set("choices", choices);
+    if (usage != null) {
+      root.set("usage", encodeUsage(usage));
+    }
+    return root.toString();
+  }
+
+  /**
+   * 纯用量帧：{@code choices} 是空的。
+   *
+   * <p>它对应上游在流末尾单独发一帧用量的做法。形态上必须与「带内容的帧」区分开，
+   * 否则客户端会把一个没有增量的帧当成一次内容更新。
+   */
+  private static String usageFrame(String id, String model, Long created, CanonicalUsage usage) {
+    ObjectNode root = frame(id, model, created);
+    root.set("choices", MAPPER.createArrayNode());
+    root.set("usage", encodeUsage(usage));
+    return root.toString();
+  }
+
+  private static ObjectNode frame(String id, String model, Long created) {
+    ObjectNode root = MAPPER.createObjectNode();
+    root.put("id", id == null ? "" : id);
+    root.put("object", "chat.completion.chunk");
+    if (created != null) {
+      root.put("created", created.longValue());
+    }
+    root.put("model", model == null ? "" : model);
+    return root;
+  }
+
+  private static ObjectNode encodeUsage(CanonicalUsage usage) {
+    ObjectNode node = MAPPER.createObjectNode();
+    node.put("prompt_tokens", usage.promptTokens());
+    node.put("completion_tokens", usage.completionTokens());
+    node.put("total_tokens", usage.totalTokens());
+    usage.passthrough().forEach((key, rawJson) -> node.set(key, parseRaw(key, rawJson)));
+    return node;
   }
 
   private static ArrayNode encodeChoices(List<CanonicalChoice> choices) {

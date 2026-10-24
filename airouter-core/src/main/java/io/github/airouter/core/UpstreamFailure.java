@@ -16,17 +16,36 @@ public final class UpstreamFailure extends RuntimeException {
 
   private final transient GatewayError error;
 
+  private final OutcomeKind kind;
+
   /**
    * @param error 对应的错误形态
    * @param cause 原始异常，允许为 null
    */
   public UpstreamFailure(GatewayError error, Throwable cause) {
+    this(OutcomeKind.UPSTREAM_FAILURE, error, cause);
+  }
+
+  /**
+   * @param kind 这一次失败属于哪一类结果。超时与「上游拒绝了」是两类，
+   *             它们的后果不同（前者计入熔断的口径与后者一致，但排查方向完全不同），
+   *             而在异常层层包裹之后，只有抛出点还说得清它是哪一类 —— 所以在这里带上
+   * @param error 对应的错误形态
+   * @param cause 原始异常，允许为 null
+   */
+  public UpstreamFailure(OutcomeKind kind, GatewayError error, Throwable cause) {
     super(error.type() + ": " + error.message(), cause);
+    this.kind = kind == null ? OutcomeKind.UPSTREAM_FAILURE : kind;
     this.error = error;
   }
 
   /** 这一次失败对外呈现的形态。 */
   public GatewayError error() {
     return error;
+  }
+
+  /** 这一次失败属于哪一类结果，供结算点直接采用，不必再从错误类型字符串反推。 */
+  public OutcomeKind kind() {
+    return kind;
   }
 }

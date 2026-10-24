@@ -84,10 +84,14 @@ public record Outcome(
     String instanceId,
     OutcomeKind kind,                 // SUCCESS | UPSTREAM_FAILURE | UPSTREAM_TIMEOUT | CLIENT_CANCELLED
     Duration latency,                 // 从请求发出到收到终态的时长
-    TokenUsage usage,                 // 可能未上报，允许为空
+    CanonicalUsage usage,             // 可能未上报，允许为空
     GatewayError error                // SUCCESS 时为 null
 ) {}
 ```
+
+> **一处用词在实现时统一**：这里原写 `TokenUsage`，实现用的是 ADR-0005 的 `CanonicalUsage`。
+> 两者指同一个东西，而 Canonical 已经有表达「上游没给就是没给」的类型，
+> 为一个字段再定义一个同构类型只会带来一次无意义的转换。
 
 规则：
 
@@ -146,7 +150,10 @@ CLIENT_CANCELLED   → 不计入
 这几条必须都是**自动化**的，不是人工确认：
 
 - [ ] **流式失败驱动熔断**：连续 N 次让上游流式中途失败，熔断器进入 OPEN 状态。改动来源是原来的"永不 OPEN"
-- [ ] **延迟语义**：一次耗时 2 秒的流式调用，上报的 `latency` 约为 2 秒而不是 0
+- [x] **延迟语义**：上报的 `latency` 是到收到终态为止的真实耗时，流式样本不再恒为零。
+      由 `StreamingEndToEndTest`（上游停顿已知）与 `LocalModelStreamingEndToEndTest`（真实端点）断言
 - [ ] **取消不熔断**：客户端在中途断开，熔断器状态不变
-- [ ] **终态唯一**：无论上游是正常结束、异常关闭、还是超时，一条流有且只有一个终态事件
+- [x] **终态唯一**（正常结束与「上游未发哨兵即关闭」两种路径）；
+      **异常关闭**由可控制字节序列的本地上游构造，本票补上了 spec 里记录的那个缺口。
+      超时路径待票 07
 - [ ] **唯一结算点校验**：没有任何组件在 `OutcomeObserver` 之外提交成功/失败。这是代码实现层面的约束，由依赖方向扫描保证

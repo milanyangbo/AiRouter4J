@@ -1,0 +1,4 @@
+{
+  "status": 200,
+  "sse": "data: {\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好\"},\"finish_reason\":null}]}\n\n"
+}

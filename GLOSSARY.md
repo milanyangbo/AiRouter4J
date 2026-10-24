@@ -58,14 +58,21 @@
 一次完整（非流式）调用的中间表示。
 
 **CanonicalStreamEvent**
-流式调用的事件中间表示，`sealed interface`。子类型：
+流式调用的事件中间表示，`sealed interface`。概念层是四态（**Opening / Delta / Terminal / Failed**），
+实现层的子类型：
 
-| 子类型 | 含义 |
-|---|---|
-| `Opening` | 首个事件，携带 id / model 等元信息 |
-| `Delta` | 内容增量帧 |
-| `Terminal` | **正常终态**，携带 Usage 与 FinishReason |
-| `Failed` | **异常终态**，携带 GatewayError |
+| 子类型 | 概念层 | 含义 |
+|---|---|---|
+| `Opening` | Opening | 首个事件，携带 id / model / created |
+| `TextDelta` | Delta | 文本增量，携带候选序号与这一帧的文本 |
+| `Usage` | Delta | 纯用量帧。厂商常单独发一帧用量，那一帧里没有内容增量 |
+| `Ping` | Delta | 上游的保活注释。**不是终态判断的依据**：只发注释的上游是活的但没说话，与「连接已断」是两回事 |
+| `Terminal` | Terminal | **正常终态**，携带 FinishReason 与 Usage |
+| `Failed` | Failed | **异常终态**，携带 GatewayError |
+
+> `ToolCallDelta` 尚未引入：工具调用的增量形态取决于上游真实怎么发，而现阶段没有能稳定复现它的端点。
+> 与其先画一个未经验证的类型，不如等有了可回放的上游再补 —— 那时它是被样本钉住的。
+> 同理，`Ping` 保留为显式类型是为了让「保活帧不是内容、也不是终态」这件事在类型上可见。
 
 **Canonical / Unified / IR**
 同义词。**本项目只用 Canonical**，另外两个词不要出现在代码与文档里。
@@ -79,8 +86,14 @@ Canonical 上用来装「网关不解释但必须转发」的字段的容器，`
 > 值是原文而不是解析后的对象：core 不许依赖 Jackson，所以只能是文本；解码时再解析一次。
 
 **CompletionPort**（完成端口）
-Face 与 Provider 之间的端口：Face 只认识它，Provider 实现它。返回 `CompletionStage<CanonicalResponse>`。
+Face 与 Provider 之间的**非流式**端口：Face 只认识它，Provider 实现它。返回 `CompletionStage<CanonicalResponse>`。
 > 不返回 `Mono`：Reactor 进入 core 的依赖树会被 enforcer 判红，因此用 JDK 类型表达「异步结果」。
+
+**StreamingCompletionPort**（流式完成端口）
+同一个边界上的流式端口，返回 `java.util.concurrent.Flow.Publisher<CanonicalStreamEvent>`。
+契约由实现方保证：**一条流有且只有一个终态，且它是最后一个事件**；
+流不以 error 信号结束（失败先在事件层变成 `Failed`）。
+> 不返回 `Flux`，理由同 `CompletionPort`。两侧各用一次 `JdkFlowAdapter` 转换即可接上。
 
 **GatewayError**
 网关自己定义的错误形态（`type` / `message` / `httpStatus`）。从传输层故障到上游 4xx/5xx，
@@ -99,7 +112,8 @@ Face 与 Provider 之间的端口：Face 只认识它，Provider 实现它。返
 > 这是修复"流式绕过熔断器"的关键机制。见 §五 **OutcomeObserver**。
 
 **Opening / Delta / Terminal / Failed**
-见 CanonicalStreamEvent 表。
+概念层的四态分层，见 CanonicalStreamEvent 表。写代码时用表里的**实现层子类型**，
+讨论协议语义时用这四态。
 
 **IdleTimeout**（块间空闲超时）
 两帧之间的最大静默时长，超过即判超时。**不是总时长**。与之相对：
@@ -158,6 +172,15 @@ OPEN 冷却结束后的试探态，放行有限数量的探测请求，决定是
 **OutcomeObserver**（结果结算点）
 **唯一的**成功/失败/取消观测点。所有协作组件（熔断器、延迟感知负载均衡、指标、配额结算）都只从这里取结果，**不得各自观测**。
 > 这是修复 legacy P0-1 的架构手段：流式只要在 Terminal/Failed/Cancel 时才到达这里。
+
+**Outcome**
+一次调用的结算结果：`requestId` / `serviceId` / `instanceId` / `OutcomeKind` / `latency` / `usage` / `error`。
+`latency` **一律算到收到终态为止**，这让流式与非流式的延迟具有可比性。
+
+**OutcomeKind**
+`SUCCESS` / `UPSTREAM_FAILURE` / `UPSTREAM_TIMEOUT` / `CLIENT_CANCELLED`，互斥且穷尽。
+熔断口径：前两者计入熔断，`CLIENT_CANCELLED` **不计入** —— 移动端切后台、用户关页面都会产生取消，
+把它算作上游失败会让一次共享网络的抖动熔断掉一个健康的实例。
 
 **SSRF 守卫**
 出站请求的双层地址校验：创建期校验 + 连接期再判 DNS 解析结果（堵 DNS rebinding）。**所有出站必须经过唯一出口**，不允许散落的 WebClient。

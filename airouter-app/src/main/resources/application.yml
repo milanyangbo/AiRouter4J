@@ -31,6 +31,8 @@ airouter:
     api-key: ${AIROUTER_ENDPOINT_API_KEY:}
     model: ${AIROUTER_ENDPOINT_MODEL:}
     request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
+    # 流式路径上的帧间静默上限，不是总时长：一条流可以很长，只要上游一直在说话。
+    idle-timeout: ${AIROUTER_ENDPOINT_IDLE_TIMEOUT:15s}
 
 ---
 # 本地档位：无网络也能起来，也不向任何外部服务发起连接。

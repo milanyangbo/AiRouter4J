@@ -1,6 +1,0 @@
-{
-  "status": 404,
-  "body": {
-    "error": "model 'no-such-model' not found"
-  }
-}

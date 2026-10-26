@@ -1,78 +1,68 @@
-# Architecture Decision Records
+# ADR 索引
 
-本目录记录**不可从代码反推**的决定：为什么选这个、否决了什么、代价是什么。
-能从代码看出来的东西不写在这里。
+**架构决策记录（Architecture Decision Record）**。`docs/adr/` 是技术决策的**唯一权威**。
 
-格式统一为：状态 / 日期 / 背景 / 决策 / 被否决的方案 / 后果 / 如何验证。
+- 动手写一个模块之前，先读与之相关的 ADR
+- 产出与某条 ADR 冲突时：**显式指出**（编号 + 为什么值得重开），**不要静默覆盖**
+- 收录门槛是「未来会有人想推翻的决定」。实现细节、排期微调、代码风格不进 ADR
 
-写 ADR 的门槛：只有当某个决定**未来会有人想推翻、且推翻它需要付出代价**时才值得写。
-纯实现细节不写 ADR，写进代码注释即可。
-
-> **2026-10-25 整体重写。** 第 1 版（11 篇）写在「骨架能不能立住还不知道」的前提下；
-> 骨架交付后目标态从「验证骨架」变为「按 legacy 能力面补齐」，前提失效，故整体重写。
-> 旧版保留在 [`archive/`](./archive/)，用于追溯，不再作为权威。编号沿用，
-> 因此 `AGENTS.md`、`GLOSSARY.md` 与 issue 里对 ADR 编号的引用仍然成立。
+编号**按功能组织**：0001–0008 是地基与契约，0009–0019 是九类能力面各一篇，0020 是阶段排期。
+编号一旦分配就不再复用；被推翻的篇目移入 `archive/` 并在原编号上重写。
 
 ## 索引
 
-| 编号 | 标题 | 状态 | 影响范围 |
+| 编号 | 标题 | 能力面 | 状态 |
 |---|---|---|---|
-| [0001](./0001-project-scope-and-lineage.md) | **项目定位、目标态与 legacy 边界**（总纲） | 已接受 | 全项目；九类能力的目标态、搬/改/新增/不搬的裁决、阶段顺序约束 |
-| [0002](./0002-tech-stack-and-version-pinning.md) | 技术栈与版本锁定 | 已接受 | 全项目，构建层；Flyway+JDBC、Redis、Micrometer/OTel 的选型 |
-| [0003](./0003-module-structure-and-dependency-direction.md) | 模块结构与依赖方向 | 已接受 | 四个模块、gateway 目标态包清单、九条结构规则 |
-| [0004](./0004-spring-ai-boundary.md) | Spring AI 在分层中的边界 | 已接受 | 网关侧（不引入）/ Agent 层（全量引入） |
-| [0005](./0005-canonical-intermediate-representation.md) | Canonical 中间表示 | 已接受（已落地） | 协议转换层、N+M 扩展 |
-| [0006](./0006-streaming-terminal-outcome-contract.md) | **流式终态与结算契约** | 已接受（已落地） | 流式链路、熔断、指标、配额 —— **全套最重要的一篇** |
-| [0007](./0007-traffic-governance-model.md) | 实例维度、选择链与流量治理 | 已接受 | 熔断、限流、配额、健康判定、认证与凭据隔离 |
-| [0008](./0008-verification-and-quality-gates.md) | 验证策略与质量门禁 | 已接受 | 构建、测试金字塔、三条核心契约、真实依赖 |
-| [0009](./0009-second-wire-shape-and-shape-self-description.md) | 第二种 wire 形态与「形态自述」 | 已接受（已落地） | Provider、transport 分帧、配置校验 |
-| [0010](./0010-ci-four-gates.md) | CI gate：边界、暂缓与恢复条件 | 已接受（**暂缓自动触发**） | 流水线、测试归类、保护分支 |
-| [0011](./0011-feature-roadmap-and-migration-boundary.md) | 能力面补齐的阶段与顺序 | 已接受 | Phase A–D 的落地顺序与验收要点 |
-| [0012](./0012-storage-migrations-and-cluster.md) | 存储、迁移与多副本 | 已接受（新增） | H2/PG+Flyway、缺席降级、事件广播/共享计数/分布式锁 |
-| [0013](./0013-configuration-model-and-runtime-registry.md) | 配置模型与运行时注册表 | 已接受（新增） | 服务/实例/形态三级模型、热重载粒度、配置来源可追溯 |
+| [0001](./0001-scope-target-state-and-sequence.md) | 目标态、能力面清单与顺序约束 | — | 已接受 |
+| [0002](./0002-tech-stack-and-version-pinning.md) | 技术栈与版本锁定 | — | 已接受 |
+| [0003](./0003-module-structure-and-dependency-direction.md) | 模块结构与依赖方向 | — | 已接受 |
+| [0004](./0004-canonical-intermediate-representation.md) | 领域模型与中间表示（Canonical） | — | 已接受 |
+| [0005](./0005-streaming-terminal-outcome-contract.md) | **流式终态与结算契约** | — | 已接受 |
+| [0006](./0006-wire-shape-and-shape-self-description.md) | wire 形态与形态自述 | 1 适配器 | 已接受 |
+| [0007](./0007-spring-ai-boundary.md) | Spring AI 的边界 | — | 已接受 |
+| [0008](./0008-verification-and-quality-gates.md) | 验证与质量门禁 | — | 已接受 |
+| [0009](./0009-adapters-shape-factory-and-vendor-declaration.md) | 适配器、形态工厂与厂商声明 | **1** | 已接受 |
+| [0010](./0010-configuration-model-and-runtime-registry.md) | 配置模型与运行时注册表 | 1 / 2 地基 | 已接受 |
+| [0011](./0011-instance-selection-and-load-balancing.md) | 实例选择与负载均衡 | **2** | 已接受 |
+| [0012](./0012-rule-engine-and-conditional-routing.md) | 规则引擎与条件路由 | **3** | 已接受 |
+| [0013](./0013-resilience-circuit-failover-ratelimit-cache.md) | 韧性：熔断 / 失败转移 / 限流 / 缓存 | **4** | 已接受 |
+| [0014](./0014-quota-multi-window-ledger.md) | 配额（多维度多窗口账本） | **5** | 已接受 |
+| [0015](./0015-call-history-and-record-governance.md) | 调用历史与记录治理 | **6** | 已接受 |
+| [0016](./0016-observability-metrics-tracing-and-alerts.md) | 可观测性（指标 / 链路 / 慢查询 / 告警） | **7** | 已接受 |
+| [0017](./0017-persistence-migrations-and-multi-replica.md) | 持久化、迁移与多副本 | **8** | 已接受 |
+| [0018](./0018-authentication-api-key-and-rbac.md) | 认证、API Key 与 RBAC | **10** | 已接受 |
+| [0019](./0019-admin-plane-api-and-console.md) | 管理面 API 与控制台 | **9** | 已接受 |
+| [0020](./0020-stage-plan-and-task-board.md) | 阶段排期与任务清单 | — | 已接受 |
 
-## 依赖关系
+> 0005（流式终态与结算）是全套里最重要的一篇：它修的是 legacy 最贵的缺陷，
+> 也是 0013 / 0014 / 0015 / 0016 的共同前提。
+
+## 阅读顺序
 
 ```text
-0001 定位、目标态与 legacy 边界  ← 总纲，其余各篇的前提
-  │
-  ├── 0002 技术栈 ──┬── 0003 模块结构 ──── 0013 配置模型与注册表
-  │                 ├── 0004 Spring AI 边界
-  │                 ├── 0012 存储与多副本 ── 0007 治理（共享计数与降级）
-  │                 └── 0008 验证策略（决定能否安全地做这次迁移）
-  │
-  ├── 0005 Canonical ───── 0006 流式终态（终态事件定义在 Canonical 里）
-  │        │                    │
-  │        │                    ├── 0007 治理（唯一输入是 Outcome）
-  │        │                    └── 0008 三条核心契约之一
-  │        │
-  │        └── 0009 形态自述（「加 Provider 不碰 Face」的实证，
-  │                          并顺带决定分帧方式属于形态）
-  │
-  ├── 0007 治理 ──── 0013（实例维度是作用域类功能的前提）
-  │
-  ├── 0008 验证策略（0005/0006/0007 的契约都由它锁定）
-  │       │
-  │       └── 0010 CI gate（0008 里「至少四个 gate」的落地，
-  │                         含「绿但什么都没跑」的两种形态怎么判）
-  │
-  └── 0011 阶段与顺序（0001 里锁定的顺序约束的落地清单）
+0001 目标态 ──┬── 0002 技术栈 ── 0003 模块结构
+              ├── 0004 Canonical ── 0005 流式终态（最重要）
+              │                  └── 0006 形态 ── 0009 适配器
+              ├── 0007 Spring AI 边界
+              └── 0008 验证门禁
+
+实例维度（先于一切作用域类功能）：0010 注册表 ── 0011 选择
+然后：0017 持久化 ── 0018 认证 ── 0013 韧性 ── 0012 规则 ── 0014 配额 ── 0015 记录 ── 0016 观测
+补齐：0009 适配器 ── 0017 多副本 ── 0019 控制台
+排期：0020
 ```
 
-**0006 是全套里最重要的一篇。** 它修的是从来源项目带回的最严重缺陷
-（流式调用从不产生失败记录），而它定义的终态是 0007 的唯一输入，也是 0008 三条核心契约之一。
-如果只看一篇，看 0006。
+## 如何新增
 
-0001 与 0011 的分工：0001 锁**目标态与顺序约束**（这两条会被人想推翻，属于 ADR）；
-0011 给**落地顺序与验收要点**（细节调整不需要开新 ADR）。
+1. 先确认它补的是 [0001](./0001-scope-target-state-and-sequence.md) 第 3 节里的哪一类能力面
+2. 取下一个未使用的编号，文件名 `00NN-<短横线英文短语>.md`
+3. 正文至少回答：背景（含 legacy 对照）、决定、裁决（搬 / 改 / 新增 / 不搬）、验收
+4. 回到本文件补一行索引
 
-0002 与 0008 是绑定的：0002 选定的版本迁移会产生**编译通过但行为变化的静默变更**，
-没有 0008 的契约测试就无法识别它们 —— 所以 0008 必须先于迁移落地，不能事后补。
+## 版本沿革
 
-## 相关文档
-
-- 来源项目评审（含行号级证据，每项要给出搬/改/新增/不搬的裁决）：[`docs/planning/legacy-review.md`](../planning/legacy-review.md)
-- 本次目标对齐记录：[`docs/planning/retro-2026-10-23.md`](../planning/retro-2026-10-23.md)
-- 术语表：[`GLOSSARY.md`](../../GLOSSARY.md)
-- Agent 工程约定：[`AGENTS.md`](../../AGENTS.md)
-- 第 1 版 ADR（2026-10-23 ~ 10-24，已归档）：[`archive/`](./archive/)
+| 版本 | 前提 | 取回方式 |
+|---|---|---|
+| 第 1 版（0001–0011） | 骨架能不能立住还不知道 | `archive/` + 更早的提交 |
+| 第 2 版（2026-10-25 重写，13 篇） | 目标态 = 九类能力面，但保留已实现代码 | tag `baseline-pre-11` |
+| **第 3 版（本版，20 篇）** | 代码已清空，按能力面从零实现 | HEAD |

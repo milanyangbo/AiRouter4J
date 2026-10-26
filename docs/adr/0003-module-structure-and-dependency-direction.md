@@ -2,7 +2,8 @@
 
 - 状态：已接受
 - 日期：2026-10-26
-- 相关：[0002](./0002-tech-stack-and-version-pinning.md) 第 4 节（pom 需重建）
+- 相关：[0002](./0002-tech-stack-and-version-pinning.md) 第 4 节（pom 需重建）、
+  `AGENTS.md`「模块与依赖方向」（同一组约束的执行侧清单，改动两处同步）
 
 ## 1. 四个模块
 
@@ -54,7 +55,23 @@
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 只有 `providers` 可以构造 `Outcome`
 
-规则定义在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`（九条）。
+规则将建于 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`（九条，编号 R1–R9）。
+**该文件连同四模块 `src` 已在阶段 0 删除，目前不存在** —— 重建时按下面的编号表复原，编号不得重排
+（其余 ADR 与 AGENTS.md 里引用的是 R4 / R9 这些编号，不是它们的内容）。
+
+**R1–R9 编号表**（阶段 0 按此复原，编号不得重排）：
+
+| 编号 | 规则 | 它保护什么 |
+|---|---|---|
+| R1 | `core` 的依赖树里没有框架 | 由 Maven enforcer 判红，不是 ArchUnit |
+| R2 | 没有模块依赖 `app` | 装配顺序由类型签名决定 |
+| R3 | `faces` 与 `providers` 互不感知（R3a 出站 / R3b 入站两个方向） | 新增一个 provider 不需要动 faces 里任何代码 |
+| R4 | `routing` 与 `governance` 不碰协议与 IO、**看不到 HTTP 状态码** | 它们是纯函数 |
+| R5 | `transport` 不知道业务包 | transport 只搬字节 |
+| R6 | 禁止 `@Lazy` | 装配问题是启动期问题，不是偶发问题 |
+| R7 | 禁止字段注入与 setter 注入 | 对象不会以半成品状态被发布 |
+| R8 | 禁止按类型 `getBean` | 依赖关系写在类型签名里 |
+| R9 | 成败的结论只有一个出口 | 结算点唯一 |
 **新增规则前先读那里的表格**：规则越多，越容易走到「加个例外算了」那条路上。
 每条规则旁边必须写清它保护什么；「规则真的会红」由 `GuardsActuallyFireTest` 断言。
 

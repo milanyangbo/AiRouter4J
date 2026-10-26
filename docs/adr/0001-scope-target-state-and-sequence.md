@@ -23,17 +23,18 @@
 2. **适配新契约** —— 只消费 `Outcome`；`core` 零依赖；Jackson 3；构造函数注入
 3. **补它原本没有的测试** —— 尤其是失败路径与「依赖缺席」路径。legacy 的测试密度不足以支撑搬运
 
-逐项裁决记录在 `docs/planning/legacy-review.md`，裁决结论散落在各能力面 ADR 的「裁决」小节。
+**裁决台账在各能力面 ADR 的「裁决」小节**，不是别处。
+`docs/planning/legacy-review.md` 是**缺陷评审素材库**（记录 legacy 哪里有问题），它不含裁决 —— 两者别搞混。
 
 已确认为**不搬**的三处（它们的存在本身就是缺陷）：
 
 | 不搬的东西 | 为什么 |
 |---|---|
-| 94 个自研 tracing 类（`monitor/tracing`） | 自研 span/tracer，OpenTelemetry 已经解决；搬它等于把一套并行体系养起来 |
+| 91 个自研 tracing 类（`monitor/tracing`） | 自研 span/tracer，OpenTelemetry 已经解决；搬它等于把一套并行体系养起来 |
 | `HttpConfigPushService` | 把全量配置推给一个并不存在的端点 |
 | 4 套并存的 store / 版本服务 | 同一件事四种实现，不是抽象，是失控 |
 
-已确认为**可搬**的部分（逐篇 ADR 里给出细节）：4 段限流 Lua、6 个负载均衡策略类与加权/粘滞实现、
+已确认为**可搬**的部分（逐篇 ADR 里给出细节）：Redis Lua（配额 4 段 + 限流 1 段）、6 个负载均衡策略类与加权/粘滞实现、
 无锁熔断状态机、`usageStrict` 语义、H2+PG 双方言 Flyway 骨架（V1–V4）、三档调用历史与 AES-256-GCM、
 `AdapterDefinitionProperties` 声明式厂商机制、控制台 Vue 页面（适配而非重写）。
 
@@ -52,10 +53,14 @@
 | 4 | 韧性 | 实例级熔断、请求级失败转移、限流四算法、响应缓存 | 同上，但限流**只留一套内核**（含管理面入口） | [0013](./0013-resilience-circuit-failover-ratelimit-cache.md) |
 | 5 | 配额 | 多维度多窗口账本（MINUTE/HOUR/DAY/MONTH），Redis 计数 + 本地降级，默认关闭 | 同语义，但默认 **fail-closed** 且预留/结算分离 | [0014](./0014-quota-multi-window-ledger.md) |
 | 6 | 记录治理 | 三档：仅元数据 / 脱敏摘要 / AES-256-GCM 全文；解密仅 ADMIN | 同三档，脱敏失败 fail-closed | [0015](./0015-call-history-and-record-governance.md) |
-| 7 | 可观测 | Prometheus + 94 个自研 tracing + 慢查询 + 错误追踪 + 安全告警 | OTel 替代自研；**告警出口只有指标 + 结构化日志** | [0016](./0016-observability-metrics-tracing-and-alerts.md) |
+| 7 | 可观测 | Prometheus + 91 个自研 tracing + 慢查询 + 错误追踪 + 安全告警 | OTel 替代自研；**告警出口只有指标 + 结构化日志** | [0016](./0016-observability-metrics-tracing-and-alerts.md) |
 | 8 | 持久化与多副本 | 默认 H2，`DATABASE_URL` 指 PG 时用 PG + Flyway；Redis 承载共享状态 | 同，但**只允许一套 store**，依赖缺席是契约 | [0017](./0017-persistence-migrations-and-multi-replica.md) |
 | 9 | 控制台 | `/admin/` 的 Vue 3 界面，14 个页面组 | **最后做**，适配 legacy 前端而非重写 | [0019](./0019-admin-plane-api-and-console.md) |
 | 10 | 认证与 RBAC | API Key + JWT + 角色权限 | 精简版先行（固定角色、接口级权限），控制台阶段再对齐全集 | [0018](./0018-authentication-api-key-and-rbac.md) |
+
+> **Agent 层不在这张表里**（见 [0007](./0007-spring-ai-boundary.md)）：它是平台的另一半，不是九类能力面之一，
+> 排在阶段 14。不列进表是为了避免「它也算一类能力面」的误解 —— 判断一项工作该不该做，
+> 问的是它补的是哪一类能力面，Agent 编排不在那个答案集里。
 
 ## 4. 非目标（写下来是为了少争论）
 

@@ -21,17 +21,29 @@
 
 服务、实例、适配器（厂商声明）、规则、版本与回滚、配额、调用历史、链路追踪、告警、API Key、RBAC。
 
+**其中两个面的数据不在我们这边**，管理面 API 不为它们提供取数：
+
+| 面 | 数据在哪 | 控制台做什么 |
+|---|---|---|
+| 链路追踪 | OTel 后端（我们只负责导出） | 只给出入口，不实现存储与查询 |
+| 告警 | Alertmanager / 日志平台（出口只有指标 + 结构化日志，[0016](./0016-observability-metrics-tracing-and-alerts.md) 第 2 节 f） | 只给出入口，不实现告警存储与推送 |
+
+> 否则等于在仓内实现一套链路与告警存储 —— 那是一条被明确否掉的路（[0001](./0001-scope-target-state-and-sequence.md) 第 4 节）。
+
+另外：**RBAC 全集对齐在本阶段完成**（[0018](./0018-authentication-api-key-and-rbac.md) 第 4 节把「接口级权限 → 全集」推迟到这里）。
+前置阶段只做精简版（固定角色、接口级权限），本阶段按控制台需要的权限粒度对齐。
+
 管理面限流走**同一内核**（[0013](./0013-resilience-circuit-failover-ratelimit-cache.md) 第 3 节 d），
 作用域是管理面路径 / 管理员 —— 不是另一套 WebFilter。
 
 ## 3. 控制台：适配 legacy 前端，不重写
 
-legacy 前端是 Vue 3，`frontend/src/views/` 下 14 个页面组：
+legacy 前端是 Vue 3，`frontend/src/views/` 下 **14 个页面目录**（另有 3 个 `.vue` 根文件与 `__tests__`）：
 
 ```
 dashboard  config  load-balancer  rate-limiter  circuit-breaker
 callHistory  tracing  monitoring  exception  security
-system  login  playground  tools  __tests__
+system  login  playground  tools
 ```
 
 **适配，不是重写。** 保留的还有：深/浅主题、中英双语。

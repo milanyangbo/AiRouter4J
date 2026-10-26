@@ -7,9 +7,9 @@
 
 ## 1. 为什么要有它
 
-`spec.md` 故事 15 要求 `local` 档位「不访问外部服务也能启动并完成一次受支持的调用」。这条要求不是为了方便，而是为了把一批验证从「凭印象」挪到「对着真实字节」：
+`local` 档位的要求是「不访问外部服务也能启动并完成一次受支持的调用」。这条要求不是为了方便，而是为了把一批验证从「凭印象」挪到「对着真实字节」：
 
-- **ADR-0006 的终态契约**要求 `Terminal` / `Failed` 必须显式发出。终态的形状（最后一个 chunk 携带 `finish_reason`、其后紧接 `data: [DONE]`）只有在真实端点面前才有意义——桩件是我们照着文档写的，写错的地方会跟着我们一路错下去。
+- **ADR-0005 的终态契约**要求 `Terminal` / `Failed` 必须显式发出。终态的形状（最后一个 chunk 携带 `finish_reason`、其后紧接 `data: [DONE]`）只有在真实端点面前才有意义——桩件是我们照着文档写的，写错的地方会跟着我们一路错下去。
 - **错误语义**（未知模型返回 404 还是 400、错误体长什么样）决定了配置错误会以什么代价暴露。
 - 手写桩件的最大问题不是写起来费事，而是**它的偏差不可见**：桩件是照着我们所理解的协议写的，理解错的地方会被原样固化，并且一直绿下去。
 
@@ -132,14 +132,15 @@ data: {"id":"chatcmpl-30","object":"chat.completion.chunk",...,"choices":[],"usa
 
 **延迟基线**（同一台机器、同一模型）：冷加载首次调用 0.60 s，热调用 0.07 s。写超时相关的测试时，用的是后者的量级，但它们之间差了近十倍——所以 `OLLAMA_KEEP_ALIVE=-1` 值得开。
 
-**经网关打一次流式**（`LocalModelStreamingEndToEndTest` 实跑）：`POST /v1/chat/completions` 带 `"stream":true`，
+**经网关打一次流式**（P0 阶段 `LocalModelStreamingEndToEndTest` 实跑；该类随 `src` 已删，可从 tag `baseline-pre-11` 取回）：`POST /v1/chat/completions` 带 `"stream":true`，
 客户端收到多条 `data: {...}` + 末尾一条 `data: [DONE]`，`X-Airouter-Request-Id` 在场，
-结算点上报的 `latency` 是**百毫秒量级而不是 0**。最后这一条是 ADR-0006 那个缺陷的反面证据：
+结算点上报的 `latency` 是**百毫秒量级而不是 0**。最后这一条是 ADR-0005 那个缺陷的反面证据：
 来源项目在响应头写出时就结算，流式样本因此恒为零。
 
 ## 7. 接进本项目的 local 档位
 
-`airouter-app/src/main/resources/application.yml` 的 `local` 段已经指向这个端点：
+`airouter-app/src/main/resources/application.yml` 的 `local` 段已经指向这个端点
+（该文件随四模块 `src` 在阶段 0 已删除，重建时按此配置）：
 
 | 变量 | local 档位默认值 |
 |---|---|
@@ -160,7 +161,7 @@ data: {"id":"chatcmpl-30","object":"chat.completion.chunk",...,"choices":[],"usa
 但它是一个会变的前提：一旦将来某个客户端开始读系统代理配置（`-Djava.net.useSystemProxies=true`、Reactor Netty 显式配了代理等），环回请求可能被送到代理上去。
 真到本机端点连不通的时候，这一层要第一个排除。
 
-**一处待办**：网关发出的请求会带上 `Authorization` 头，本机端点忽略它这件事尚未做镜像验证（本次验证时的请求被凭据内容识别拦下，没有重试）。票 05 打通上游时，这条要在那里补验证。
+**一处待办**：网关发出的请求会带上 `Authorization` 头，本机端点忽略它这件事尚未做镜像验证（本次验证时的请求被凭据内容识别拦下，没有重试）。上游打通时（ADR-0020 阶段 2），这条要在那里补验证。
 
 ## 8. 已知限制，以及它们约束了什么
 
@@ -195,7 +196,8 @@ Spring 的宽松绑定会把它们认成 `server.port` / `server.host`，于是 
 
 ## 10. 同一台机器上还有另一种形态：原生接口（`/api/chat`）
 
-Ollama 同时提供两种接口，这是本项目第二种 wire 形态的来源（见 `docs/adr/0009-...`）：
+Ollama 同时提供两种接口，这是本项目第二种 wire 形态的来源（见
+`docs/adr/0006-wire-shape-and-shape-self-description.md`）：
 
 | | 兼容接口 | 原生接口 |
 |---|---|---|
@@ -233,4 +235,4 @@ AIROUTER_ENDPOINT_MODEL=qwen2.5:0.5b
 ```
 
 客户端那一侧看到的字节与兼容形态下**完全一致**（`chat.completion` / `chat.completion.chunk` / `[DONE]`），
-差别全在上游那一侧 —— 这正是 `contract-ollama/` 那四组基线要钉住的东西。
+差别全在上游那一侧 —— 这正是 `airouter-app/src/test/resources/contract-ollama/` 那四组基线要钉住的东西。

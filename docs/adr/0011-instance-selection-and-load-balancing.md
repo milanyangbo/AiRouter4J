@@ -20,7 +20,8 @@ StickyLoadBalancer                                                             �
 `LoadBalancerManager` 对外报的策略名只有 6 个：
 `random / round-robin / least-connections / ip-hash / consistent-hash / latency`。
 
-**「加权」不是第 7 种策略**，它在 legacy 里是 `CachedWeightedSelector` —— 被轮询与最少连接**各自调用一遍**。
+**「加权」不是第 7 种策略**，它在 legacy 里是 `CachedWeightedSelector` ——
+**实测只有 `RoundRobinLoadBalancer` 引用了它**，最少连接根本没有加权（想加权的运维会以为它生效了，其实没有）。
 **「粘滞」也不是第 7 种**，它是 `StickyLoadBalancer` 这个包装器，包在任意策略之外。
 
 > 文档里出现过的「7 种策略」是误传。真实结构是 **6 个策略 × 1 个加权修饰 × 1 个粘滞包装器**。

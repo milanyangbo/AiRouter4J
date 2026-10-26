@@ -8,7 +8,7 @@
 
 ## 1. legacy 的事实（已核实）
 
-`auth/security/quota/` 下 18 个类，这是 legacy 里**最扎实的一块**：
+`auth/security/quota/` 下 20 个类，这是 legacy 里**最扎实的一块**：
 
 ```
 QuotaLedgerService / QuotaEnforcementService   账本与执行

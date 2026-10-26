@@ -11,18 +11,23 @@
 `router/adapter/impl/` 下 11 个类：
 
 ```
-OllamaAdapter          GeminiAdapter        ClaudeAdapter          ← 三个真实现
+OllamaAdapter          GeminiAdapter        ClaudeAdapter          ← 三个真实现（三种形态）
 NormalOpenAiAdapter    VllmAdapter          XinferenceAdapter
-LocalAiAdapter         GpuStackAdapter      ConfigurableAdapter
-ExtendedAdapter        OllamaConfigurableAdapter                   ← 同一套 OpenAI 兼容
+LocalAiAdapter         GpuStackAdapter                             ← 5 个各自硬编码的 OpenAI 兼容类
+ConfigurableAdapter    ExtendedAdapter      OllamaConfigurableAdapter ← 3 个变体，不是厂商
 ```
 
-**9 个厂商里只有 3 个是真正不同的协议**，其余 6 个是同一套 OpenAI 兼容代码加上
-默认地址、少量请求/响应转换（`VllmRequestTransformer`、`GpuStackResponseTransformer` 等）。
+**9 个厂商里只有 3 个是真正不同的协议**（Ollama / Claude→anthropic / Gemini）。
+剩下是 5 个各自硬编码的 OpenAI 兼容类（差异只在默认地址与少量请求/响应转换，
+另有 `VllmRequestTransformer`、`GpuStackResponseTransformer` 这类配套），
+以及 3 个变体（`Configurable` / `Extended` / `OllamaConfigurable`）—— 它们不是厂商。
 也就是说：**新增一个 OpenAI 兼容厂商，在 legacy 里要写一个类。**
 
 另外 legacy 有 `AdapterDefinitionProperties` + `AdapterDefinitionPersistenceService` ——
-一个声明式定义 + 落库持久化的机制。它是对的方向，但被淹没在 11 个硬编码类里。
+一个声明式定义 + 落库持久化的机制。**它是对的方向，但默认没启用**：
+`config/router/adapter.yml` 里 `deepseek:` 那一段是注释掉的示例，注释自己写着
+「适用于 DeepSeek、智谱、月之暗面、百川、零一万物、通义千问、Minimax 等」——
+**这套机制准备支持的厂商一个都没启用**，实际在用的还是那 11 个硬编码类。
 
 ## 2. 决定
 

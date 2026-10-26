@@ -20,6 +20,24 @@
 Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线。
 中间任何一项降级都会把另外两项一起拖回旧世界。
 
+### 版本锁定的实测依据
+
+2026-10-23 逐个坐标探测 `repo1.maven.org` 的结果（这是本表不是「凭印象填的」的证据）：
+
+| 坐标 | 结果 |
+|---|---|
+| `spring-boot-starter-parent:4.1.2` | 200 |
+| `spring-ai-bom:2.0.1` / `spring-ai-starter-model-openai:2.0.1` | 200 |
+| `spring-ai-agent-utils:0.13.0` / `spring-ai-session-bom:0.10.0` | 200 |
+| `maven-checkstyle-plugin:3.6.0` / `checkstyle:10.21.2` | 200 |
+| `spotbugs-maven-plugin:4.8.6.6` | 200 |
+| `spotbugs-maven-plugin:4.9.3` | **404（不存在）** |
+
+关键的一条是直接从 `spring-ai-starter-model-openai-2.0.1.pom` 读到的：它依赖
+`spring-boot-starter-webclient:4.1.1` 与 `spring-boot-starter-restclient:4.1.1`。
+**Spring AI 2.0.1 与 Boot 4.1.x 是绑定的，不是「建议搭配」** ——
+所以不存在「网关留在 Boot 3.5、只把 Spring AI 引进来」这条中间路线。
+
 ## 2. 新阶段引入的组件选型
 
 目标态（九类能力面）比骨架阶段多了存储、缓存、分布式协调与观测：
@@ -33,7 +51,7 @@ Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线�
 | Redis 客户端 | **Lettuce**（Boot 默认） | Jedis / Redisson | Redisson 的分布式锁很方便，但它把一整套对象语义一起带进来；我们只需要一段 Lua |
 | 本地缓存 | **Caffeine** | 自研 LRU | legacy 自研了一个 `LRUCache`，不需要 |
 | 指标 | **Micrometer + Prometheus registry** | 自研计数器 | — |
-| 链路追踪 | **OpenTelemetry**（OTLP 导出） | 自研 | legacy 有 94 个自研 tracing 类，**不搬** |
+| 链路追踪 | **OpenTelemetry**（OTLP 导出） | 自研 | legacy 有 91 个自研 tracing 类（`monitor/tracing`），**不搬** |
 | 加密 | **JDK 原生 AES-256-GCM** | BouncyCastle | JDK 自带，少一个依赖 |
 | 校验 | Jakarta Validation | 手写 if | — |
 
@@ -54,7 +72,7 @@ Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线�
 ## 4. 构建状态
 
 根 `pom.xml` 与四个模块的 `pom.xml` 已在阶段 0 随源码一并删除（`10c42a1`）。
-**实施阶段 0 的第一件事是按 [0003](./0003-module-structure-and-dependency-direction.md) 重建它们**，
+**实施阶段 0 的第一件事是按 [0020](./0020-stage-plan-and-task-board.md) 阶段 0 的清单重建它们**，
 包含 enforcer（版本、JDK、重复上界、插件版本、禁止抑制文件）、checkstyle、spotbugs 与 surefire 的分组配置。
 
 ## 5. 后果

@@ -62,7 +62,7 @@
 - **不做告警推送通道**。仓内不实现邮件 / Webhook / IM 推送，出口只有 Prometheus 指标与结构化日志。请在 Alertmanager 或日志平台里接
 - **不追求表数量对等**。表结构由新版的需求倒推，不由 legacy 的 20 张表倒推
 - **不自研链路追踪**。用 OpenTelemetry
-- **不引 JPA**。JDBC 直写（理由见 [0002](./0002-tech-stack-and-version-pinning.md)）
+- **不引 JPA**。关系存储用 **MyBatis**，SQL 集中在 XML（理由见 [0002](./0002-tech-stack-and-version-pinning.md)；用法八条纪律见 [0017](./0017-persistence-migrations-and-multi-replica.md) 第 2 节）
 
 ## 5. 顺序约束（硬约束，不是排期建议）
 

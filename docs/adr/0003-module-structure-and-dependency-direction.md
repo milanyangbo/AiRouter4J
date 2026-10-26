@@ -49,6 +49,8 @@
 - `select` 是**纯函数**：只看候选与权重，不看健康、不做 IO
 - `registry` 是「配置 → 运行时对象」的**唯一**持有者
 - `store` 不被 `faces` / `providers` 直接依赖
+- **Mapper 类型不越出 `store` 包**（MyBatis 是阻塞 API，出包就等于裸奔在事件循环上），
+  且 `store` 对外只暴露 `Mono` / `Flux` —— 由结构规则判红，理由见 [0017](./0017-persistence-migrations-and-multi-replica.md) 第 2 节
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 只有 `providers` 可以构造 `Outcome`
 

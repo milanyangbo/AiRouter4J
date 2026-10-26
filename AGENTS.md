@@ -52,7 +52,11 @@
 
 ## 持久化、配置与凭据
 
-- **JDBC 直写，不引入 JPA**（懒加载与 flush 时机是流式路径上的隐形阻塞点）
+- **关系存储用 MyBatis，不引入 JPA，也不用裸 `JdbcClient`**（JPA 的懒加载与 flush 是流式路径上的隐形阻塞点；裸 JDBC 把 SQL 打散在 Java 里，无法与迁移一起评审）
+- **SQL 只写在 XML mapper 里**：不写在注解里、不在 Java 里拼字符串。**不引 MyBatis-Plus**（它的 Wrapper 把 SQL 搬回 Java）
+- **Mapper 只出现在 `store` 包内，且对外只暴露 `Mono` / `Flux`**：MyBatis 是阻塞 API，每次调用都要经 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。直接调用就是把 JPA 的隐形阻塞换成 MyBatis 的显式阻塞
+- **禁用懒加载、嵌套 `select` 与二级缓存**：要关联就 join + 扁平 `resultMap`，一条查询路径的 SQL 条数必须等于 mapper 语句数
+- **流式热路径上不落库**：调用历史经缓冲后异步批量写入。八个字：**mapper 跟着迁移走** —— 引用了哪一列就要有哪次迁移
 - **Flyway 是 schema 的唯一变更路径**。没有 `ddl-auto`，没有手写建表脚本，没有「先手动加一列、回头再补迁移」
 - H2 默认 / PostgreSQL 按 `DATABASE_URL`，**同一套迁移双方言**。只在 PG 上验过的 SQL 不算数
 - **依赖缺席是契约，不是兜底**。DB 或 Redis 不在时的行为必须是**被断言过**的那一种，而不是 NPE 之后被某个 `catch` 吞掉。每一处新依赖都要有一条「它不在」的测试

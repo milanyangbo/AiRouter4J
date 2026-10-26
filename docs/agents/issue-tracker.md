@@ -17,5 +17,16 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 
 Read the file at the referenced path. The user will normally pass the path or the issue number directly.
 
-> 阶段排期的权威现在是 [ADR-0020](../adr/0020-stage-plan-and-task-board.md)：它把工单体系收敛成一份清单。
-> `.scratch/` 里留下的是历史工单，新阶段不在这里开文件。
+## 与 ADR-0020 的分工
+
+[ADR-0020](../adr/0020-stage-plan-and-task-board.md) 是**阶段排期与任务清单**的权威，它取代的是旧票
+（`01`–`13` 那种编号文件），不是本目录。
+
+职责划分：
+
+| 产物 | 住哪 | 说明 |
+|---|---|---|
+| 阶段排期 / 任务清单 | ADR-0020 | 一份清单，不再按阶段开文件 |
+| **功能设计（spec）** | `.scratch/<feature-slug>/spec.md` | 与排期不重复：spec 讲一个功能**长什么样**，排期讲**什么时候做** |
+
+旧票目录 `.scratch/p0-foundation/` 已于 2026-10-26 删除。

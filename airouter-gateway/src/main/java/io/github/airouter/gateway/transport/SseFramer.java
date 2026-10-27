@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * SSE 分帧器：把一串任意切分的字节块变成一帧一帧的 {@link SseFrame}。
+ * SSE 分帧器：把一串任意切分的字节块变成一帧一帧的 {@link UpstreamFrame}。
  *
  * <p>它在**字节层面**缓存，不在字符层面：一行没攒够就留着，攒够一行才解码。
  * 这正好解决了「一个多字节字符被切在两个 TCP 段之间」—— UTF-8 的多字节序列里不可能出现
@@ -19,8 +19,11 @@ import java.util.List;
  * <p>分派规则按 SSE：一个事件由若干 {@code data:} 行构成，以空行结束；只有 {@code :} 行的块是注释
  * （上游的保活）。其余字段（{@code event:} / {@code id:} / {@code retry:}）现阶段不建模 ——
  * 它们既不是内容，也不影响终态。
+ *
+ * <p>它是 {@link UpstreamFramer} 的**第一种**读法。逐行 JSON 那一种随 {@code ollama} 形态进来，
+ * 届时新增的是这个接口的另一个实现，不是给这里加一个开关（ADR-0006 第 3 节）。
  */
-public final class SseFramer {
+public final class SseFramer implements UpstreamFramer {
 
   private static final byte LINE_FEED = (byte) '\n';
 
@@ -58,15 +61,16 @@ public final class SseFramer {
    * @throws IllegalStateException 单帧超过上限时抛出。它是一个「上游送来了不可能合法的东西」
    *         的信号，由调用方决定这算哪一种失败 —— 分帧器不下成败的结论
    */
-  public List<SseFrame> push(byte[] chunk) {
-    List<SseFrame> frames = new ArrayList<>();
+  @Override
+  public List<UpstreamFrame> push(byte[] chunk) {
+    List<UpstreamFrame> frames = new ArrayList<>();
     int start = 0;
     for (int i = 0; i < chunk.length; i++) {
       if (chunk[i] == LINE_FEED) {
         append(chunk, start, i - start);
         String line = new String(pendingLine.toByteArray(), StandardCharsets.UTF_8);
         pendingLine.reset();
-        SseFrame frame = consume(stripCarriageReturn(line));
+        UpstreamFrame frame = consume(stripCarriageReturn(line));
         if (frame != null) {
           frames.add(frame);
         }
@@ -86,7 +90,8 @@ public final class SseFramer {
    *
    * @return 恒为空列表。保留返回值是为了让调用方不必记住「结束时要不要再看一眼」
    */
-  public List<SseFrame> finish() {
+  @Override
+  public List<UpstreamFrame> finish() {
     pendingLine.reset();
     dataLines.clear();
     comments.clear();
@@ -105,7 +110,7 @@ public final class SseFramer {
   }
 
   /** 一行：空行分派一个事件；字段行只登记，不产生帧。 */
-  private SseFrame consume(String line) {
+  private UpstreamFrame consume(String line) {
     if (line.isEmpty()) {
       return dispatch();
     }
@@ -121,18 +126,18 @@ public final class SseFramer {
   }
 
   /** 一个块结束：有 data 行就是一帧载荷，否则是注释。两者都空的空块不产生帧。 */
-  private SseFrame dispatch() {
+  private UpstreamFrame dispatch() {
     bufferedBytes = 0;
     if (!dataLines.isEmpty()) {
       String payload = String.join("\n", dataLines);
       dataLines.clear();
       comments.clear();
-      return new SseFrame.Data(payload);
+      return new UpstreamFrame.Data(payload);
     }
     if (!comments.isEmpty()) {
       String text = String.join("\n", comments);
       comments.clear();
-      return new SseFrame.Comment(text);
+      return new UpstreamFrame.Comment(text);
     }
     return null;
   }

@@ -6,6 +6,7 @@ import io.github.airouter.core.UpstreamFailure;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
+import java.util.function.IntFunction;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.MediaType;
@@ -95,10 +96,14 @@ public final class OutboundWire {
   }
 
   /**
-   * 发出一次 JSON POST 并把响应体按 SSE 分帧。
+   * 发出一次 JSON POST，并按调用方给定的**读法**把响应体切成帧。
    *
    * <p>这里**只做分帧**：{@code data: [DONE]} 是不是结束哨兵、一段载荷里有没有 {@code finish_reason}，
    * 都留给 Provider 去判断（ADR-0006 第 2 节）。传输层认下哨兵，等于替某一个厂商的协议做决定。
+   *
+   * <p>用哪一种读法由**形态**决定，而形态住在 {@code providers}。
+   * 结构规则 R5 不允许这里去认识它，所以进来的是「怎么造一个分帧器」这个函数，
+   * 而不是一个形态枚举 —— 管道仍然只搬字节，读法是被人交给它的。
    *
    * <p>非 2xx 以 {@link UpstreamRejection} 传播：它只报告「上游明确地拒绝了」这个事实而不带判断 ——
    * 4xx 与 5xx 各自该让客户端看到什么是网关的策略。
@@ -111,10 +116,12 @@ public final class OutboundWire {
    * @param jsonBody 请求体原文
    * @param idleTimeout 块间静默上限。它必须显式给进来：让它掉进某个默认值，
    *                    等于把「一条静默的流最多占多久」变成一件只有看过实现才知道的事
+   * @param framerFactory 按单帧上限造一个分帧器。每个订阅造一个：分帧器带着
+   *                      「上一行没攒完」的状态，共享实例会让两次调用互相污染对方的半行
    * @return 帧流；上游拒绝或静默超时时以错误结束
    */
-  public Flux<SseFrame> postStream(String path, Map<String, String> headers, String jsonBody,
-      Duration idleTimeout) {
+  public Flux<UpstreamFrame> postStream(String path, Map<String, String> headers, String jsonBody,
+      Duration idleTimeout, IntFunction<UpstreamFramer> framerFactory) {
     return client.post()
         .uri(path)
         .headers(httpHeaders -> headers.forEach(httpHeaders::add))
@@ -128,7 +135,7 @@ public final class OutboundWire {
           }
           // 分帧器带订阅级的状态，因此它建在这里而不是做成字段：
           // 共享一个实例会让两次流式调用互相污染对方的半行。
-          SseFramer framer = new SseFramer(maxFrameBytes);
+          UpstreamFramer framer = framerFactory.apply(maxFrameBytes);
           return response.bodyToFlux(DataBuffer.class)
               .map(OutboundWire::drain)
               .concatMapIterable(framer::push)

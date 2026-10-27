@@ -10,6 +10,7 @@ import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
 import io.github.airouter.gateway.observe.SettlementLog;
+import io.github.airouter.gateway.providers.UpstreamShape;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
@@ -119,6 +120,7 @@ final class StreamingEndToEndTest {
    */
   @DynamicPropertySource
   static void upstreamEndpoint(DynamicPropertyRegistry registry) {
+    registry.add("airouter.endpoint.shape", () -> "openai");
     registry.add("airouter.endpoint.base-url", UPSTREAM::baseUrl);
     registry.add("airouter.endpoint.api-key", () -> "not-a-real-key");
     registry.add("airouter.endpoint.model", () -> MODEL);
@@ -638,6 +640,7 @@ final class StreamingEndToEndTest {
   private static List<String> framesFrom(RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
         new OutboundWire(recorded.baseUrl(), Duration.ofSeconds(10), BUFFER_BYTES, MAX_FRAME_BYTES),
+        UpstreamShape.OPENAI.framerFactory(),
         "golden-key", MODEL, recorded.baseUrl(), IDLE_TIMEOUT, 1 << 16, outcome -> { });
     OpenAiInboundCodec.StreamEncoder encoder = OpenAiInboundCodec.newStreamEncoder();
     return JdkFlowAdapter.flowPublisherToFlux(provider.stream(request()))

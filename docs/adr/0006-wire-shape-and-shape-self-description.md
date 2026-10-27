@@ -61,9 +61,14 @@ SSE 与逐行 JSON 是**并列的两种读法**，不是同一个读法的两种
 `faces` 与 `core` **不在这个列表里**。它们一旦出现，说明抽象体表错了：回来修抽象，
 不要接受那份改动 —— 由 `SecondProviderTouchesNoFaceTest` 用差异统计判红。
 
-> 阶段 2（票 03）已落地第一种读法：`transport` 的 `SseFramer` 把字节变成 `SseFrame`，
+> 阶段 2（票 03）已落地第一种读法：`transport` 的 `SseFramer` 把字节变成 `UpstreamFrame`，
 > 「一帧 → 哪些事件」在 `providers/openai` 的 codec 里。逐行 JSON 那种随 `ollama` 形态进来，
 > 届时新增的是 transport 里的**另一种读法**，不是给 `SseFramer` 加一个开关。
+>
+> 阶段 2（票 06）已落地形态自述本身：`UpstreamShape` 自述三件事，
+> 其中「流怎么结束」以**分帧器的构造器**的形式给出 —— 由形态交出去，
+> 而不是让 `transport` 回头问形态是谁（结构规则 R5 不允许那个方向）。
+> 地址形态是启动期校验，形态取值必须由配置显式给出。
 
 两条路的共同点：**形态差异由配置或登记决定，不在调用路径上按形态分支。**
 

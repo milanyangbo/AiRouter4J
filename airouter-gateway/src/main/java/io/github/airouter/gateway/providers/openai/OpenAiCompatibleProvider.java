@@ -13,6 +13,7 @@ import io.github.airouter.core.StreamState;
 import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.transport.OutboundWire;
+import io.github.airouter.gateway.transport.UpstreamFramer;
 import io.github.airouter.gateway.transport.UpstreamRejection;
 import io.github.airouter.gateway.transport.UpstreamReply;
 import java.time.Duration;
@@ -23,6 +24,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.IntFunction;
 import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
 
@@ -56,6 +58,12 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
 
   private final OutboundWire wire;
 
+  /**
+   * 怎么造一个分帧器。**它是形态自述里「流怎么结束」那一问的答案**，由 {@code config} 交进来。
+   * 这个类不认识形态：它只知道「把字节切成帧要问谁」—— 于是换一种读法不需要动这个类。
+   */
+  private final IntFunction<UpstreamFramer> framerFactory;
+
   private final Map<String, String> headers;
 
   private final String defaultModel;
@@ -78,6 +86,9 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
 
   /**
    * @param wire 出站口，由 {@code config} 装配
+   * @param framerFactory 怎么造一个分帧器，由 {@code config} 从形态那里取来。
+   *                      它是「流怎么结束」这一问的答案；不放在这个类里，
+   *                      是因为换一种读法不该动实现翻译的那一层
    * @param apiKey 上游凭证，由环境变量来
    * @param defaultModel 请求没有指定模型时使用的值
    * @param instanceId 这一次调用打在哪个实例上。**现阶段没有实例注册表，端点地址即身份** ——
@@ -87,9 +98,11 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
    * @param maxContentChars 单条流累积内容的字符上限，作用见 {@link #capContent}
    * @param observer 结算的唯一收口点，由 {@code config} 装配
    */
-  public OpenAiCompatibleProvider(OutboundWire wire, String apiKey, String defaultModel,
-      String instanceId, Duration idleTimeout, int maxContentChars, OutcomeObserver observer) {
+  public OpenAiCompatibleProvider(OutboundWire wire, IntFunction<UpstreamFramer> framerFactory,
+      String apiKey, String defaultModel, String instanceId, Duration idleTimeout,
+      int maxContentChars, OutcomeObserver observer) {
     this.wire = wire;
+    this.framerFactory = framerFactory;
     this.headers = Map.of("Authorization", "Bearer " + apiKey);
     this.defaultModel = defaultModel;
     this.instanceId = instanceId;
@@ -140,7 +153,8 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
       Session session = new Session(resolved, instanceId, settle);
       OpenAiUpstreamCodec.StreamDecoder decoder = OpenAiUpstreamCodec.newStreamDecoder();
       Flux<CanonicalStreamEvent> decoded =
-          wire.postStream(OpenAiUpstreamCodec.CHAT_COMPLETIONS_PATH, headers, body, idleTimeout)
+          wire.postStream(OpenAiUpstreamCodec.CHAT_COMPLETIONS_PATH, headers, body, idleTimeout,
+              framerFactory)
               .concatMapIterable(decoder::decode)
               .onErrorResume(UpstreamRejection.class, rejection -> {
                 session.recordFailureKind(OutcomeKind.UPSTREAM_FAILURE);

@@ -58,8 +58,8 @@ final class OutboundWireTest {
   void unreachableUpstreamFailsTheStreamToo() {
     OutboundWire wire = wire(closedPort());
 
-    assertThatThrownBy(() -> wire.postStream("/chat/completions", Map.of(), "{}", TIMEOUT)
-        .collectList().block())
+    assertThatThrownBy(() -> wire.postStream("/chat/completions", Map.of(), "{}", TIMEOUT,
+        SseFramer::new).collectList().block())
         .isInstanceOf(UpstreamFailure.class)
         .satisfies(failure -> {
           UpstreamFailure upstream = (UpstreamFailure) failure;

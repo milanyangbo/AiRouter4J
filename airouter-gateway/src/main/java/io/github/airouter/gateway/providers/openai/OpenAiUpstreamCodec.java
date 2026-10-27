@@ -11,7 +11,7 @@ import io.github.airouter.core.CanonicalTool;
 import io.github.airouter.core.CanonicalUsage;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.UpstreamFailure;
-import io.github.airouter.gateway.transport.SseFrame;
+import io.github.airouter.gateway.transport.UpstreamFrame;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -159,11 +159,11 @@ public final class OpenAiUpstreamCodec {
      * @return 这一帧带来的事件，可能为空（保活、空帧、终态之后的帧）
      * @throws IllegalArgumentException 载荷不是合法 JSON 时抛出
      */
-    public List<CanonicalStreamEvent> decode(SseFrame frame) {
-      if (frame instanceof SseFrame.Comment comment) {
+    public List<CanonicalStreamEvent> decode(UpstreamFrame frame) {
+      if (frame instanceof UpstreamFrame.Comment comment) {
         return List.of(new CanonicalStreamEvent.Ping(comment.text()));
       }
-      String payload = ((SseFrame.Data) frame).payload();
+      String payload = ((UpstreamFrame.Data) frame).payload();
       if (payload.isBlank()) {
         return List.of();
       }

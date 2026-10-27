@@ -6,6 +6,8 @@ import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
+import io.github.airouter.gateway.transport.UpstreamFramer;
+import java.util.function.IntFunction;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.codec.ServerCodecConfigurer;
@@ -48,6 +50,21 @@ public final class UpstreamConfiguration {
   }
 
   /**
+   * 「把字节切成帧」用哪一种读法：由形态自述，不是由这里挑。
+   *
+   * <p>它作为参数进 Provider，而不是让 Provider 自己去找形态 ——
+   * 后者会让「换一种读法」变成一次要翻遍 provider 的改动。
+   * 等形态工厂（ADR-0009）进来，这一行换成「按实例的形态取它自述的那一个」。
+   *
+   * @param endpoint 形态由配置显式给出
+   * @return 这一份形态自述的分帧器构造器
+   */
+  @Bean
+  public IntFunction<UpstreamFramer> streamFramerFactory(EndpointProperties endpoint) {
+    return endpoint.shape().framerFactory();
+  }
+
+  /**
    * Face 看到的两个端口由**同一个对象**提供。
    *
    * <p>返回类型写具体类而不是接口，是这里唯一能成立的形式：同一个类实现两个端口时，
@@ -67,10 +84,11 @@ public final class UpstreamConfiguration {
    */
   @Bean
   public OpenAiCompatibleProvider openAiCompatibleProvider(OutboundWire wire,
+      IntFunction<UpstreamFramer> framerFactory,
       EndpointProperties endpoint, StreamProperties stream, OutcomeObserver observer) {
     // 实例身份现阶段就是端点地址：还没有实例注册表，而「这一次打在谁身上」必须有值 ——
     // 结算记录里少了它，事后就分不清一次失败属于哪一个实例。
-    return new OpenAiCompatibleProvider(wire, endpoint.apiKey(), endpoint.model(),
+    return new OpenAiCompatibleProvider(wire, framerFactory, endpoint.apiKey(), endpoint.model(),
         endpoint.baseUrl(), stream.idleTimeout(), stream.maxContentChars(), observer);
   }
 

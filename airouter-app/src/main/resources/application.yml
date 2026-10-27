@@ -16,6 +16,9 @@ server:
 
 airouter:
   endpoint:
+    # 形态必须由人显式给出：同一台本机 Ollama 上 /v1（OpenAI 兼容）与 /api（原生）两种地址都在，
+    # 按地址猜必然猜错。留空则起不来（EndpointProperties 的构造器判红并指名这个变量名）。
+    shape: ${AIROUTER_ENDPOINT_SHAPE:}
     base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
     api-key: ${AIROUTER_ENDPOINT_API_KEY:}
     model: ${AIROUTER_ENDPOINT_MODEL:}

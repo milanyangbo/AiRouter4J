@@ -28,18 +28,18 @@ final class SseFramerTest {
     return new SseFramer(MAX_FRAME_BYTES);
   }
 
-  private static List<SseFrame> feed(SseFramer framer, String text) {
+  private static List<UpstreamFrame> feed(SseFramer framer, String text) {
     return framer.push(text.getBytes(StandardCharsets.UTF_8));
   }
 
-  private static String payload(SseFrame frame) {
-    return ((SseFrame.Data) frame).payload();
+  private static String payload(UpstreamFrame frame) {
+    return ((UpstreamFrame.Data) frame).payload();
   }
 
   @Test
   @DisplayName("一次收到全部：两帧载荷与一个哨兵，且顺序不变")
   void wholeBodyAtOnce() {
-    List<SseFrame> frames = feed(framer(), "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n\n");
+    List<UpstreamFrame> frames = feed(framer(), "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n\n");
 
     assertThat(frames).hasSize(3);
     assertThat(payload(frames.get(0))).isEqualTo("{\"a\":1}");
@@ -57,11 +57,11 @@ final class SseFramerTest {
   @DisplayName("一个字节一个字节地收：结果与一次收到全部相同")
   void byteByByte() {
     String body = "data: {\"a\":1}\n\ndata: [DONE]\n\n";
-    List<SseFrame> expected = feed(framer(), body);
+    List<UpstreamFrame> expected = feed(framer(), body);
 
     SseFramer drip = framer();
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-    List<SseFrame> actual = new ArrayList<>();
+    List<UpstreamFrame> actual = new ArrayList<>();
     for (byte single : bytes) {
       actual.addAll(drip.push(new byte[] {single}));
     }
@@ -84,7 +84,7 @@ final class SseFramerTest {
     int cut = body.indexOf('中') + 1;
 
     framer.push(Arrays.copyOfRange(bytes, 0, cut));
-    List<SseFrame> frames = framer.push(Arrays.copyOfRange(bytes, cut, bytes.length));
+    List<UpstreamFrame> frames = framer.push(Arrays.copyOfRange(bytes, cut, bytes.length));
 
     assertThat(frames).hasSize(1);
     assertThat(payload(frames.get(0))).isEqualTo("{\"content\":\"中\"}");
@@ -98,7 +98,7 @@ final class SseFramerTest {
   @Test
   @DisplayName("空 data 帧照样被分派：它是不是保活由 codec 判断，不是由分帧器")
   void emptyDataIsStillAFrame() {
-    List<SseFrame> frames = feed(framer(), "data:\n\ndata: x\n\n");
+    List<UpstreamFrame> frames = feed(framer(), "data:\n\ndata: x\n\n");
 
     assertThat(frames).hasSize(2);
     assertThat(payload(frames.get(0))).isEmpty();
@@ -108,16 +108,16 @@ final class SseFramerTest {
   @Test
   @DisplayName("注释是注释，不是内容：上游保活认得出来")
   void commentIsAComment() {
-    List<SseFrame> frames = feed(framer(), ": keepalive\n\ndata: x\n\n");
+    List<UpstreamFrame> frames = feed(framer(), ": keepalive\n\ndata: x\n\n");
 
-    assertThat(frames.get(0)).isEqualTo(new SseFrame.Comment(" keepalive"));
+    assertThat(frames.get(0)).isEqualTo(new UpstreamFrame.Comment(" keepalive"));
     assertThat(payload(frames.get(1))).isEqualTo("x");
   }
 
   @Test
   @DisplayName("多行 data 以换行相接：一个事件可以跨多行")
   void multipleDataLinesAreJoined() {
-    List<SseFrame> frames = feed(framer(), "data: one\ndata: two\n\n");
+    List<UpstreamFrame> frames = feed(framer(), "data: one\ndata: two\n\n");
 
     assertThat(payload(frames.get(0))).isEqualTo("one\ntwo");
   }
@@ -125,7 +125,7 @@ final class SseFramerTest {
   @Test
   @DisplayName("CRLF 与 LF 等价：那一边写出来的流同样能读")
   void carriageReturnIsStripped() {
-    List<SseFrame> frames = feed(framer(), "data: x\r\n\r\n");
+    List<UpstreamFrame> frames = feed(framer(), "data: x\r\n\r\n");
 
     assertThat(payload(frames.get(0))).isEqualTo("x");
   }
@@ -133,7 +133,7 @@ final class SseFramerTest {
   @Test
   @DisplayName("未建模的字段不影响内容：event / id / retry 都不是正文")
   void unmodeledFieldsDoNotBecomeContent() {
-    List<SseFrame> frames = feed(framer(), "event: message\nid: 7\ndata: x\n\n");
+    List<UpstreamFrame> frames = feed(framer(), "event: message\nid: 7\ndata: x\n\n");
 
     assertThat(frames).hasSize(1);
     assertThat(payload(frames.get(0))).isEqualTo("x");
@@ -149,7 +149,7 @@ final class SseFramerTest {
   @DisplayName("没有以空行收尾的那一段不被分派：半截响应不会冒充一个完整事件")
   void incompleteTrailerIsNotDispatched() {
     SseFramer framer = framer();
-    List<SseFrame> frames = feed(framer, "data: {\"a\":1}\n\ndata: {\"b\":");
+    List<UpstreamFrame> frames = feed(framer, "data: {\"a\":1}\n\ndata: {\"b\":");
 
     assertThat(frames).hasSize(1);
     assertThat(payload(frames.get(0))).isEqualTo("{\"a\":1}");

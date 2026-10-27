@@ -8,6 +8,8 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - The spec is `.scratch/<feature-slug>/spec.md`
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- **没有票文件 = 没有授权。** 编号取自目录里真实存在的文件，不从上一个数字往下续 ——
+  自己续出来的编号是一个不存在的编号。执行侧的硬约束与违约处置见根 `AGENTS.md` 的「先有票，再动手」
 
 ## When a skill says "publish to the issue tracker"
 

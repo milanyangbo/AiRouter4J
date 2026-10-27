@@ -3,8 +3,11 @@ package io.github.airouter.contract;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.airouter.app.AiRouterApplication;
-import io.github.airouter.gateway.config.EndpointProperties;
+import io.github.airouter.gateway.config.InstanceDefinition;
+import io.github.airouter.gateway.config.ServicesProperties;
 import io.github.airouter.gateway.providers.UpstreamShape;
+import io.github.airouter.gateway.registry.RegisteredInstance;
+import io.github.airouter.gateway.registry.UpstreamRegistry;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -54,14 +57,25 @@ final class LocalProfileTest {
   @DisplayName("local 档位：不设任何端点变量也能起来，端点形态与地址都由档位给出")
   void localProfileStartsWithoutAnyEndpointVariable() {
     try (ConfigurableApplicationContext context = startLocal()) {
-      EndpointProperties endpoint = context.getBean(EndpointProperties.class);
+      UpstreamRegistry registry = context.getBean(UpstreamRegistry.class);
+      ServicesProperties services = context.getBean(ServicesProperties.class);
+      // 值在配置那一层看，同时确认注册表里真的有这一项以及它已经拿到了出站能力 ——
+      // 「档位给得出来」与「能被装配成一个能出网的对象」是两件事，只有后者才值得断言。
+      InstanceDefinition instance = services.defaultServiceDefinition().enabledInstances().get(0);
 
-      assertThat(endpoint.shape()).isEqualTo(UpstreamShape.OPENAI);
+      assertThat(instance.shape()).isEqualTo(UpstreamShape.OPENAI);
       // 本机地址写 127.0.0.1 不写 localhost：后者要先走一次名字解析，
       // 而解析结果不保证是 IPv4 —— 表现是「偶发连不上」，而且只在部分机器上出现。
-      assertThat(endpoint.baseUrl()).isEqualTo("http://127.0.0.1:11434/v1");
-      assertThat(endpoint.model()).isNotBlank();
-      assertThat(endpoint.apiKey()).isNotBlank();
+      assertThat(instance.baseUrl()).isEqualTo("http://127.0.0.1:11434/v1");
+      assertThat(instance.model()).isNotBlank();
+      assertThat(instance.apiKey()).isNotBlank();
+
+      RegisteredInstance registered = registry.requireService(services.defaultService())
+          .instance(instance.id())
+          .orElseThrow();
+      assertThat(registered.shape()).isEqualTo(instance.shape());
+      assertThat(registered.provider().streaming()).isNotNull();
+      assertThat(registered.provider().completion()).isNotNull();
     }
   }
 
@@ -74,8 +88,12 @@ final class LocalProfileTest {
                      "finish_reason":"stop"}],
          "usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}
         """);
-    try (ConfigurableApplicationContext context = startLocal(
-        "--airouter.endpoint.base-url=" + UPSTREAM.baseUrl())) {
+    // 走环境变量（这里用系统属性代替它 —— 同一个 JVM 里改不了真环境变量），
+    // 而不是走 `--airouter.services.chat.instances[0].base-url=`：列表元素不跨配置来源合并，
+    // 在命令行覆盖其中一个字段会让这个实例的其余字段一起消失。
+    // 顺带这也正是「环境变量优先于档位默认值」的路径。
+    System.setProperty("AIROUTER_ENDPOINT_BASE_URL", UPSTREAM.baseUrl());
+    try (ConfigurableApplicationContext context = startLocal()) {
       // 绑定在上下文上而不是另起一个 socket：这一段要证明的是「档位给的默认值跑得通一次调用」，
       // 而不是「端口能不能连上」—— 后者由其他端到端测试守着，那里走的是真实 socket。
       WebTestClient client = WebTestClient.bindToApplicationContext(context).build();
@@ -89,6 +107,10 @@ final class LocalProfileTest {
           .expectStatus().isOk()
           .expectBody()
           .jsonPath("$.choices[0].message.content").isEqualTo("好");
+    } finally {
+      // 这个测试用例的生命周期之外不再生效：它是 JVM 全局的，
+      // 漏清会让本类里「local 档位自带 127.0.0.1:11434」那条断言在下一个用例上偶发变绿。
+      System.clearProperty("AIROUTER_ENDPOINT_BASE_URL");
     }
   }
 

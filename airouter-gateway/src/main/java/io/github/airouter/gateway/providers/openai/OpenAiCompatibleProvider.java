@@ -8,7 +8,6 @@ import io.github.airouter.core.CompletionPort;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeKind;
-import io.github.airouter.core.OutcomeObserver;
 import io.github.airouter.core.StreamState;
 import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.core.UpstreamFailure;
@@ -96,11 +95,12 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
    * @param idleTimeout 块间静默上限。它必须显式给进来而不是掉进一个默认值 ——
    *                    「一条静默的流最多占多久」是一个 SLO 决定，不是一个实现细节
    * @param maxContentChars 单条流累积内容的字符上限，作用见 {@link #capContent}
-   * @param observer 结算的唯一收口点，由 {@code config} 装配
+   * @param settle 结算动作，由 {@code config} 装配。它在这里是**一个动作**而不是一个角色：
+   *               这个类需要的只是「把结论递出去」，至于背后是几个消费者它不需要知道
    */
   public OpenAiCompatibleProvider(OutboundWire wire, IntFunction<UpstreamFramer> framerFactory,
       String apiKey, String defaultModel, String instanceId, Duration idleTimeout,
-      int maxContentChars, OutcomeObserver observer) {
+      int maxContentChars, Consumer<Outcome> settle) {
     this.wire = wire;
     this.framerFactory = framerFactory;
     this.headers = Map.of("Authorization", "Bearer " + apiKey);
@@ -108,7 +108,7 @@ public final class OpenAiCompatibleProvider implements CompletionPort, Streaming
     this.instanceId = instanceId;
     this.idleTimeout = idleTimeout;
     this.maxContentChars = maxContentChars;
-    this.settle = observer::settle;
+    this.settle = settle;
   }
 
   /**

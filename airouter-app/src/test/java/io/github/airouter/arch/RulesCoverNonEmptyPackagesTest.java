@@ -40,8 +40,8 @@ class RulesCoverNonEmptyPackagesTest {
    * {@code faces.openai} 有了类之后也算「有类」；反过来只登记子包会让父包这一层没人认领。
    */
   private static final List<String> PACKAGES_WITH_CLASSES =
-      List.of("config", "faces", "faces.openai", "providers", "providers.openai", "transport",
-          "observe");
+      List.of("config", "faces", "faces.openai", "providers", "providers.openai", "registry",
+          "transport", "observe");
 
   private static final JavaClasses PRODUCTION = new ClassFileImporter()
       .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)

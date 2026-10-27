@@ -120,11 +120,20 @@ final class StreamingEndToEndTest {
    */
   @DynamicPropertySource
   static void upstreamEndpoint(DynamicPropertyRegistry registry) {
-    registry.add("airouter.endpoint.shape", () -> "openai");
-    registry.add("airouter.endpoint.base-url", UPSTREAM::baseUrl);
-    registry.add("airouter.endpoint.api-key", () -> "not-a-real-key");
-    registry.add("airouter.endpoint.model", () -> MODEL);
-    registry.add("airouter.endpoint.request-timeout", () -> "2s");
+    registry.add("airouter.default-service", () -> "chat");
+    registry.add("airouter.services.chat.instances[0].id", () -> "recorded");
+    registry.add("airouter.services.chat.instances[0].shape", () -> "openai");
+    registry.add("airouter.services.chat.instances[0].base-url", UPSTREAM::baseUrl);
+    registry.add("airouter.services.chat.instances[0].api-key", () -> "not-a-real-key");
+    registry.add("airouter.services.chat.instances[0].model", () -> MODEL);
+    registry.add("airouter.services.chat.instances[0].request-timeout", () -> "2s");
+
+    // 这个实例的字段在这里**写全**：列表元素不跨配置来源合并，
+    // 少给一个（哪怕是 weight）就会让 application.yml 里那一份排不上用场，
+    // 表现为那一项是默认值（weight 为 0）而不是「沿用配置文件」。
+    registry.add("airouter.services.chat.instances[0].weight", () -> "1");
+    registry.add("airouter.services.chat.instances[0].enabled", () -> "true");
+    registry.add("airouter.services.chat.instances[0].tags", () -> "");
     registry.add("airouter.stream.idle-timeout", () -> "600ms");
     registry.add("airouter.stream.max-content-chars", () -> "8");
     registry.add("airouter.stream.max-frame-bytes", () -> "1048576");
@@ -569,8 +578,9 @@ final class StreamingEndToEndTest {
     Outcome outcome = soleSettlementOf(requestId);
     assertThat(outcome.kind()).isEqualTo(OutcomeKind.SUCCESS);
     assertThat(outcome.usage().totalTokens()).isEqualTo(13L);
-    // 实例身份现阶段就是端点地址：结算里少了它，事后分不清一次失败属于哪一个实例。
-    assertThat(outcome.instanceId()).isEqualTo(UPSTREAM.baseUrl());
+    // 实例身份：票 07 之前它是端点地址（那时候没有实例这一层，地址就是唯一能认出的东西），
+    // 现在是实例 id —— 结算记录里少了它，事后分不清一次失败属于哪一个实例。
+    assertThat(outcome.instanceId()).isEqualTo("recorded");
   }
 
   /**

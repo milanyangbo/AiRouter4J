@@ -56,11 +56,20 @@ final class NonStreamingEndToEndTest {
 
   @DynamicPropertySource
   static void upstreamEndpoint(DynamicPropertyRegistry registry) {
-    registry.add("airouter.endpoint.shape", () -> "openai");
-    registry.add("airouter.endpoint.base-url", UPSTREAM::baseUrl);
-    registry.add("airouter.endpoint.api-key", () -> "not-a-real-key");
-    registry.add("airouter.endpoint.model", () -> "recorded-model");
-    registry.add("airouter.endpoint.request-timeout", () -> "5s");
+    registry.add("airouter.default-service", () -> "chat");
+    registry.add("airouter.services.chat.instances[0].id", () -> "recorded");
+    registry.add("airouter.services.chat.instances[0].shape", () -> "openai");
+    registry.add("airouter.services.chat.instances[0].base-url", UPSTREAM::baseUrl);
+    registry.add("airouter.services.chat.instances[0].api-key", () -> "not-a-real-key");
+    registry.add("airouter.services.chat.instances[0].model", () -> "recorded-model");
+    registry.add("airouter.services.chat.instances[0].request-timeout", () -> "5s");
+
+    // 这个实例的字段在这里**写全**：列表元素不跨配置来源合并，
+    // 少给一个（哪怕是 weight）就会让 application.yml 里那一份排不上用场，
+    // 表现为那一项是默认值（weight 为 0）而不是「沿用配置文件」。
+    registry.add("airouter.services.chat.instances[0].weight", () -> "1");
+    registry.add("airouter.services.chat.instances[0].enabled", () -> "true");
+    registry.add("airouter.services.chat.instances[0].tags", () -> "");
   }
 
   @BeforeEach

@@ -5,13 +5,22 @@
 #
 # 地址写 127.0.0.1 不写 localhost：后者要先走一次名字解析，而解析结果不保证是 IPv4 ——
 # 表现是「偶发连不上」，而且只在部分机器上出现。
+#
+# 这里补的只是本机该指向哪个地址：结构那一层（默认服务名、实例 id、权重、启用标志）
+# 已经在 application.yml，档位不重复它 —— 重复两份等于给「本机长什么样」留下两个答案。
 airouter:
-  endpoint:
-    shape: ${AIROUTER_ENDPOINT_SHAPE:openai}
-    base-url: ${AIROUTER_ENDPOINT_BASE_URL:http://127.0.0.1:11434/v1}
-    # 本机 Ollama 不校验凭证，但 openai 形态要求凭证在场，所以这里给一个占位值。
-    # 它不是密钥 —— 真实密钥只存在于环境里，不进任何受跟踪文件。
-    api-key: ${AIROUTER_ENDPOINT_API_KEY:local-placeholder}
-    model: ${AIROUTER_ENDPOINT_MODEL:qwen2.5:0.5b}
-    # 本机端点要给模型一点加载时间，比默认那 30 秒宽一些。
-    request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:60s}
+  services:
+    chat:
+      instances:
+        - id: ${AIROUTER_INSTANCE_ID:primary}
+          shape: ${AIROUTER_ENDPOINT_SHAPE:openai}
+          base-url: ${AIROUTER_ENDPOINT_BASE_URL:http://127.0.0.1:11434/v1}
+          # 本机 Ollama 不校验凭证，但 openai 形态要求凭证在场，所以这里给一个占位值。
+          # 它不是密钥 —— 真实密钥只存在于环境里，不进任何受跟踪文件。
+          api-key: ${AIROUTER_ENDPOINT_API_KEY:local-placeholder}
+          model: ${AIROUTER_ENDPOINT_MODEL:qwen2.5:0.5b}
+          # 本机端点要给模型一点加载时间，比默认那 30 秒宽一些。
+          request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:60s}
+          weight: 1
+          enabled: true
+          tags: []

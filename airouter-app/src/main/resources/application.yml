@@ -1,11 +1,13 @@
 # 这里出现的只能是「指向环境变量的占位符」，不能有任何真实地址或密钥。
-# 变量名与 EndpointProperties / StreamProperties 里的常量同名，改动一处就是改错一处 ——
+# 变量名与 ServicesProperties / StreamProperties 里的常量同名，改动一处就是改错一处 ——
 # 不要在这里手写字符串。
 #
-# 端点那四个值都由环境变量给出，缺一个就起不来（EndpointProperties 的构造器判红，且指名变量名）。
+# 端点那五个值（形态 / 地址 / 凭证 / 模型 / 超时）都由环境变量给出，缺一个就起不来
+# （形态部分的检查在 UpstreamShape，实例自身那几项在 InstanceDefinition 的构造器判红）。
 # 流式那五个值有兜底数字，但它们是显式的 SLO：改它们就是在改「一条流最多能吃掉多少」，
 # 不是调参（StreamProperties 的构造器对非正数判红）。
-# 本地档位（local）随票 06 进来，那时这三个地址类变量都可以不设 ——
+#
+# 本地档位（local）随票 06 进来，那时端点那五个值都可以不设 ——
 # 切换档位只改 profile 或环境变量，不改代码。
 spring:
   application:
@@ -15,14 +17,30 @@ server:
   port: 8080
 
 airouter:
-  endpoint:
-    # 形态必须由人显式给出：同一台本机 Ollama 上 /v1（OpenAI 兼容）与 /api（原生）两种地址都在，
-    # 按地址猜必然猜错。留空则起不来（EndpointProperties 的构造器判红并指名这个变量名）。
-    shape: ${AIROUTER_ENDPOINT_SHAPE:}
-    base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
-    api-key: ${AIROUTER_ENDPOINT_API_KEY:}
-    model: ${AIROUTER_ENDPOINT_MODEL:}
-    request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
+  # 请求默认落到哪个 Service。现阶段没有路由规则（ADR-0012），
+  # 所以这一位是「打到哪儿」的唯一答案，写在这里而不是藏在「取第一个服务」里。
+  default-service: ${AIROUTER_DEFAULT_SERVICE:chat}
+  services:
+    chat:
+      # 实例是**列表 + 显式 id**，不是 Map：用 Map 时重复 id 在语法上不可能出现，
+      # 第二个会静默覆盖第一个，而「配了两个实例实际只有一个在干活」
+      # 正是要在启动期拦下的那一种错。
+      instances:
+        - id: ${AIROUTER_INSTANCE_ID:primary}
+          # 形态必须由人显式给出：同一台本机 Ollama 上 /v1（OpenAI 兼容）与 /api（原生）
+          # 两种地址都在，按地址猜必然猜错。留空则起不来并指名具体实例。
+          shape: ${AIROUTER_ENDPOINT_SHAPE:}
+          # 尚未引用任何厂商声明：厂商带来的只是一份默认地址与少量转换点，不是类（ADR-0009）。
+          vendor:
+          base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
+          api-key: ${AIROUTER_ENDPOINT_API_KEY:}
+          model: ${AIROUTER_ENDPOINT_MODEL:}
+          request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
+          # 权重与启用标志目前还没有消费者：挑实例的选择链属阶段 4（ADR-0011）。
+          # 它们先在这里存在，是因为「能不能单独停掉一个实例」是配置模型的一部分。
+          weight: 1
+          enabled: true
+          tags: []
   stream:
     # 块间静默上限：不是总时长。一条想很久但一直在说话的流不会被误杀。
     idle-timeout: ${AIROUTER_STREAM_IDLE_TIMEOUT:15s}

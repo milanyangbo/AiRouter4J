@@ -31,7 +31,7 @@ class RulesCoverNonEmptyPackagesTest {
   private static final String GATEWAY = StructuralRules.ROOT + ".gateway";
 
   /** 只有 `package-info.java` 的包。它们不算「规则已覆盖」。 */
-  private static final List<String> PLACEHOLDER_PACKAGES = List.of("", "observe");
+  private static final List<String> PLACEHOLDER_PACKAGES = List.of("");
 
   /**
    * 已经有真实类的包。规则在它们上面不是空转 —— 阶段 0 是空的，随各阶段填充。
@@ -40,7 +40,8 @@ class RulesCoverNonEmptyPackagesTest {
    * {@code faces.openai} 有了类之后也算「有类」；反过来只登记子包会让父包这一层没人认领。
    */
   private static final List<String> PACKAGES_WITH_CLASSES =
-      List.of("config", "faces", "faces.openai", "providers", "providers.openai", "transport");
+      List.of("config", "faces", "faces.openai", "providers", "providers.openai", "transport",
+          "observe");
 
   private static final JavaClasses PRODUCTION = new ClassFileImporter()
       .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)

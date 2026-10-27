@@ -1,7 +1,9 @@
 package io.github.airouter.gateway.config;
 
 import io.github.airouter.core.CompletionPort;
+import io.github.airouter.core.OutcomeObserver;
 import io.github.airouter.core.StreamingCompletionPort;
+import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
 import org.springframework.context.annotation.Bean;
@@ -60,13 +62,33 @@ public final class UpstreamConfiguration {
    * @param wire 出站口
    * @param endpoint Endpoint 的凭证与默认模型，全部来自环境变量
    * @param stream 块间上限与累积内容上限
+   * @param observer 结算的唯一收口点
    * @return 这一份形态的实现，同时是 {@link CompletionPort} 与 {@link StreamingCompletionPort}
    */
   @Bean
   public OpenAiCompatibleProvider openAiCompatibleProvider(OutboundWire wire,
-      EndpointProperties endpoint, StreamProperties stream) {
+      EndpointProperties endpoint, StreamProperties stream, OutcomeObserver observer) {
+    // 实例身份现阶段就是端点地址：还没有实例注册表，而「这一次打在谁身上」必须有值 ——
+    // 结算记录里少了它，事后就分不清一次失败属于哪一个实例。
     return new OpenAiCompatibleProvider(wire, endpoint.apiKey(), endpoint.model(),
-        stream.idleTimeout(), stream.maxContentChars());
+        endpoint.baseUrl(), stream.idleTimeout(), stream.maxContentChars(), observer);
+  }
+
+  /**
+   * 结算账本：{@link OutcomeObserver} 在本阶段的唯一实现。
+   *
+   * <p>熔断、配额、调用历史随后接的是**同一个接口**，不是这个类 ——
+   * 它们接进来时这个类仍然在（诊断要看最近几次调用的结算），但不再是唯一的消费者。
+   * 把它定义成 bean 而不是让 Provider 自己 new 一个，正是为了那一天不用改 Provider。
+   *
+   * <p>返回类型写具体类：Provider 那边按 {@link OutcomeObserver} 注入（只有一个候选），
+   * 而诊断与测试要按 {@link SettlementLog} 取到它 —— 声明成接口的话后者取不到。
+   *
+   * @return 结算收口点
+   */
+  @Bean
+  public SettlementLog settlementLog() {
+    return new SettlementLog();
   }
 
   /**

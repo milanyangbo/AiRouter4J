@@ -120,7 +120,7 @@ final class GoldenWireContractTest {
   private static Actual run(CanonicalRequest request, RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
         new OutboundWire(recorded.baseUrl(), TIMEOUT, BUFFER_BYTES, MAX_FRAME_BYTES),
-        "golden-key", MODEL, TIMEOUT, 1 << 16);
+        "golden-key", MODEL, recorded.baseUrl(), TIMEOUT, 1 << 16, outcome -> { });
     try {
       CanonicalResponse response = provider.complete(request).toCompletableFuture().join();
       return new Actual(200, OpenAiInboundCodec.encodeResponse(response));

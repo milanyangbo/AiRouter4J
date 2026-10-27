@@ -6,7 +6,10 @@ import io.github.airouter.core.CanonicalMessage;
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalRole;
 import io.github.airouter.core.GenerationParams;
+import io.github.airouter.core.Outcome;
+import io.github.airouter.core.OutcomeKind;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
+import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
@@ -16,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,10 +28,12 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.reactive.server.FluxExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.adapter.JdkFlowAdapter;
 import tools.jackson.core.JacksonException;
@@ -40,7 +46,10 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>被替换掉的只有远端那个端点 —— 用 {@link RecordedUpstream} 按块回放固定的字节。
  * 「上游怎么切块」与「块间静默多久」都在这里可控，而这两件事正是流式最容易写错的地方。
  *
- * <p>本票只走正常路径：上游好好说话、好好结束。异常终态（不讲完、静默、取消）归票 04。
+ * <p>覆盖两类路径：上游好好说话、好好结束的正常路径，以及「不讲完、静默、中途断开」
+ * 三种异常终态。后三种各自都要在结算账本里留下**自己那一条**，
+ * 而它们的判定互不相同 —— 这正是流式结算的全部内容：上游不讲完就不是成功，
+ * 调用方断开不是上游失败，一条流只留一条。
  */
 @SpringBootTest(classes = io.github.airouter.app.AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -66,6 +75,15 @@ final class StreamingEndToEndTest {
   private static final RecordedUpstream UPSTREAM = startUpstream();
 
   private WebTestClient client;
+
+  /**
+   * 结算账本：{@code OutcomeObserver} 在本阶段的落地。
+   *
+   * <p>断言落在它上面，是因为「这次调用被记成了什么」只有它能回答：
+   * 客户端看到的只是最后一帧，而「上游失败」与「调用方取消」在帧上是同一种东西（都不是哨兵）。
+   */
+  @Autowired
+  private SettlementLog settlementLog;
 
   private static RecordedUpstream startUpstream() {
     try {
@@ -115,7 +133,9 @@ final class StreamingEndToEndTest {
     UPSTREAM.replayStream(List.of(chunkWith("你"), chunkWith("好"), chunkWith("吗"),
         terminalChunk("stop"), done()), Duration.ZERO);
 
-    List<String> frames = exchangeStreaming();
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    List<String> frames = framesOf(result);
 
     assertThat(frames).isNotEmpty();
     assertThat(frames.get(frames.size() - 1)).isEqualTo("[DONE]");
@@ -123,6 +143,8 @@ final class StreamingEndToEndTest {
     assertThat(UPSTREAM.requests()).isEqualTo(1);
     assertThat(UPSTREAM.lastPath()).isEqualTo("/v1/chat/completions");
     assertThat(UPSTREAM.lastAuthorization()).isEqualTo("Bearer not-a-real-key");
+    // 好好结束的那一条：结算类别是成功，而且只有一条。
+    assertThat(soleSettlementOf(requestId).kind()).isEqualTo(OutcomeKind.SUCCESS);
   }
 
   /**
@@ -233,6 +255,166 @@ final class StreamingEndToEndTest {
   }
 
   /**
+   * 上游收了连接、说了几句，然后**没给终态就把连接关了**。
+   *
+   * <p>这不是成功 —— 内容是否完整**无从判断**：连接关掉的那一刻，最后一段是不是完整，
+   * 谁也不知道。把它记成成功，就是来源项目最贵的那个缺陷本身：
+   * 一个持续吐出半截响应的实例，在「响应头写出即成功」的口径里是 100% 成功。
+   *
+   * <p>客户端那一侧同样要看得出来：失败之后**不补哨兵**。补了哨兵，
+   * 客户端就会照着「正常结束」去收尾，而这一次调用其实是失败的。
+   */
+  @Test
+  @DisplayName("上游没给终态就收了连接：补一个失败，不补成功，也不补哨兵")
+  void upstreamClosedWithoutTerminalIsNotSuccess() {
+    UPSTREAM.replayStream(List.of(chunkWith("半"), chunkWith("截")), Duration.ZERO);
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    List<String> frames = framesOf(result);
+
+    assertThat(frames.get(frames.size() - 1))
+        .as("最后一帧：失败之后不补哨兵，补了就是把失败说成正常结束")
+        .doesNotContain("[DONE]")
+        .contains("upstream_closed");
+
+    Outcome outcome = soleSettlementOf(requestId);
+    assertThat(outcome.kind()).isEqualTo(OutcomeKind.UPSTREAM_FAILURE);
+    assertThat(outcome.error().type()).isEqualTo("upstream_closed");
+  }
+
+  /**
+   * 讲了几句之后**静默**。
+   *
+   * <p>它既不是成功（没把话说完），也不是「上游拒绝」（连得上、也说过话）。
+   * 只有块间静默上限能判它，而这条路径在真实世界里只在网络抖动或对端卡死的时候出现 ——
+   * 靠运气等它发生，等于没有测试。
+   */
+  @Test
+  @DisplayName("上游讲了几句之后静默：静默超过块间上限判为超时，不判为成功")
+  void silenceBeyondIdleTimeoutIsUpstreamTimeout() {
+    // 静默 3 秒，远长于块间上限 600ms。
+    UPSTREAM.holdOpen(List.of(chunkWith("想"), chunkWith("一")), Duration.ofSeconds(3));
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    List<String> frames = framesOf(result);
+
+    assertThat(frames.get(frames.size() - 1)).contains("upstream_timeout");
+
+    Outcome outcome = soleSettlementOf(requestId);
+    assertThat(outcome.kind()).isEqualTo(OutcomeKind.UPSTREAM_TIMEOUT);
+    assertThat(outcome.error().type()).isEqualTo("upstream_timeout");
+  }
+
+  /**
+   * 调用方中途断开。
+   *
+   * <p>它**不产生事件**（接收方已经不在了，往断开的下游发东西不成立），
+   * 但**必须结算**成 {@code CLIENT_CANCELLED} —— 少记一次与记成上游失败，
+   * 对下游的熔断器是同一种误导：移动端切后台、用户关页面都会产生取消，
+   * 把取消算进熔断会让一次共享网络的抖动熔断掉一个健康的实例。
+   */
+  @Test
+  @DisplayName("调用方中途断开：没有多余的事件，但结算成 CLIENT_CANCELLED —— 取消不是上游失败")
+  void cancellationSettlesAsCancelledAndNotAsUpstreamFailure() {
+    UPSTREAM.replayStream(List.of(chunkWith("一"), chunkWith("二"), chunkWith("三"),
+        terminalChunk("stop"), done()), Duration.ofMillis(700));
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    // 只取前两帧就取消：上游后面还有三块没写出来。
+    List<String> frames = result.getResponseBody()
+        .take(2)
+        .collectList()
+        .block(Duration.ofSeconds(20));
+
+    assertThat(frames).as("取消之前收到的帧").hasSize(2);
+
+    Outcome outcome = soleSettlementOf(requestId);
+    assertThat(outcome.kind()).isEqualTo(OutcomeKind.CLIENT_CANCELLED);
+    // 取消不对应任何状态码：接收方已经不在了，「给客户端什么状态码」这件事不成立。
+    assertThat(outcome.error().httpStatus()).isNull();
+  }
+
+  /**
+   * 截断影响展示，不影响计费。
+   *
+   * <p>用量走**上游回报**那一条独立轨道：客户端少收到多少个字符，与这一次调用花了多少 token
+   * 是两件事。按截断后的字符数估算，等于让「上游发疯时网关的自我保护」变成一次少计费。
+   */
+  @Test
+  @DisplayName("累积内容被截断时，用量仍然是上游回报的那个数 —— 截断影响展示，不影响计费")
+  void truncationDoesNotChangeReportedUsage() {
+    UPSTREAM.replayStream(List.of(chunkWith("这是一段明显超过上限的内容"),
+        usageChunk(11, 7, 18), terminalChunk("stop"), done()), Duration.ZERO);
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    List<String> frames = framesOf(result);
+
+    assertThat(concatenatedContent(frames)).hasSize(MAX_CONTENT_CHARS);
+    Outcome outcome = soleSettlementOf(requestId);
+    assertThat(outcome.usage()).as("结算里带的用量").isNotNull();
+    assertThat(outcome.usage().totalTokens()).isEqualTo(18L);
+  }
+
+  /**
+   * 延迟算到**收到终态**为止，不是算到响应头写出的那一瞬间。
+   *
+   * <p>这两者的差别就是整条响应体。在响应头写出时结算的实现会让流式的耗时恒为零，
+   * 于是流式的 P99 看起来特别好，而那只是「没记」造成的错觉 ——
+   * 延迟感知负载均衡拿到的 EWMA 输入是假的（ADR-0005 第 2 节）。
+   */
+  @Test
+  @DisplayName("延迟算到收到终态为止：流式的耗时覆盖整条流，不是响应头写出那一瞬间")
+  void latencyIsMeasuredToTheTerminalNotToTheHeaders() {
+    UPSTREAM.replayStream(List.of(chunkWith("慢"), chunkWith("慢"), chunkWith("来"),
+        terminalChunk("stop"), done()), Duration.ofMillis(400));
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    framesOf(result);
+
+    // 终态在第 4 块才到（约 1.2 秒）：块间 400ms 仍在 600ms 上限之内，这条流是好好说话的。
+    assertThat(soleSettlementOf(requestId).latency())
+        .isGreaterThanOrEqualTo(Duration.ofMillis(900));
+  }
+
+  /**
+   * 非流式走**同一个**收口点结算。
+   *
+   * <p>两个端口、一个 Provider、一本账：只有一侧记的话，另一侧的延迟与成功率都好看到没有意义，
+   * 而「流式绕过治理」正是从「流式那条路单独有一套东西」开始的。
+   */
+  @Test
+  @DisplayName("非流式调用同样结算一次，且记在同一本账上")
+  void nonStreamingCallSettlesThroughTheSameSink() {
+    UPSTREAM.replay(200, """
+        {"id":"chatcmpl-ns","object":"chat.completion","model":"recorded-model",
+         "choices":[{"index":0,"message":{"role":"assistant","content":"好"},
+                     "finish_reason":"stop"}],
+         "usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}
+        """);
+
+    String requestId = client.post()
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .bodyValue(requestBody(false))
+        .exchange()
+        .expectBody()
+        .returnResult()
+        .getResponseHeaders()
+        .getFirst("X-Airouter-Request-Id");
+
+    Outcome outcome = soleSettlementOf(requestId);
+    assertThat(outcome.kind()).isEqualTo(OutcomeKind.SUCCESS);
+    assertThat(outcome.usage().totalTokens()).isEqualTo(13L);
+    // 实例身份现阶段就是端点地址：结算里少了它，事后分不清一次失败属于哪一个实例。
+    assertThat(outcome.instanceId()).isEqualTo(UPSTREAM.baseUrl());
+  }
+
+  /**
    * 每一份录制的流式字节都产出与基线一致的**帧序列**。
    *
    * <p>新增用例不需要改代码：在 {@code src/test/resources/contract-stream/} 下建一个目录，
@@ -299,7 +481,7 @@ final class StreamingEndToEndTest {
   private static List<String> framesFrom(RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
         new OutboundWire(recorded.baseUrl(), Duration.ofSeconds(10), BUFFER_BYTES, MAX_FRAME_BYTES),
-        "golden-key", MODEL, IDLE_TIMEOUT, 1 << 16);
+        "golden-key", MODEL, recorded.baseUrl(), IDLE_TIMEOUT, 1 << 16, outcome -> { });
     OpenAiInboundCodec.StreamEncoder encoder = OpenAiInboundCodec.newStreamEncoder();
     return JdkFlowAdapter.flowPublisherToFlux(provider.stream(request()))
         .concatMapIterable(encoder::encode)
@@ -314,6 +496,73 @@ final class StreamingEndToEndTest {
           .filter(dir -> Files.exists(dir.resolve("expected.json")))
           .sorted()
           .toList();
+    }
+  }
+
+  /**
+   * 打一次流式请求，返回还能读响应头的那个结果对象。
+   *
+   * <p>请求标识从响应头里取，因为结算是按 {@code requestId} 记的，
+   * 而它是把「这一次调用」与「它的结算」对上的唯一凭据 ——
+   * 取「账本最后一条」在并发下会拿到别人的结果。
+   */
+  private FluxExchangeResult<String> exchangeStreamingResult() {
+    return client.post()
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .bodyValue(requestBody(true))
+        .exchange()
+        .returnResult(String.class);
+  }
+
+  private static List<String> framesOf(FluxExchangeResult<String> result) {
+    return result.getResponseBody().collectList().block(Duration.ofSeconds(20));
+  }
+
+  private static String requestIdOf(FluxExchangeResult<String> result) {
+    String requestId = result.getResponseHeaders().getFirst("X-Airouter-Request-Id");
+    assertThat(requestId).as("响应头里的请求标识").isNotBlank();
+    return requestId;
+  }
+
+  /**
+   * 这一条请求的**唯一**结算：等到它出现，并断言只有一条。
+   *
+   * <p>「恰好结算一次」在这里而不是只在 core 的单测里断言：core 那边守的是 {@code claim()} 本身，
+   * 这里守的是**一条真实的流**在走过分帧、译码、截断、补发终态之后只留下一条记录 ——
+   * 终态与取消同时发生时多出来的那一条，只有走到末端才看得见。
+   */
+  private Outcome soleSettlementOf(String requestId) {
+    List<Outcome> settled = awaitSettlements(requestId);
+    assertThat(settled).as(requestId + " 的结算条数").hasSize(1);
+    return settled.get(0);
+  }
+
+  /**
+   * 等条件成立，不睡固定时长再比数字。
+   *
+   * <p>结算发生在流式的终态那一瞬间，与「客户端收完最后一帧」之间隔着一次网络写；
+   * 睡一个固定时长去等它，会让这条断言在慢机器上偶发地红。
+   */
+  private List<Outcome> awaitSettlements(String requestId) {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (System.nanoTime() < deadline) {
+      List<Outcome> settled = settlementLog.ofRequest(requestId);
+      if (!settled.isEmpty()) {
+        return settled;
+      }
+      sleepBriefly();
+    }
+    throw new AssertionError("十秒内没有等到 " + requestId + " 的结算；账本里现在有 "
+        + settlementLog.all().size() + " 条");
+  }
+
+  private static void sleepBriefly() {
+    try {
+      Thread.sleep(20L);
+    } catch (InterruptedException expected) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("等待结算时被中断", expected);
     }
   }
 
@@ -354,6 +603,15 @@ final class StreamingEndToEndTest {
         + "\"created\":1700000000,\"model\":\"" + MODEL + "\","
         + "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + content + "\"},"
         + "\"finish_reason\":null}]}\n\n";
+  }
+
+  /** 上游把用量单独发一块（{@code stream_options.include_usage} 打开时就是这样）。 */
+  private static String usageChunk(int promptTokens, int completionTokens, int totalTokens) {
+    return "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\","
+        + "\"created\":1700000000,\"model\":\"" + MODEL + "\",\"choices\":[],"
+        + "\"usage\":{\"prompt_tokens\":" + promptTokens
+        + ",\"completion_tokens\":" + completionTokens
+        + ",\"total_tokens\":" + totalTokens + "}}\n\n";
   }
 
   private static String terminalChunk(String reason) {

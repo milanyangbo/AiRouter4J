@@ -6,6 +6,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
@@ -116,6 +119,57 @@ final class CanonicalTest {
     }
   }
 
+  /**
+   * 一条流**恰好结算一次**（ADR-0005 第 2 节）。
+   *
+   * <p>这里断言的是「抢」这个动作本身：终态与取消在同一瞬间发生时，
+   * 「先查有没有结算过、再结算」那种两步写法会给出两次结算，
+   * 而重复结算的后果是重复扣配额、重复写调用历史 —— 两处都看不出自己是第二次。
+   */
+  @Nested
+  @DisplayName("结算的唯一性")
+  final class SettlingOnce {
+
+    @Test
+    @DisplayName("抢结算只有第一次成功：第二次必须落空，且此后一直显示为已结算")
+    void claimSucceedsOnlyOnce() {
+      StreamState state = new StreamState();
+
+      assertThat(state.claim()).isTrue();
+      assertThat(state.claim()).isFalse();
+      assertThat(state.isSettled()).isTrue();
+    }
+
+    @Test
+    @DisplayName("并发抢结算时恰好一个抢到：先查后写的写法会在同一瞬间给出两个 true")
+    void concurrentClaimsSettleExactlyOnce() throws InterruptedException {
+      StreamState state = new StreamState();
+      int racers = 8;
+      CountDownLatch lined = new CountDownLatch(racers);
+      CountDownLatch start = new CountDownLatch(1);
+      CountDownLatch finished = new CountDownLatch(racers);
+      AtomicInteger winners = new AtomicInteger();
+      for (int i = 0; i < racers; i++) {
+        Thread racer = new Thread(() -> {
+          lined.countDown();
+          awaitQuietly(start);
+          if (state.claim()) {
+            winners.incrementAndGet();
+          }
+          finished.countDown();
+        }, "settlement-racer-" + i);
+        racer.setDaemon(true);
+        racer.start();
+      }
+      // 八个都到起跑线上再一起放：错开出发的话，CAS 那条路根本没被考验。
+      assertThat(lined.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      assertThat(finished.await(5, TimeUnit.SECONDS)).isTrue();
+
+      assertThat(winners.get()).as("抢到结算的线程数").isEqualTo(1);
+    }
+  }
+
   @Test
   @DisplayName("passthrough 对外是不可变的：它会被交给多个消费者，谁都不该改得动它")
   void passthroughIsImmutable() {
@@ -125,5 +179,14 @@ final class CanonicalTest {
 
     assertThatThrownBy(() -> request.passthrough().put("x", "y"))
         .isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  /** 起跑线用的等待。被打断时只恢复中断标记：这里的等待不承载任何业务含义。 */
+  private static void awaitQuietly(CountDownLatch latch) {
+    try {
+      latch.await(5, TimeUnit.SECONDS);
+    } catch (InterruptedException expected) {
+      Thread.currentThread().interrupt();
+    }
   }
 }

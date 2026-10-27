@@ -42,6 +42,9 @@ public final class RecordedUpstream implements AutoCloseable {
 
   private volatile Duration between = Duration.ZERO;
 
+  /** 写完所有块之后再静默多久才关连接。它是「讲完几句就沉默」那一种上游的开关。 */
+  private volatile Duration silenceAtEnd = Duration.ZERO;
+
   private volatile boolean streaming;
 
   private volatile String lastRequestBody = "";
@@ -108,6 +111,12 @@ public final class RecordedUpstream implements AutoCloseable {
         out.write(chunks.get(i).getBytes(StandardCharsets.UTF_8));
         out.flush();
         chunksWritten.incrementAndGet();
+      }
+      // 静默**必须发生在关闭输出流之前**：分块编码的终止块是在流关闭时发出的，
+      // 先关流就等于「上游把话说完了」，于是那条路走到的是「没给终态就结束」而不是「静默超时」。
+      // 两者在判定上是两件事，而后者才是要靠这个开关造出来的那一种。
+      if (!silenceAtEnd.isZero()) {
+        sleep(silenceAtEnd);
       }
     }
     exchange.close();
@@ -187,11 +196,28 @@ public final class RecordedUpstream implements AutoCloseable {
   public void replayStream(List<String> nextChunks, Duration nextBetween) {
     this.chunks = List.copyOf(nextChunks);
     this.between = nextBetween;
+    this.silenceAtEnd = Duration.ZERO;
     this.streaming = true;
     this.chunksWritten.set(0);
     this.lastRequestBody = "";
     this.lastPath = "";
     this.lastAuthorization = null;
+  }
+
+  /**
+   * 换一份 SSE 样本，写完这些块之后**先静默一段时间再关连接**。
+   *
+   * <p>「讲完几句就沉默」是流式最难测的一种上游：它既不是成功（没把话说完），
+   * 也不是失败（连得上、也说过话）。只有块间静默超时能判它，
+   * 而这条路径在真实世界里只在网络抖动或对端卡死的时候出现 ——
+   * 靠运气等它发生，等于没有测试。
+   *
+   * @param nextChunks 要写出的块
+   * @param silence 写完之后的静默时长。它必须**长于**被测的块间上限，否则判不出来
+   */
+  public void holdOpen(List<String> nextChunks, Duration silence) {
+    replayStream(nextChunks, Duration.ZERO);
+    this.silenceAtEnd = silence;
   }
 
   /**

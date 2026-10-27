@@ -13,12 +13,17 @@ import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -50,6 +55,10 @@ import tools.jackson.databind.json.JsonMapper;
  * 三种异常终态。后三种各自都要在结算账本里留下**自己那一条**，
  * 而它们的判定互不相同 —— 这正是流式结算的全部内容：上游不讲完就不是成功，
  * 调用方断开不是上游失败，一条流只留一条。
+ *
+ * <p>还有一类是**字节层的分块任意性**：上游怎么切 TCP 段与帧的边界毫无关系，
+ * 一个三字节的汉字被劈成两半也必须读成完整的字。这一类只在录制器按字节块回放时才造得出来 ——
+ * 真实端点切不出这些形状。
  */
 @SpringBootTest(classes = io.github.airouter.app.AiRouterApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -67,6 +76,15 @@ final class StreamingEndToEndTest {
   private static final int BUFFER_BYTES = 1 << 20;
 
   private static final int MAX_FRAME_BYTES = 1 << 20;
+
+  /**
+   * 块间隔。刻意留得比「一次 socket 写」长：不留的话内核会把相邻的小块合成一个 TCP 段，
+   * 「切在两个段之间」就根本没有发生 —— 测试看起来在测分块，其实测的是合并后的那一段。
+   */
+  private static final int SEGMENT_GAP_MS = 200;
+
+  /** 生成式切点的种子。property-based 的失败必须能复现。 */
+  private static final long SPLIT_SEED = 20261027L;
 
   private static final String MODEL = "recorded-model";
 
@@ -252,6 +270,145 @@ final class StreamingEndToEndTest {
 
     assertThat(concatenatedContent(frames)).isEqualTo("在");
     assertThat(frames.get(frames.size() - 1)).isEqualTo("[DONE]");
+  }
+
+  /**
+   * 一个多字节字符被切在两个 TCP 段之间。
+   *
+   * <p>三种切法都走一遍：切在这个三字节字的内部（第一字节后、第二字节后），
+   * 以及一个字节一块 —— 后者一次覆盖**所有**可能的切点。
+   *
+   * <p>读错的表现是替换字符（{@code U+FFFD}）或者干脆少一个字：先把字节解码成字符串再拼接的实现
+   * 会在块边界上产生它。这种故障只在响应够长、网络够忙的时候出现，属于最难复现的那一类。
+   */
+  @Test
+  @DisplayName("多字节字符被切在两个 TCP 段之间：仍然读成完整的字，不出现替换字符")
+  void multiByteCharacterSplitAcrossSegmentsIsStillReadWhole() {
+    String body = chunkWith("你") + chunkWith("好") + chunkWith("吗") + terminalChunk("stop") + done();
+    int start = byteOffsetOf(body, "你");
+
+    for (int cut : List.of(start, start + 1, start + 2)) {
+      UPSTREAM.replayBytes(splitAt(body, List.of(cut)), Duration.ofMillis(SEGMENT_GAP_MS));
+
+      List<String> frames = exchangeStreaming();
+
+      assertThat(concatenatedContent(frames))
+          .as("切在第 " + cut + " 个字节处读到的内容")
+          .isEqualTo("你好吗");
+      assertThat(frames.get(frames.size() - 1)).isEqualTo("[DONE]");
+    }
+
+    UPSTREAM.replayBytes(splitAt(body, everyOffsetOf(body)), Duration.ofMillis(1));
+
+    List<String> frames = exchangeStreaming();
+
+    assertThat(concatenatedContent(frames)).as("一个字节一块时读到的内容").isEqualTo("你好吗");
+    assertThat(frames.get(frames.size() - 1)).isEqualTo("[DONE]");
+  }
+
+  /**
+   * 空 {@code data:} 帧不是内容。
+   *
+   * <p>上游用它做保活。当成内容的后果不是报错，而是客户端正文里冒出空行 ——
+   * 一种只在「上游压力大、保活发得多」的时候才看得出来的脏数据。
+   */
+  @Test
+  @DisplayName("空 data: 帧不是内容：上游保活不在客户端正文里冒出空行")
+  void emptyDataFramesAreNotContent() {
+    UPSTREAM.replayStream(List.of("data:\n\n", "data: \n\n", "data:   \n\n",
+        chunkWith("在"), "data:\n\n", terminalChunk("stop"), done()), Duration.ZERO);
+
+    List<String> frames = exchangeStreaming();
+
+    assertThat(frames).as("客户端收到的帧：空帧不该出现").doesNotContain("");
+    // 开场 + 内容 + 终态 + 哨兵：多出来的那一帧就是有空帧被当成了内容。
+    assertThat(frames).hasSize(4);
+    assertThat(contents(frames)).containsExactly("在");
+    assertThat(frames.get(frames.size() - 1)).isEqualTo("[DONE]");
+  }
+
+  /**
+   * 只有保活的流**没有终态**。
+   *
+   * <p>保活两个方向都不能冒充别的东西：不冒充内容（见上面两条），也不冒充结局 ——
+   * 一条一直在保活、但始终没讲完的流，与一条静默的流在判定上是同一类：上游没把话说完。
+   * 上游不发保活时的那种「连接还在但没有任何字节」的待命状态，正是靠保活区分的，
+   * 所以保活本身不为这条流提供任何「它进行得顺利」的证据。
+   */
+  @Test
+  @DisplayName("只有保活的流没有终态：保活不冒充结局，仍然判为上游没讲完")
+  void keepaliveOnlyStreamHasNoTerminalAndIsNotSuccess() {
+    UPSTREAM.replayStream(List.of(": 还在想\n\n", ": 又想了一会儿\n\n"), Duration.ZERO);
+
+    FluxExchangeResult<String> result = exchangeStreamingResult();
+    String requestId = requestIdOf(result);
+    List<String> frames = framesOf(result);
+
+    // 保活不产生客户端帧；剩下的只有「上游没给终态就把连接收了」那一帧失败。
+    assertThat(frames).as("客户端收到的帧").hasSize(1);
+    assertThat(frames.get(0)).contains("upstream_closed");
+    assertThat(soleSettlementOf(requestId).kind()).isEqualTo(OutcomeKind.UPSTREAM_FAILURE);
+  }
+
+  /**
+   * 同一块字节只被翻译一次（{@code CHUNK_PARSE_COUNT = 1}）。
+   *
+   * <p>「解析了几次」是一个内部计数，没有外部可观测的计数器；
+   * 而为了测它往生产代码里塞一个计数器，等于让测试决定生产代码长什么样。
+   * 于是这里断言它在外的**两个**后果：上游只被请求一次（同一份字节没有被读两遍），
+   * 以及每一块的内容在客户端恰好出现一次、顺序不变 —— 重复解析在「译码 → 发事件」
+   * 这条链上的唯一外在表现就是内容重复，或者被后面那一次覆盖掉。
+   */
+  @Test
+  @DisplayName("同一块上游字节只被翻译一次：内容不重复、不丢失、顺序不变")
+  void eachUpstreamChunkIsTranslatedExactlyOnce() {
+    UPSTREAM.resetRequests();
+    UPSTREAM.replayStream(List.of(chunkWith("甲"), chunkWith("乙"), chunkWith("丙"), chunkWith("丁"),
+        terminalChunk("stop"), done()), Duration.ZERO);
+
+    List<String> frames = exchangeStreaming();
+
+    assertThat(UPSTREAM.requests()).as("上游被请求的次数").isEqualTo(1);
+    // 开场 + 四块内容 + 终态 + 哨兵：多一帧意味着某一块被解析了两次，少一帧意味着某一块被吞了。
+    assertThat(frames).hasSize(7);
+    assertThat(contents(frames)).containsExactly("甲", "乙", "丙", "丁");
+  }
+
+  /**
+   * 任意分块方式下合并结果唯一。
+   *
+   * <p>输入是**生成**的而不是手写的：三组固定步长加二十组随机切点。
+   * 手写几种切法只能证明那几种恰好没问题，而这里要的不变量与切法无关 ——
+   * 一旦有人让分帧依赖「块通常是完整的」这个假设，随机切点会在某一次把它撞出来。
+   *
+   * <p>种子固定，失败消息带上切点：property-based 的失败必须能复现，也要能说出是哪一组输入。
+   */
+  @Test
+  @DisplayName("任意分块方式下合并结果唯一：生成式切点下的帧序列与一次收到全部完全相同")
+  void arbitrarySplittingYieldsOneMergedResult() {
+    String body = chunkWith("你") + chunkWith("好") + chunkWith("吗") + terminalChunk("stop") + done();
+    int length = body.getBytes(StandardCharsets.UTF_8).length;
+
+    UPSTREAM.replayStream(List.of(body), Duration.ZERO);
+    List<String> reference = exchangeStreaming();
+    assertThat(reference).as("对照：一次收到全部").isNotEmpty();
+
+    List<List<Integer>> splittings = new ArrayList<>();
+    splittings.add(everyNth(length, 3));
+    splittings.add(everyNth(length, 17));
+    splittings.add(List.of(length / 2));
+    Random random = new Random(SPLIT_SEED);
+    for (int round = 0; round < 20; round++) {
+      splittings.add(randomCuts(length, random));
+    }
+
+    for (List<Integer> cuts : splittings) {
+      UPSTREAM.replayBytes(splitAt(body, cuts), Duration.ofMillis(1));
+
+      assertThat(exchangeStreaming())
+          .as("切点 " + cuts + " 下客户端收到的帧序列")
+          .isEqualTo(reference);
+    }
   }
 
   /**
@@ -585,17 +742,78 @@ final class StreamingEndToEndTest {
   }
 
   private static String concatenatedContent(List<String> frames) {
-    StringBuilder text = new StringBuilder();
+    return String.join("", contents(frames));
+  }
+
+  /**
+   * 每一帧带的正文内容，按到达顺序。没有内容的帧（开场带的是角色、终态带的是结束原因、
+   * 哨兵不是 JSON）不进这张表 —— 断言「内容不重复」只能在**只有内容**的那张表上做。
+   */
+  private static List<String> contents(List<String> frames) {
+    List<String> pieces = new ArrayList<>();
     for (String frame : frames) {
       if ("[DONE]".equals(frame)) {
         continue;
       }
-      JsonNode delta = MAPPER.readTree(frame).path("choices").path(0).path("delta");
-      if (!delta.path("content").isMissingNode()) {
-        text.append(delta.path("content").asString(""));
+      JsonNode content = MAPPER.readTree(frame).path("choices").path(0).path("delta").path("content");
+      if (!content.isMissingNode()) {
+        pieces.add(content.asString(""));
       }
     }
-    return text.toString();
+    return pieces;
+  }
+
+  /**
+   * 按字节切点把一份 SSE 原文切成若干块。
+   *
+   * <p>切点落在多字节字符**内部**是刻意允许的：那正是要造的形状，
+   * 而它无法用字符串表达（半个 UTF-8 序列不是合法文本），所以这里进出都是字节块。
+   */
+  private static List<byte[]> splitAt(String body, List<Integer> cutPoints) {
+    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+    List<byte[]> parts = new ArrayList<>();
+    int start = 0;
+    for (int cut : new TreeSet<>(cutPoints)) {
+      if (cut > start && cut < bytes.length) {
+        parts.add(Arrays.copyOfRange(bytes, start, cut));
+        start = cut;
+      }
+    }
+    parts.add(Arrays.copyOfRange(bytes, start, bytes.length));
+    return parts;
+  }
+
+  /** 每一个字节都是一块时的切点：所有可能的切点一次覆盖。 */
+  private static List<Integer> everyOffsetOf(String body) {
+    return everyNth(body.getBytes(StandardCharsets.UTF_8).length, 1);
+  }
+
+  private static List<Integer> everyNth(int length, int step) {
+    List<Integer> cuts = new ArrayList<>();
+    for (int offset = step; offset < length; offset += step) {
+      cuts.add(offset);
+    }
+    return cuts;
+  }
+
+  /** 一到六个随机切点，升序去重。 */
+  private static List<Integer> randomCuts(int length, Random random) {
+    Set<Integer> cuts = new TreeSet<>();
+    int count = 1 + random.nextInt(6);
+    for (int i = 0; i < count; i++) {
+      cuts.add(1 + random.nextInt(length - 1));
+    }
+    return List.copyOf(cuts);
+  }
+
+  /**
+   * 一个字符在原文里的**字节**偏移。
+   *
+   * <p>字符偏移与字节偏移在含中文的正文里不是一回事 ——
+   * 用 {@link String#indexOf} 的结果去切字节，切中的位置根本不在那个字上。
+   */
+  private static int byteOffsetOf(String body, String character) {
+    return body.substring(0, body.indexOf(character)).getBytes(StandardCharsets.UTF_8).length;
   }
 
   private static String chunkWith(String content) {

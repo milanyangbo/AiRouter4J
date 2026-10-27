@@ -38,7 +38,8 @@ public final class RecordedUpstream implements AutoCloseable {
 
   private volatile String body;
 
-  private volatile List<String> chunks = List.of();
+  /** 按块写出的字节。**存字节而不是字符串**：半个 UTF-8 序列不是合法文本，见 {@link #replayBytes}。 */
+  private volatile List<byte[]> chunks = List.of();
 
   private volatile Duration between = Duration.ZERO;
 
@@ -108,7 +109,7 @@ public final class RecordedUpstream implements AutoCloseable {
         if (i > 0 && !between.isZero()) {
           sleep(between);
         }
-        out.write(chunks.get(i).getBytes(StandardCharsets.UTF_8));
+        out.write(chunks.get(i));
         out.flush();
         chunksWritten.incrementAndGet();
       }
@@ -194,7 +195,23 @@ public final class RecordedUpstream implements AutoCloseable {
    * @param nextBetween 块间静默。给 {@link Duration#ZERO} 表示不留
    */
   public void replayStream(List<String> nextChunks, Duration nextBetween) {
-    this.chunks = List.copyOf(nextChunks);
+    replayBytes(nextChunks.stream()
+        .map(text -> text.getBytes(StandardCharsets.UTF_8))
+        .toList(), nextBetween);
+  }
+
+  /**
+   * 按**原始字节块**回放。{@link #replayStream} 走的是字符串，而字符串走不到这里要的形状：
+   * 一个三字节的汉字被劈成两半之后，两半各自都不是合法文本，
+   * 用字符串表达就等于在编码层先把字符修好了 —— 那正是要被证伪的那个假设。
+   *
+   * <p>所以「一个多字节字符被切在两个 TCP 段之间」只有这一条入口造得出来。
+   *
+   * @param nextChunks 要写出的字节块。块内会被复制一份，回放过程中不受调用方后续改动影响
+   * @param nextBetween 块间静默
+   */
+  public void replayBytes(List<byte[]> nextChunks, Duration nextBetween) {
+    this.chunks = nextChunks.stream().map(byte[]::clone).toList();
     this.between = nextBetween;
     this.silenceAtEnd = Duration.ZERO;
     this.streaming = true;

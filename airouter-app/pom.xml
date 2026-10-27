@@ -26,6 +26,14 @@
       <artifactId>airouter-agent</artifactId>
     </dependency>
 
+    <!-- WebFlux 而不是 Servlet：网关两头的流量都是长连接 + 流式，
+         阻塞式 IO 模型在这里会把一条流的成本压在一个线程上（ADR-0002 第 2 节）。
+         它同时是后续所有端到端测试的入站接缝 —— 整个项目只允许有这一个。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
@@ -36,16 +44,37 @@
       <artifactId>archunit-junit5</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- R4 的违规样例要引用一个 HTTP 状态码类型（治理侧拿着它就能自己判成败）。
-         只有测试作用域用得到，webflux starter 随阶段 2 的入站 Face 一起进来。 -->
+    <!-- 厂商自己的客户端。它只在测试里出现，作用是把「标准客户端能否直接解析我们的响应」
+         这件事交给第三方判定：自己写断言证明自己合规，等于自己批自己的卷子。 -->
     <dependency>
-      <groupId>org.springframework</groupId>
-      <artifactId>spring-web</artifactId>
+      <groupId>com.openai</groupId>
+      <artifactId>openai-java</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 这里刻意**不**声明 test 作用域的 spring-web。
+         它已经由 webflux starter 以 compile 作用域传递进来，而在这里再声明一次并标成 test，
+         会按「最近声明优先」把整个 spring-web 降到 test —— 于是可执行 jar 里没有它，
+         启动期在 WebClient.builder() 上抛 NoClassDefFoundError。
+         测试要用的 HTTP 状态码类型（R4 的违规样例）跟着 compile 作用域一起就在测试 classpath 上。 -->
   </dependencies>
 
-  <!-- 阶段 0 没有可执行 jar：spring-boot-maven-plugin 的 repackage 要求有一个
-       @SpringBootApplication，而它在阶段 2 才出现。与其先配一个再临时关掉，不如等它真的存在。 -->
+  <build>
+    <plugins>
+      <!-- 打出可执行 jar：目的是让「可执行 jar 能不能起得来」这件事可以用一条命令回答，
+           而不是先祈祷 IDE 的 run configuration 和它一致（阶段 2 起 @SpringBootApplication 已存在）。 -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>repackage</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 
 </project>

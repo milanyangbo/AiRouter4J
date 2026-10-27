@@ -1,0 +1,19 @@
+# 这里出现的只能是「指向环境变量的占位符」，不能有任何真实地址或密钥。
+# 变量名与 EndpointProperties 里的常量同名，改动一处就是改错一处 —— 不要在这里手写字符串。
+#
+# 四个值都由环境变量给出，缺一个就起不来（EndpointProperties 的构造器判红，且指名变量名）。
+# 本地档位（local）随票 06 进来，那时这三个地址类变量都可以不设 ——
+# 切换档位只改 profile 或环境变量，不改代码。
+spring:
+  application:
+    name: airouter
+
+server:
+  port: 8080
+
+airouter:
+  endpoint:
+    base-url: ${AIROUTER_ENDPOINT_BASE_URL:}
+    api-key: ${AIROUTER_ENDPOINT_API_KEY:}
+    model: ${AIROUTER_ENDPOINT_MODEL:}
+    request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}

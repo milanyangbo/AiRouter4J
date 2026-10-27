@@ -31,11 +31,16 @@ class RulesCoverNonEmptyPackagesTest {
   private static final String GATEWAY = StructuralRules.ROOT + ".gateway";
 
   /** 只有 `package-info.java` 的包。它们不算「规则已覆盖」。 */
-  private static final List<String> PLACEHOLDER_PACKAGES =
-      List.of("", "config", "faces", "providers", "transport", "observe");
+  private static final List<String> PLACEHOLDER_PACKAGES = List.of("", "observe");
 
-  /** 已经有真实类的包。规则在它们上面不是空转 —— 阶段 0 是空的，随各阶段填充。 */
-  private static final List<String> PACKAGES_WITH_CLASSES = List.of();
+  /**
+   * 已经有真实类的包。规则在它们上面不是空转 —— 阶段 0 是空的，随各阶段填充。
+   *
+   * <p>父包与子包都要登记：判定用的是 {@code ..}（含子包），因此 {@code faces} 在
+   * {@code faces.openai} 有了类之后也算「有类」；反过来只登记子包会让父包这一层没人认领。
+   */
+  private static final List<String> PACKAGES_WITH_CLASSES =
+      List.of("config", "faces", "faces.openai", "providers", "providers.openai", "transport");
 
   private static final JavaClasses PRODUCTION = new ClassFileImporter()
       .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
@@ -57,7 +62,7 @@ class RulesCoverNonEmptyPackagesTest {
   @DisplayName("占位包里确实没有类：有了类就必须从占位名单挪走")
   void placeholderPackagesStillHaveNoClasses() {
     for (String name : PLACEHOLDER_PACKAGES) {
-      assertThat(namedClassesIn(name))
+      assertThat(namedClassesIn(name, false))
           .as("包已经有真实类了，它就不再是占位包，把它挪到 PACKAGES_WITH_CLASSES：%s", name)
           .isEmpty();
     }
@@ -67,14 +72,20 @@ class RulesCoverNonEmptyPackagesTest {
   @DisplayName("声称有类的包确实有类：规则不该对着空包宣称自己覆盖了它")
   void packagesClaimedToHaveClassesReallyDo() {
     for (String name : PACKAGES_WITH_CLASSES) {
-      assertThat(namedClassesIn(name))
+      // 含子包：父包自己只有一个 package-info、子包有真实类的情形，规则在这一层同样不是空转。
+      assertThat(namedClassesIn(name, true))
           .as("规则点名的包里一个类都没有，规则正在空转：%s", name)
           .isNotEmpty();
     }
   }
 
-  private static List<String> namedClassesIn(String relativeName) {
-    String pattern = GATEWAY + (relativeName.isEmpty() ? "" : "." + relativeName) + "..";
+  /**
+   * @param relativeName 相对 gateway 的包名，空串表示 gateway 自己
+   * @param includeSubpackages 是否把子包的类也算进来
+   */
+  private static List<String> namedClassesIn(String relativeName, boolean includeSubpackages) {
+    String packageName = GATEWAY + (relativeName.isEmpty() ? "" : "." + relativeName);
+    String pattern = includeSubpackages ? packageName + ".." : packageName;
     return PRODUCTION.stream()
         .filter(resideInAPackage(pattern))
         .filter(RulesCoverNonEmptyPackagesTest::isNamedClass)

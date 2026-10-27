@@ -76,7 +76,7 @@
 - 本机端点的安装、起停与实测能力边界见 `docs/runbook/local-openai-endpoint.md`。本机地址写 `127.0.0.1` 不写 `localhost`
 - 每个测试类必须用 `@Tag` 标出所属 gate（`unit` / `integration` / `architecture`），标准是**启不启容器、出不出网**；遗漏由 `EveryTestBelongsToAGateTest` 判红
 - **不要用 ArchUnit 自带的 `@AnalyzeClasses` 引擎**：它看不见类上的 `@Tag`，按 gate 筛选时整个类会被静默漏掉
-- 契约测试在 `airouter-app/src/test/resources/` 下三个目录（`contract/` 非流式、`contract-stream/` SSE、`contract-ollama/` 逐行 JSON），一个用例一个目录，放 `upstream.json` + `expected.json` 即被发现，**不需要改测试代码**。它们是未来任何框架升级的唯一安全网
+- 契约测试在 `airouter-app/src/test/resources/` 下三个目录（`contract/` 非流式、`contract-stream/` SSE、`contract-ollama/` 逐行 JSON）。已建 runner 的目录是一个用例一个目录，放 `upstream.json` + `expected.json` 即被发现，**不需要改测试代码**；`contract-ollama/` 目前**只有样本没有 runner**（它的样本是从真实端点抓下来的数据资产，runner 随 `ollama` 形态落地时才建 —— 不为尚不存在的形态建 runner）。它们是未来任何框架升级的唯一安全网
 - **时间相关的断言要等条件成立，不要睡固定时长再比数字**
 - 故意制造上游失败的用例必须交代它与熔断阈值的关系：同一测试类里三条失败就会把熔断器打开，后面用例收到的是 `instance_unavailable` 而不是它想看的上游错误 —— 表现为一条**与执行顺序有关**的偶发红
 - 两个静态分析的作用域都包含测试源码 → 每个新包（含测试里的样例包）都要补 `package-info.java`

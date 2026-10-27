@@ -5,6 +5,6 @@
   不该知道：背后有几个实例、走哪家厂商、上游的 wire format ——
   一旦它认识 providers，加一个 provider 就得回来改这里（R3a 判红）。
 
-  <p>阶段 0 是占位包（只有 package-info）。
+  <p>阶段 2 的第一条纵向切口在这里：OpenAI 兼容那一份入站翻译。
  */
 package io.github.airouter.gateway.faces;

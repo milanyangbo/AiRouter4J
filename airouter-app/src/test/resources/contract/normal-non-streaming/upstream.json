@@ -1,0 +1,28 @@
+{
+  "status": 200,
+  "body": {
+    "id": "chatcmpl-423",
+    "object": "chat.completion",
+    "created": 1792831538,
+    "model": "qwen2.5:0.5b",
+    "system_fingerprint": "fp_ollama",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "收到"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 35,
+      "prompt_tokens_details": {
+        "cached_tokens": 34
+      },
+      "completion_tokens": 2,
+      "total_tokens": 37
+    }
+  }
+}

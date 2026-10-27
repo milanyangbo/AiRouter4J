@@ -6,6 +6,7 @@
   <p>成败的结论只有一个出口：只有这里可以构造 {@code Outcome}，别处自己造一个就有了自己的成败口径
   （R9 判红，ADR-0005 第 1 节）。
 
-  <p>阶段 0 是占位包（只有 package-info）。
+  <p>阶段 2 的第一个 Provider（OpenAI 兼容）在这里。结算产生的 {@code Outcome}
+     随票 04 出现，出口仍然只有这一个。
  */
 package io.github.airouter.gateway.providers;

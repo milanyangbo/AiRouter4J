@@ -54,6 +54,10 @@
     <!-- 与 maven-checkstyle-plugin 3.6.0 配对的版本（ADR-0002）。 -->
     <checkstyle.version>10.21.2</checkstyle.version>
 
+    <!-- 厂商自己的 Java 客户端。它只出现在测试作用域：让「标准客户端能否解析我们的响应」
+         由第三方判定，而不是由我们自己写的断言判定。 -->
+    <openai-java.version>4.91.0</openai-java.version>
+
     <maven-enforcer-plugin.version>3.6.1</maven-enforcer-plugin.version>
     <maven-site-plugin.version>3.21.0</maven-site-plugin.version>
     <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
@@ -98,6 +102,13 @@
         <groupId>com.tngtech.archunit</groupId>
         <artifactId>archunit-junit5</artifactId>
         <version>${archunit.version}</version>
+        <scope>test</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>com.openai</groupId>
+        <artifactId>openai-java</artifactId>
+        <version>${openai-java.version}</version>
         <scope>test</scope>
       </dependency>
     </dependencies>

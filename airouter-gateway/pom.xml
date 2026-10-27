@@ -23,9 +23,21 @@
       <artifactId>airouter-core</artifactId>
     </dependency>
 
-    <!-- 阶段 0 只放占位包，因此这里还没有 WebFlux / validation / MyBatis 等运行时依赖：
-         它们随各自的阶段（阶段 2 的入站 Face、阶段 5 的存储）进来，
-         不按「将来可能用到」提前引入（ADR-0002 第 3 节）。 -->
+    <!-- WebFlux 随打通入站 Face 的这一票进来。同一个运行时同时服务两个方向：
+         出站用 WebClient，入站用 Face 的注解。选它的理由是网关两头都是长连接与流式，
+         阻塞式 IO 会把一条流的成本压在一个线程上（ADR-0002 第 2 节）。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+
+    <!-- MyBatis / validation 等运行时依赖随各自的阶段进来，不按「将来可能用到」提前引入
+         （ADR-0002 第 3 节）。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
 </project>

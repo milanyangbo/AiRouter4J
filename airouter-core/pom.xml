@@ -16,8 +16,21 @@
   <name>AiRouter :: core</name>
   <description>领域模型与端口。这里出现任何框架都是设计倒退（ADR-0003 第 1 节）。</description>
 
-  <!-- 阶段 0：没有依赖，也就没有可污染的东西。领域模型与端口随阶段 1 进入，
-       届时这里仍然是零依赖 —— 那条约束由下面的 enforcer 规则守着，不是靠自觉。 -->
+  <dependencies>
+    <!-- 测试依赖刻意不是 spring-boot-starter-test：那会把 Spring 带进依赖树，而 R1 判红的
+         是**依赖树**，不看作用域。领域模型不需要容器，它的测试也不需要。 -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
 
   <build>
     <plugins>

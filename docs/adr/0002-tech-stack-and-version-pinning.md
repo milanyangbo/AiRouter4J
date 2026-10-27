@@ -78,7 +78,12 @@ Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线�
 阶段 0 的依赖清单刻意只放了当时真正用得到的东西：
 `gateway` 只依赖 `core`，`agent` 只依赖 `core`，`app` 额外带测试作用域的
 spring-boot-starter-test / archunit / spring-web（R4 样例需要一个状态码类型）。
-WebFlux、actuator、可执行 jar 与 MyBatis 随各自的阶段进来。
+
+票 02（非流式打通）是依赖清单第一次随阶段增长的时刻，增长的三项各有各的用途：
+`gateway` 加 WebFlux（入站 Face 的注解与出站 WebClient 是同一个运行时）、
+`app` 加 WebFlux 与可执行 jar（`@SpringBootApplication` 在这一票才出现）、
+`app` 加测试作用域的 `com.openai:openai-java`（让「标准客户端能否解析我们的响应」由第三方判定）。
+actuator 与 MyBatis 仍然随各自的阶段进来 —— 不按「将来可能用到」提前引入。
 
 ## 5. 后果
 

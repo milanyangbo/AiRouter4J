@@ -19,6 +19,17 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 
 Read the file at the referenced path. The user will normally pass the path or the issue number directly.
 
+## review 前要核对的一件事
+
+审一段 diff 之前，先问**它的票文件是哪一个**，并确认那个文件真的存在：
+
+- 指不出票文件 → 这次改动没有被授权。先停下来问，不要审完再补一份文档
+- 指出的编号在 `.scratch/<slug>/issues/` 里没有对应文件 → 那是一个不存在的编号
+
+文档里**写着的**票号由 `airouter-app` 的 `TicketReferencesExistTest` 在构建里判红
+（悬空引用与缺号各一条）。它扫不到提交信息与对话 —— 那一半归 review 这一步，
+因为 review 阶段的上下文压力最小，适合施加这类标准。
+
 ## 与 ADR-0020 的分工
 
 [ADR-0020](../adr/0020-stage-plan-and-task-board.md) 是**阶段排期与任务清单**的权威，它取代的是旧票

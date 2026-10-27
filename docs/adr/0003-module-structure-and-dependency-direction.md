@@ -43,7 +43,8 @@
 **九条规则在阶段 0 一次落地，但生产包按需开放。** 阶段 0 开放
 `config` / `faces` / `providers` / `transport` / `observe` 五个业务包，
 每个只有 `package-info.java`；`registry` / `select` / `store` / `cluster` / `admin`
-随各自阶段开放，`routing` / `governance` 属阶段 3 / 7。
+随各自阶段开放；`routing` 属**阶段 4**（ADR-0020 的「选择链与负载均衡」），
+`governance` 属**阶段 7**。阶段号一律以 [0020](./0020-stage-plan-and-task-board.md) 为准。
 
 **「空包不要提前开」的准确含义是**：不要让规则看起来已覆盖了一块实际不存在的区域。
 所以它约束的不是「包能不能先建出来」，而是**规则守的必须是真有的东西**：

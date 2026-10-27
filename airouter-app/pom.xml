@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.airouter</groupId>
+    <artifactId>airouter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>airouter-app</artifactId>
+
+  <name>AiRouter :: app</name>
+  <description>启动与装配。跨模块的结构约束也住在这里：只有它看得到全部四个模块。</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.airouter</groupId>
+      <artifactId>airouter-gateway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.airouter</groupId>
+      <artifactId>airouter-agent</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- R4 的违规样例要引用一个 HTTP 状态码类型（治理侧拿着它就能自己判成败）。
+         只有测试作用域用得到，webflux starter 随阶段 2 的入站 Face 一起进来。 -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-web</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <!-- 阶段 0 没有可执行 jar：spring-boot-maven-plugin 的 repackage 要求有一个
+       @SpringBootApplication，而它在阶段 2 才出现。与其先配一个再临时关掉，不如等它真的存在。 -->
+
+</project>

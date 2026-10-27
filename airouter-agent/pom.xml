@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.airouter</groupId>
+    <artifactId>airouter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>airouter-agent</artifactId>
+
+  <name>AiRouter :: agent</name>
+  <description>Spring AI 层。阶段 0 只是壳：有模块，没有编排逻辑（ADR-0007 属阶段 14）。</description>
+
+  <dependencies>
+    <!-- 只依赖 core，不 Java 依赖 gateway：Agent 要走网关的话走 HTTP，不做模块内直连（ADR-0007）。 -->
+    <dependency>
+      <groupId>io.github.airouter</groupId>
+      <artifactId>airouter-core</artifactId>
+    </dependency>
+
+    <!-- Spring AI 的 starter 随阶段 14 引入。现在放进来只会让 enforcer 的
+         上界检查多一个「还没有任何代码用到」的坐标（ADR-0002 第 3 节）。 -->
+  </dependencies>
+
+</project>

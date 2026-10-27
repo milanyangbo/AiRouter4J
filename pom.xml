@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.2</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>io.github.airouter</groupId>
+  <artifactId>airouter</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>AiRouter</name>
+  <description>AI 模型网关，附带一层 Agentic 运维能力。</description>
+
+  <!-- 四个模块，不再多分（ADR-0003 第 1 节）。
+       依赖方向：app → gateway → core，app → agent → core。
+       `app` 是唯一在 classpath 上能看到全部四个模块的模块，
+       因此跨模块的结构约束（依赖方向、禁止的装配手法）只能住在它的测试里 ——
+       这不是随意挑的位置，而是依赖汇聚点唯一能给出全局视角的地方。 -->
+  <modules>
+    <module>airouter-core</module>
+    <module>airouter-gateway</module>
+    <module>airouter-agent</module>
+    <module>airouter-app</module>
+  </modules>
+
+  <!-- 全部版本号的唯一来源：Boot / Spring AI / Java 三者的版本号在各构建文件中只出现一次。
+       没有 profile —— 因此也不存在「临时把某个插件关掉」这种事后很难恢复的操作。
+
+       已知边界：子模块在自己的 <properties> 里覆盖上述版本，Maven 内置规则无法判红
+       （requireManagedVersions 来自 extra-enforcer-rules，其规则类缺少无参构造器，
+        与 enforcer 3.x 各版本均无法实例化）。该情形由票 02 的模块结构约束承担。 -->
+  <properties>
+    <java.version>21</java.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!-- 刻意钉住而非跟随最新：承载 Agentic 能力的社区包以其编译目标为准发版，
+         没有针对更晚的版本重新发过。详见 ADR-0002。 -->
+    <spring-ai.version>2.0.1</spring-ai.version>
+
+    <!-- 结构约束用的库。它只在测试作用域出现，不进入任何运行时 classpath。 -->
+    <archunit.version>1.5.1</archunit.version>
+
+    <!-- 与 maven-checkstyle-plugin 3.6.0 配对的版本（ADR-0002）。 -->
+    <checkstyle.version>10.21.2</checkstyle.version>
+
+    <maven-enforcer-plugin.version>3.6.1</maven-enforcer-plugin.version>
+    <maven-site-plugin.version>3.21.0</maven-site-plugin.version>
+    <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+    <spotbugs-maven-plugin.version>4.8.6.6</spotbugs-maven-plugin.version>
+
+    <!-- 三道 gate（ADR-0008 第 2 节）。默认跑全部；`-Dgroups=unit` 只跑一道。
+         这里列出全部三个而不是留空，是为了让「一共有哪几道」在 pom 里可读 ——
+         surefire 按 @Tag 挑选，而每个测试类必须标 gate 由 EveryTestBelongsToAGateTest 判红。 -->
+    <groups>unit,integration,architecture</groups>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- 模块之间互相引用时不写版本号：模块版本只有一个来源，就是聚合 POM 自己的 <version>。 -->
+      <dependency>
+        <groupId>io.github.airouter</groupId>
+        <artifactId>airouter-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.airouter</groupId>
+        <artifactId>airouter-gateway</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.airouter</groupId>
+        <artifactId>airouter-agent</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- 注意：这里刻意没有 airouter-app。它是装配终点，任何模块都不该依赖它
+           （由 airouter-app 里的结构规则 R2 判红）。 -->
+
+      <dependency>
+        <groupId>com.tngtech.archunit</groupId>
+        <artifactId>archunit-junit5</artifactId>
+        <version>${archunit.version}</version>
+        <scope>test</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <!-- 后续模块引用插件时不再写版本号，版本号只有上面这一处。 -->
+    <pluginManagement>
+      <plugins>
+        <!-- 风格检查与静态分析的共同前提：没有 skip 开关，没有抑制文件，
+             也没有任何过滤块、排除块或 include/exclude 名单。
+             违约的处置路径是改代码；确实无法避免的情形，处置路径是写一份 ADR（ADR-0008 第 1 节）。
+
+             configLocation 用仓库根目录而不是模块目录：子模块执行时 ${project.basedir} 指向模块自己，
+             相对路径会在每个模块里各找一份配置 —— 那就等于每个模块可以各自绕过门禁。
+
+             两个方向都不是默认行为，因此都显式写出，不让范围靠默认值决定：
+             includeTestSourceDirectory / includeTests 让测试源码也在分析范围内 ——
+             结构性规则依赖一批「故意违规」的样例类，它们同样要遵守风格规则。
+             留一批代码天生不在门禁范围内，就是抑制文件的雏形。 -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-checkstyle-plugin</artifactId>
+          <version>${maven-checkstyle-plugin.version}</version>
+          <dependencies>
+            <dependency>
+              <groupId>com.puppycrawl.tools</groupId>
+              <artifactId>checkstyle</artifactId>
+              <version>${checkstyle.version}</version>
+            </dependency>
+          </dependencies>
+          <configuration>
+            <configLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/checkstyle.xml</configLocation>
+            <includeTestSourceDirectory>true</includeTestSourceDirectory>
+            <consoleOutput>true</consoleOutput>
+            <failOnViolation>true</failOnViolation>
+            <failsOnError>true</failsOnError>
+            <violationSeverity>error</violationSeverity>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>com.github.spotbugs</groupId>
+          <artifactId>spotbugs-maven-plugin</artifactId>
+          <version>${spotbugs-maven-plugin.version}</version>
+          <configuration>
+            <includeTests>true</includeTests>
+            <effort>Default</effort>
+            <threshold>Default</threshold>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <configuration>
+            <!-- 只跑被挑中的那几道 gate。默认值是全部三道；`-Dgroups=unit` 覆盖它。
+                 「一个测试类忘了标 @Tag」在这里的后果是它不会被任何一道 gate 跑到 ——
+                 这不会红，只会静默消失，因此由结构 gate 里的 EveryTestBelongsToAGateTest 判红。 -->
+            <groups>${groups}</groups>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-site-plugin</artifactId>
+          <version>${maven-site-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${maven-enforcer-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>enforce-baseline</id>
+            <!-- 绑定在最早期：JDK 版本不对时不必等到编译阶段才知道。 -->
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireMavenVersion>
+                  <message>需要 Maven 3.9.0 或更高版本。请改用仓库自带的 ./mvnw，它会取正确的版本。</message>
+                  <version>[3.9.0,)</version>
+                </requireMavenVersion>
+                <requireJavaVersion>
+                  <message>需要 JDK 21 或更高版本。</message>
+                  <version>[21,)</version>
+                </requireJavaVersion>
+
+                <!-- 当某个依赖在其传递路径上要求的版本高于本次实际解析到的结果时即为失败。
+                     这条让「两个模块各自引入同一库的不同版本」在构建期暴露，而不是等到运行期。 -->
+                <requireUpperBoundDeps/>
+
+                <!-- 浮动版本是「同一次构建今天和明天得到不同结果」的头号来源。
+                     LATEST / RELEASE 与外部快照一律禁止。
+                     唯一的例外是本仓库自己的模块：它们在同一 reactor 里解析，
+                     不存在「明天拉到别的东西」的问题，而 0.1.0-SNAPSHOT 本身就是动态版本形态。
+                     例外范围按 groupId 收窄，不是放开 allowSnapshots —— 外部快照仍然会被判红。 -->
+                <banDynamicVersions>
+                  <message>禁止浮动版本与外部快照。仓库自身模块的 SNAPSHOT 不在禁止范围内。</message>
+                  <ignores>
+                    <ignore>io.github.airouter:*</ignore>
+                  </ignores>
+                </banDynamicVersions>
+
+                <!-- 每个插件都必须显式有版本号（含由父 POM 的 pluginManagement 提供的情形）。
+                     这与「版本号只在一处」是同一件事的另一面：插件版本散落在模块的 <plugins> 里，
+                     和不被统一管理的依赖版本是一样的坏审计属性。 -->
+                <requirePluginVersions>
+                  <message>插件版本缺失。请在根 POM 的 pluginManagement 里统一给出版本。</message>
+                  <banLatest>true</banLatest>
+                  <banRelease>true</banRelease>
+                  <banSnapshots>false</banSnapshots>
+                </requirePluginVersions>
+              </rules>
+            </configuration>
+          </execution>
+
+          <!-- 门禁的逃生舱只有一种形态：抑制文件。来源项目正是靠一份 186 行的
+               config/suppressions.xml 让 checkstyle 对整个代码库事实上失效（ADR-0008）。
+               这里把「这两个文件不许存在」变成构建断言，而不是写在文档里等人自觉遵守。 -->
+          <execution>
+            <id>enforce-gates-have-no-escape-hatch</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireFilesDontExist>
+                  <message>
+                    抑制文件会让门禁事实上失效。违约的正确处置是改代码；
+                    确实无法避免的规则，处置路径是写一份 ADR，不是加一行例外（ADR-0008 第 1 节）。
+                  </message>
+                  <files>
+                    <file>config/checkstyle/suppressions.xml</file>
+                    <file>config/spotbugs/exclude.xml</file>
+                  </files>
+                </requireFilesDontExist>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 风格检查：默认 verify 路径，无 skip 属性（ADR-0008 第 1 节）。
+           规则集只有十几条，每条在配置里都写了它为什么存在：config/checkstyle/checkstyle.xml。 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>style-gate</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 静态分析：同上，默认 verify 路径，无 skip、无排除文件。 -->
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>static-analysis-gate</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 测试：默认 test 路径，按三道 gate 分组（上面的 <groups>）。
+           没有 failsafe，也没有「集成测试单独一条命令」的第二个生命周期：
+           一道 gate 是一个筛选条件，不是一个额外的构建（ADR-0008 第 2 节）。 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

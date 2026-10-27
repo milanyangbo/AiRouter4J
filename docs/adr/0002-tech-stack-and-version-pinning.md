@@ -71,9 +71,14 @@ Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线�
 
 ## 4. 构建状态
 
-根 `pom.xml` 与四个模块的 `pom.xml` 已在阶段 0 随源码一并删除（`10c42a1`）。
-**实施阶段 0 的第一件事是按 [0020](./0020-stage-plan-and-task-board.md) 阶段 0 的清单重建它们**，
-包含 enforcer（版本、JDK、重复上界、插件版本、禁止抑制文件）、checkstyle、spotbugs 与 surefire 的分组配置。
+五个 `pom.xml`（根 + 四模块）已在票 01 重建：enforcer（版本、JDK 21、重复上界、插件版本、
+禁止抑制文件）、checkstyle 与 spotbugs（作用域含测试源码）、surefire 的三道 gate 分组
+（默认跑全部，`-Dgroups=unit|integration|architecture` 挑一道）。
+
+阶段 0 的依赖清单刻意只放了当时真正用得到的东西：
+`gateway` 只依赖 `core`，`agent` 只依赖 `core`，`app` 额外带测试作用域的
+spring-boot-starter-test / archunit / spring-web（R4 样例需要一个状态码类型）。
+WebFlux、actuator、可执行 jar 与 MyBatis 随各自的阶段进来。
 
 ## 5. 后果
 

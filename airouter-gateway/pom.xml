@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.airouter</groupId>
+    <artifactId>airouter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>airouter-gateway</artifactId>
+
+  <name>AiRouter :: gateway</name>
+  <description>入站 Face、出站 Provider、transport、routing、governance（ADR-0003 第 2 节）。</description>
+
+  <dependencies>
+    <!-- gateway 只允许依赖 core 与本层的运行时。跨层协同走 core 里的端口，不走具体类。 -->
+    <dependency>
+      <groupId>io.github.airouter</groupId>
+      <artifactId>airouter-core</artifactId>
+    </dependency>
+
+    <!-- 阶段 0 只放占位包，因此这里还没有 WebFlux / validation / MyBatis 等运行时依赖：
+         它们随各自的阶段（阶段 2 的入站 Face、阶段 5 的存储）进来，
+         不按「将来可能用到」提前引入（ADR-0002 第 3 节）。 -->
+  </dependencies>
+
+</project>

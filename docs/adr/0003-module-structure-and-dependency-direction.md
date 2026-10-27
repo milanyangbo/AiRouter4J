@@ -72,9 +72,18 @@
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 只有 `providers` 可以构造 `Outcome`
 
-规则将建于 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`（九条，编号 R1–R9）。
-**该文件连同四模块 `src` 已在阶段 0 删除，目前不存在** —— 重建时按下面的编号表复原，编号不得重排
-（其余 ADR 与 AGENTS.md 里引用的是 R4 / R9 这些编号，不是它们的内容）。
+规则在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`（九条，编号 R1–R9）。
+该文件已随票 01 按下面的编号表复原，**编号未重排**（其余 ADR 与 AGENTS.md 里引用的是 R4 / R9 这些编号，
+不是它们的内容）。
+
+复原时改了两处形状，都是为了让规则在 core 还没有内容（阶段 0）的时候就能守门：
+
+- **R6 / R7 是类级条件**，在一个条件里同时查类型、字段与方法三个位置，而不是拆成三条
+  「noFields / noMethods」规则 —— 拆开之后，还没有字段与方法的阶段会有子规则空转，
+  而 ArchUnit 对空转是报错的
+- **R9 按类型名 `Outcome` 认目标**，不按 `Class` 认。core 的 `Outcome` 属阶段 1，
+  在它落地之前，规则靠测试样例里的同名类型证明自己会红；两者可以互换而不必改规则
+  （样例类型届时换成真实类型即可）
 
 **R1–R9 编号表**（阶段 0 按此复原，编号不得重排）：
 

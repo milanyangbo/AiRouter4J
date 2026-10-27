@@ -23,10 +23,11 @@ import org.junit.jupiter.api.Test;
  * 它们「真的会红」由 {@link GuardsActuallyFireTest} 在样例包上断言，
  * 生产侧的内容随各阶段开放（ADR-0003 第 2 节）。
  *
- * <p>九条里唯一缺一条生产侧断言的是 **R4**：它面向的 `routing` 与 `governance` 两个包
- * 阶段 0 不存在（属阶段 3 / 7），ArchUnit 对「一条规则没有判定对象」是报错而不是放过，
- * 所以这里没有为它留一个空跑的方法。**包一开放，就要在这里补上它的生产侧断言** ——
- * 那之前它由 GuardsActuallyFireTest 的两条（做 IO、读状态码）守着。
+ * <p>R4 面向的 `routing`（阶段 4）与 `governance`（阶段 7）两个包曾长期不存在，
+ * 而 ArchUnit 对「一条规则没有判定对象」是报错而不是放过，
+ * 所以那时没有为它留一个空跑的方法。`routing` 包一开放，生产侧断言就补在了
+ * {@link #routingDoesNoIo()} —— 在那之前它由 GuardsActuallyFireTest 的两条
+ * （做 IO、读状态码）守着。`governance` 开放时按同样的写法再补一条。
  */
 @Tag("architecture")
 final class ModuleStructureTest {
@@ -60,7 +61,18 @@ final class ModuleStructureTest {
     StructuralRules.providersDoNotDependOnFaces(GATEWAY).check(CLASSES);
   }
 
-  // R4 的生产侧断言随 routing / governance 包开放时补在这里（见本类 javadoc）。
+  /**
+   * R4 —— 选择链是纯函数：它不碰协议、不做 IO，也**看不到 HTTP 状态码**。
+   *
+   * <p>这条断言随 `routing` 包开放（阶段 4）而生效。它守的是 ADR-0011 第 4 节那一行：
+   * 「策略可确定性断言（不起端点）」。策略一旦能看见传输层或状态码，
+   * 它就会开始自己判断成败，而那时「熔断说失败、指标说成功」只是时间问题。
+   */
+  @Test
+  @DisplayName("routing 不做 IO 也不读状态码：选择只操作候选与上下文")
+  void routingDoesNoIo() {
+    StructuralRules.routingAndGovernanceDoNoIo(GATEWAY).check(CLASSES);
+  }
 
   @Test
   @DisplayName("transport 不认识业务：分帧只认字节")

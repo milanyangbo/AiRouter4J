@@ -1,11 +1,15 @@
 package io.github.airouter.gateway.config;
 
+import io.github.airouter.core.CompletionPort;
 import io.github.airouter.core.OutcomeObserver;
+import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.gateway.observe.SettlementLog;
-import io.github.airouter.gateway.providers.UpstreamProvider;
 import io.github.airouter.gateway.providers.UpstreamProviderFactory;
 import io.github.airouter.gateway.registry.UpstreamRegistry;
-import java.util.function.Supplier;
+import io.github.airouter.gateway.routing.AvailabilityGate;
+import io.github.airouter.gateway.routing.InstanceSelector;
+import io.github.airouter.gateway.routing.RoundRobinSelector;
+import io.github.airouter.gateway.routing.SelectionChain;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.codec.ServerCodecConfigurer;
@@ -31,6 +35,10 @@ import org.springframework.web.reactive.config.WebFluxConfigurer;
  * <p>本文件还定下了**变更怎么进来**：{@link ConfigurationLedger} 记账、
  * {@link RegistryReloader} 换注册表、而给 Face 的那一份端口每次请求重新解析当前生效的那一版。
  * 三件事的形状由 ADR-0010 第 5、6 节给出。
+ *
+ * <p>它同时定下了**请求怎么被挑中一个实例**：{@link SelectionChain} 是六步那一处，
+ * 策略与闸门在这里被交给它，而 {@link RoutedUpstream} 把每一次调用都先送进链里
+ * （ADR-0011）。「用哪个策略」因此是一个装配决定，不是一个散落在调用方的决定。
  */
 @Configuration(proxyBeanMethods = false)
 public final class UpstreamConfiguration {
@@ -119,46 +127,73 @@ public final class UpstreamConfiguration {
   }
 
   /**
-   * Face 的两个端口：**默认服务的第一个启用着的实例**的那一份出站能力。
+   * Face 的两个端口：**每一次调用都先走一遍选择链**（ADR-0011）。
    *
-   * <p>「第一个」这一句是一个**阶段性的东西**：选择链与规则路由（ADR-0011 / 0012）进来之后，
-   * 挑实例不再由这里决定，这个方法要么消失、要么换成真正的入口。
-   * 现阶段没有那一层，所以把它写成一个显式的方法而不是藏在一句
-   * {@code registry.requireService(...)} 里 —— 后者会让「网关把请求打给谁」
-   * 变成一件要读 registry 才知道的事。
-   *
-   * <p>**每一次调用都重新解析**当前生效的那一版，而不是在装配时把那一个 Provider 固定下来
-   * （ADR-0010 第 5 节）：固定下来的话，一次热重载对这一条路径就完全无效 ——
-   * 请求会一直打给已被换掉的那个实例，而注册表里早就不是它了。
-   * 「重新解析」发生在一次请求开始的那一刻，之后这一次请求用的就是那一刻拿到的对象：
-   * 在途的流不受下一次变更影响，正是因为这个壳只在开头问了一次。
+   * <p>「默认服务的第一个实例」那一个写死的答案到此为止：
+   * 它在只有一个实例的时候看不出问题，而多实例一出现，
+   * 「请求打给谁」就变成一个没有测试、没有记录、也没有人能改的决定。
    *
    * <p>这里只声明**一个** bean，而它自己就是两个端口：
    * 容器按运行期类型匹配候选，同一个对象实现两个端口时，
-   * 拆成两个 bean 会让注入任何一侧都同时匹配两个候选。
+   * 拆成两个 bean 会让注入任何一侧都同时匹配两个候选（票 02 踩过一次）。
+   * 挑实例那一步在 {@link RoutedUpstream} 里 —— 它属于「每一次调用」，
+   * 不属于「装配一次」。
    *
    * @param registry 注册表
    * @param ledger 版本账本：默认服务名来自**当前生效的那一版**，不是启动时那一版
-   * @return 默认服务的出站能力，同时是 {@link CompletionPort} 与 {@link StreamingCompletionPort}
+   * @param chain 六步选择链
+   * @return 两个端口，同时是 {@link CompletionPort} 与 {@link StreamingCompletionPort}
    */
   @Bean
-  public UpstreamProvider upstreamProvider(UpstreamRegistry registry, ConfigurationLedger ledger) {
-    Supplier<UpstreamProvider> current = () -> defaultProvider(registry, ledger.current().services());
-    return new UpstreamProvider(
-        request -> current.get().complete(request),
-        request -> current.get().stream(request));
+  public RoutedUpstream routedUpstream(UpstreamRegistry registry, ConfigurationLedger ledger,
+      SelectionChain chain) {
+    return new RoutedUpstream(registry::requireService, ledger, chain);
   }
 
-  /** 默认服务的第一个启用着的实例所提供的出站能力。 */
-  private static UpstreamProvider defaultProvider(UpstreamRegistry registry,
-      ServicesProperties services) {
-    return registry.requireService(services.defaultService())
-        .enabledInstances()
-        .stream()
-        .findFirst()
-        .orElseThrow(() -> new IllegalStateException(
-            "服务 " + services.defaultService() + " 没有任何启用着的实例：它的请求无处可去"))
-        .provider();
+  /**
+   * **六步选择链**：一次请求打给同一个 Service 下的哪一个实例。
+   *
+   * <p>它不依赖容器，也不依赖注册表 —— 它只认识候选与上下文。
+   * 把装配它的权力放在这里，是为了让「链用哪个策略、哪一道闸门」
+   * 仍然是**一处配置决定**而不是散落在调用方。
+   *
+   * @param gate 第 ③ 步的闸门
+   * @param selector 第 ⑥ 步的策略
+   * @return 选择链
+   */
+  @Bean
+  public SelectionChain selectionChain(AvailabilityGate gate, InstanceSelector selector) {
+    return new SelectionChain(gate, selector);
+  }
+
+  /**
+   * 第 ③ 步的闸门：**本阶段恒开**。
+   *
+   * <p>熔断与限流（阶段 7）才有东西要说。它先在这里占位，是因为
+   * 「链上有这一道闸」与「这道闸现在说什么」是两件事：
+   * 等到那天换上真的实现，链、策略与它们的测试一行都不用改。
+   *
+   * @return 恒开的闸门
+   */
+  @Bean
+  public AvailabilityGate availabilityGate() {
+    return candidate -> true;
+  }
+
+  /**
+   * 第 ⑥ 步的策略：**轮询**。
+   *
+   * <p>选它而不是随机，是因为它在多实例下是**可预测**的：权重 3:1 表现为「三步前者、一步后者」，
+   * 于是「权重有没有真的生效」是一条能被严格断言的事（端到端那一条）。
+   * 随机策略只能断言比例，而比例对的那一种实现也可能根本没看权重。
+   *
+   * <p>策略按名可配与其余五个随下一张票进来 —— 那时这里换成从配置里取的那个。
+   *
+   * @return 轮询
+   */
+  @Bean
+  public InstanceSelector instanceSelector() {
+    return new RoundRobinSelector();
   }
 
   /**

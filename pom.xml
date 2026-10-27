@@ -63,6 +63,11 @@
     <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
     <spotbugs-maven-plugin.version>4.8.6.6</spotbugs-maven-plugin.version>
 
+    <!-- 覆盖率。0.8.12 起才认 JDK 21 的 class 文件版本；取 0.8.13 是因为它是本机仓库里
+         已有的最高版本，且再往后的版本要联网才拿得到。
+         同一个号管两处：探针插件，以及 app 里那条覆盖率断言用到的分析器（测试作用域）。 -->
+    <jacoco.version>0.8.13</jacoco.version>
+
     <!-- 三道 gate（ADR-0008 第 2 节）。默认跑全部；`-Dgroups=unit` 只跑一道。
          这里列出全部三个而不是留空，是为了让「一共有哪几道」在 pom 里可读 ——
          surefire 按 @Tag 挑选，而每个测试类必须标 gate 由 EveryTestBelongsToAGateTest 判红。 -->
@@ -109,6 +114,15 @@
         <groupId>com.openai</groupId>
         <artifactId>openai-java</artifactId>
         <version>${openai-java.version}</version>
+        <scope>test</scope>
+      </dependency>
+
+      <!-- jacoco 的分析器本身。它只出现在测试作用域：覆盖率那条断言要自己把四个模块的
+           探针数据并起来分析，因为 report-aggregate 只收直接依赖（见 CoverageFloorTest）。 -->
+      <dependency>
+        <groupId>org.jacoco</groupId>
+        <artifactId>org.jacoco.core</artifactId>
+        <version>${jacoco.version}</version>
         <scope>test</scope>
       </dependency>
     </dependencies>
@@ -173,6 +187,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-site-plugin</artifactId>
           <version>${maven-site-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>${jacoco.version}</version>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -290,10 +309,55 @@
 
       <!-- 测试：默认 test 路径，按三道 gate 分组（上面的 <groups>）。
            没有 failsafe，也没有「集成测试单独一条命令」的第二个生命周期：
-           一道 gate 是一个筛选条件，不是一个额外的构建（ADR-0008 第 2 节）。 -->
+           一道 gate 是一个筛选条件，不是一个额外的构建（ADR-0008 第 2 节）。
+
+           唯一的例外是覆盖率那条断言：它必须等最后一个模块的测试跑完才有数据可判，
+           因此它由 app 模块里单独一个 surefire execution 在 verify 阶段跑（见 airouter-app/pom.xml），
+           而下面这条 default-test 执行把它排除掉 —— 否则它会在报告生成之前先跑一次并判红。 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-test</id>
+            <configuration>
+              <excludes>
+                <exclude>**/CoverageFloorTest.java</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 覆盖率：prepare-agent 注入探针，report 产出每模块的 HTML/CSV/XML。
+           报告绑在 test 阶段而不是 verify：判覆盖率的那一跳在最后一个模块的 verify 阶段，
+           它必须能读到**所有**模块（含它自己）已经生成好的报告。
+
+           刻意**不配 excludes**：docs/agents/testing.md 说统计排除生成代码与配置类，
+           但目前没有生成代码，而 config 包里那几个类的紧凑构造器正是「配错了值要被挡住」的逻辑
+           （实测 61%~85% 被覆盖）—— 把它们排除掉，等于把「启动参数校验有没有被验到」从统计里抹掉。
+
+           刻意**不用 report-aggregate**：它只收**直接**依赖的模块，core 是经由 gateway 传递进来的，
+           于是聚合报告里会静默少掉 core 与 app 自己（实测 18 个类而不是 41 个）。
+           一份少算的报告比没有报告更糟，因此全项目那个数由 CoverageFloorTest 直接读各模块的报告算出。 -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>coverage-instrument</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>coverage-report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

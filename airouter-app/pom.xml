@@ -51,6 +51,13 @@
       <artifactId>openai-java</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 覆盖率断言自己分析探针数据用的库。它与注入探针的插件是同一个版本（根 pom 的 jacoco.version）：
+         版本不一致会出现「写数据的和读数据的认不出同一份文件」。 -->
+    <dependency>
+      <groupId>org.jacoco</groupId>
+      <artifactId>org.jacoco.core</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- 这里刻意**不**声明 test 作用域的 spring-web。
          它已经由 webflux starter 以 compile 作用域传递进来，而在这里再声明一次并标成 test，
          会按「最近声明优先」把整个 spring-web 降到 test —— 于是可执行 jar 里没有它，
@@ -60,6 +67,37 @@
 
   <build>
     <plugins>
+      <!-- 覆盖率门禁（docs/agents/testing.md 第二节：行覆盖率 ≥60%）。
+           它跑在 verify 阶段而不是 test 阶段，是因为**它要判的数字里包含本模块自己的测试** ——
+           本模块的探针数据要等测试 JVM 退出才落盘，在此之前无数据可判。
+           app 是 reactor 里最后一个模块，此时四个模块的报告都已生成。
+           根 pom 里 jacoco 的 report 因此绑在 test 阶段，好让这一跳读得到它。
+
+           为什么是一条测试而不是 jacoco:check：check 只认当前模块 target/classes 下的类，
+           于是 gateway 那份「被这里的端到端测试跑过」的覆盖率会被算成 0%（实测 14.2% 对 84.0%）。
+           接缝在 HTTP 入口这个决定把覆盖数据推到了最后一个模块，判据就得跟着走。
+
+           failIfNoTests 是防「类名改了、这一跳静默空跑」—— 与 ADR-0008 第 6 节同类的要求。 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>coverage-gate</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>**/CoverageFloorTest.java</include>
+              </includes>
+              <failIfNoTests>true</failIfNoTests>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <!-- 打出可执行 jar：目的是让「可执行 jar 能不能起得来」这件事可以用一条命令回答，
            而不是先祈祷 IDE 的 run configuration 和它一致（阶段 2 起 @SpringBootApplication 已存在）。 -->
       <plugin>

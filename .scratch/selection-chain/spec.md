@@ -14,8 +14,10 @@
 - 术语：根 `GLOSSARY.md`。本文件出现的每个领域词都在那里有定义
 - 排期不属于本文件：阶段划分与依赖见
   [ADR-0020](../../docs/adr/0020-stage-plan-and-task-board.md)
-- **本文件尚未拆票。** 按根 `AGENTS.md`「先有票，再动手」：实现前先在
-  `.scratch/selection-chain/issues/` 建票文件（编号取自那里真实存在的文件，不往下续）
+- 本文件拆出的三张票在 [`issues/`](./issues/)（按依赖序编号，阻塞者在前）：
+  08 六步链骨架 + 加权 + 接线 → 09 策略工厂 / 配置 / 粘滞 → 10 其余四策略 + EWMA 延迟样本
+  （票号是**全仓库一份序列**：`.scratch/<slug>/` 按功能分目录，编号不回 01，
+  否则「票 01」会指向两张票。见 `docs/agents/issue-tracker.md`）
 
 ---
 

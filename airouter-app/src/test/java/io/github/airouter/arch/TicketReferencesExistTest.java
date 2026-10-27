@@ -59,7 +59,7 @@ final class TicketReferencesExistTest {
   @Test
   @DisplayName("文档里引用的每个票号都有对应的票文件")
   void everyReferencedTicketNumberHasAFile() {
-    Set<String> existing = ticketNumbersByFile().keySet();
+    Set<String> existing = ticketFilesByNumber().keySet();
 
     assertThat(existing)
         .as("一张票文件都没扫到：扫描条件已经失效，下面那条断言会变成空跑")
@@ -90,10 +90,41 @@ final class TicketReferencesExistTest {
         .isEmpty();
   }
 
+  /**
+   * 同一个票号不能有两张票。
+   *
+   * <p>它守的是「票号能不能当凭据」这件事本身：`.scratch/<slug>/` 按功能分目录，
+   * 而**编号是全仓库一份序列**（见 {@code docs/agents/issue-tracker.md}）。
+   * 一旦允许每个 slug 都从 `01` 开始，「票 01」就同时指向两张票 ——
+   * 上面那条「引用有对应文件」的断言照样绿，而它已经回答不了「指的是哪一张」。
+   * 一个含糊的凭据不是凭据。
+   */
+  @Test
+  @DisplayName("票号跨 slug 唯一：同一个号只有一张票")
+  void ticketNumbersAreUniqueAcrossSlugs() {
+    Map<String, List<String>> files = ticketFilesByNumber();
+
+    List<String> duplicated = new ArrayList<>();
+    files.forEach((number, names) -> {
+      if (names.size() > 1) {
+        duplicated.add(number + " 有 " + names.size() + " 张票：" + String.join("、", names));
+      }
+    });
+
+    assertThat(duplicated)
+        .as("""
+            同一个票号出现在多个 slug 里。票号是「这件事有没有被授权」的判据，\
+            一个号对应两张票时它指不出是哪一张 —— 编号规则见 \
+            docs/agents/issue-tracker.md：票号是全仓库一份序列，新 slug 从当前最大号 + 1 开始。\
+            已有的票文件：%s""",
+            files)
+        .isEmpty();
+  }
+
   @Test
   @DisplayName("票号连续：01 到最大号之间没有缺号")
   void ticketNumbersHaveNoGaps() {
-    Map<String, String> files = ticketNumbersByFile();
+    Map<String, List<String>> files = ticketFilesByNumber();
     Set<String> numbers = files.keySet();
     int highest = numbers.stream().mapToInt(Integer::parseInt).max().orElseThrow();
 
@@ -114,9 +145,9 @@ final class TicketReferencesExistTest {
         .isEmpty();
   }
 
-  /** 票号 → 文件名。扫目录而不是列名单：新增一张票自动进入判据，不需要有人记得改这里。 */
-  private static Map<String, String> ticketNumbersByFile() {
-    Map<String, String> found = new LinkedHashMap<>();
+  /** 票号 → 文件名（可能不止一个）。扫目录而不是列名单：新增一张票自动进入判据，不需要有人记得改这里。 */
+  private static Map<String, List<String>> ticketFilesByNumber() {
+    Map<String, List<String>> found = new LinkedHashMap<>();
     Path issuesRoot = repositoryRoot().resolve(".scratch");
     if (!Files.isDirectory(issuesRoot)) {
       return found;
@@ -133,7 +164,9 @@ final class TicketReferencesExistTest {
               .map(file -> file.getFileName().toString())
               .map(TICKET_FILE::matcher)
               .filter(Matcher::matches)
-              .forEach(matcher -> found.put(normalise(matcher.group(1)), matcher.group()));
+              .forEach(matcher -> found
+                  .computeIfAbsent(normalise(matcher.group(1)), key -> new ArrayList<>())
+                  .add(matcher.group()));
         }
       }
     } catch (IOException failure) {

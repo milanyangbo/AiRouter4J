@@ -6,7 +6,11 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 - One feature per directory: `.scratch/<feature-slug>/`（当前唯一的一处是 `.scratch/p0-foundation/`）
 - The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
+- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, never a single combined tickets file
+- **票号是全仓库一份序列**：`.scratch/<slug>/` 只按功能分目录，**编号不按目录回到 `01`** ——
+  否则「票 01」会指向两张票，而票号的意义正是「有没有授权」的判据，含糊就等于没有判据。
+  新 slug 的第一张票从**当前最大号 + 1** 开始（`.scratch/selection-chain/` 因此是 `08` 起）。
+  跨 slug 重复由 `TicketReferencesExistTest` 的第三条断言判红
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 - **没有票文件 = 没有授权。** 编号取自目录里真实存在的文件，不从上一个数字往下续 ——
   自己续出来的编号是一个不存在的编号。执行侧的硬约束与违约处置见根 `AGENTS.md` 的「先有票，再动手」

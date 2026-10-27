@@ -102,16 +102,4 @@ public record InstanceDefinition(
     // 标签对外不可变：它会被交给规则匹配与限流作用域，谁都不该改得动同一份集合。
     tags = tags == null ? List.of() : List.copyOf(tags);
   }
-
-  /**
-   * 这个实例出网那一侧的身份：变了就意味着「它要去的地方或它说话的方式变了」。
-   *
-   * <p>它是热重载判定「沿用还是重建出网对象」的依据（ADR-0010 第 5 节）：
-   * 权重、启用标志与标签不在这里面 —— 它们改的是怎么挑这个实例，不是它怎么出网。
-   *
-   * @return 出网身份，见 {@link OutboundIdentity}
-   */
-  public OutboundIdentity outboundIdentity() {
-    return new OutboundIdentity(shape, baseUrl, apiKey, model, requestTimeout);
-  }
 }

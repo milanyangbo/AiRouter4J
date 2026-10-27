@@ -28,9 +28,12 @@ import java.util.List;
  *
  * @param id 实例 id。同一 Service 下必须唯一，重复则起不来
  * @param shape 这个实例说哪一种协议。**必须由配置显式给出**，不许按地址猜
- * @param vendor 厂商声明的名字。为 null 表示没有引用任何声明；
- *               引用了未声明的厂商在启动期判红（检查在 {@link ServicesProperties} 那一层，
- *               因为它需要看得见全部声明）
+ * @param vendor 厂商声明的名字。为 null 表示没有引用任何声明。
+ *               **本阶段不校验它** —— 厂商声明的清单本身还没落地（ADR-0009 第 2 节的声明式厂商
+ *               + 阶段 6 的凭据管理），而校验一个不存在的清单只能恒过。
+ *               所以 ADR-0010 第 4 节列的那一条「引用了未声明的厂商」目前**尚未实现**，
+ *               本类只把这个值搬给 {@link io.github.airouter.gateway.registry.RegisteredInstance}，
+ *               不解释它。按 AGENTS.md「与 ADR 冲突要显式指出」，这处偏离写在这里也写在票 07 里
  * @param baseUrl 端点根地址。校验由形态做，见 {@link UpstreamShape#requireValidBaseUrl}
  * @param apiKey 实例自己的凭证。出网用的就是它，**不是调用方带来的那把**（凭据不透传）。
  *               形态不需要凭证的那一种（例如 Ollama 原生接口）可以没有它

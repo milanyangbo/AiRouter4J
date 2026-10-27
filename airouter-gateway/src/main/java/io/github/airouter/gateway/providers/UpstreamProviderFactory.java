@@ -51,13 +51,20 @@ public final class UpstreamProviderFactory {
     ProviderConstructor constructor = constructors.get(inputs.shape());
     if (constructor == null) {
       // 构造时的自检已经放过这一关，能走到这里说明有人绕过了工厂。
-      // 出错信息仍然指名形态：让它退化成一个不带形态名的空指针，最难排查。
-      throw new IllegalStateException("形态 " + inputs.shape().id() + " 没有对应的构造器");
+      // 出错信息仍然指名形态并列出已登记的形态：让它退化成一个不带形态名的空指针，最难排查。
+      throw new IllegalStateException("形态 " + inputs.shape().id() + " 没有对应的构造器；"
+          + "已登记的是 " + describeSupportedShapes());
     }
     return constructor.create(inputs);
   }
 
-  /** 本阶段登记的形态。它回答「现在有几种形态可用」，不必去遍历枚举再猜哪些已经落地。 */
+  /**
+   * 已登记的形态，用「 / 」连起来。它回答「现在有几种形态可用」，不必去遍历枚举再猜哪些已经落地。
+   *
+   * <p>它的消费者是出错信息，不是调用路径：{@link #create} 在报「没有对应的构造器」时
+   * 把它摆出来 —— 与注册表报「没有这个服务」时列出已注册的服务名是同一个理由
+   * （不知道自己错在哪个字是最贵的那一种失败）。
+   */
   public String describeSupportedShapes() {
     return constructors.keySet().stream()
         .map(UpstreamShape::id)

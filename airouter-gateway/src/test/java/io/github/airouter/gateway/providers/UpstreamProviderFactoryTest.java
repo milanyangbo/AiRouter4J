@@ -56,6 +56,15 @@ final class UpstreamProviderFactoryTest {
     assertThat(factory.describeSupportedShapes()).contains(UpstreamShape.OPENAI.id());
   }
 
+  /**
+   * 工厂给两份不同的入参造出两个不同的 Provider —— 它证明的是**工厂不共用对象**。
+   *
+   * <p>它**没有**证明「每实例一条 {@code OutboundWire}」：下面两条 wire 是本文件
+   * {@code inputs(...)} 自己 new 出来的，真正决定这一点的
+   * {@code UpstreamConfiguration.register()} 不在本断言经过的路径上 ——
+   * 把那里改成两个实例共用一条 wire，这条测试照样绿。
+   * 端到端的那一条记在票 07 的「补记：新增测试项」里，等两个实例真能各打各的时候补。
+   */
   @Test
   @DisplayName("两个实例得到两个不同的 Provider：地址与超时是实例自己的属性")
   void eachInstanceGetsItsOwnProvider() {

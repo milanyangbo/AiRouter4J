@@ -433,4 +433,17 @@ Agent2Agent 协议（跨系统互操作）与 Model Context Protocol（工具接
 
 本表未覆盖、但你认为是真实概念的，先记在这里，由 `domain-modeling` 统一裁决，不要自行发明词。
 
-（空）
+**配置侧与注册表侧的实例叫什么（票 07 引入，2026-10-27 记）**
+域词只有一个：**ModelInstance**。但同一个概念在代码里有三个名字，各自站在一层：
+
+- `InstanceDefinition`（`config`）—— 配置里声明的那一个，字段扁平（配置绑定要扁平）
+- `RegisteredInstance`（`registry`）—— 注册表里已经就绪的那一个，带着能出网的 Provider
+- `ServiceView`（`registry`）—— 一个 Service 下的实例集合 + 按 id 取
+
+> **`View` 是表外词**，这里只是暂用：它想说的是「注册表给出去的那一份快照」，
+> 但本项目别处不用 View 这个后缀。裁决方向：要么给它一个本表里的词，要么承认它是代码名、
+> 不进术语表。**在此之前不要照它去造第二个 `XxxView`。**
+
+**`ProviderInputs` / `ProviderConstructor`（`providers`）**
+形态工厂登记构造器时的入参与函数类型。它们不是域词，是工厂的签名 ——
+是否要进本表，取决于裁决时认为「构造器的入参」算不算一个概念。

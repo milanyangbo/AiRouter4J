@@ -2,7 +2,9 @@
 
 **What to build:** `Service → ModelInstance` 三级配置模型换代掉「一个扁平端点」；
 每实例一个 Provider（ADR-0009 第 4 节）；两者之间的 creators 登记在**形态工厂**里，
-注册表是「配置 → 运行时对象」的**唯一**持有者（ADR-0010 第 2 节）。
+注册表是「配置 → 运行时对象」的**唯一**持有者（ADR-0010 第 2 节）——
+**持有，不是创建**：造 wire 与 Provider 的动作在 `config` 的装配器里，
+让注册表去调工厂等于让它认识形态（2026-10-27 复核改掉了原来那句「由注册表创建」）。
 
 形态已经是实例的属性而不是全局设置：同一 Service 下两个实例可以有不同的形态、不同的地址。
 在没有第二种形态之前，「两个不同形态共存」这条只能做到**结构层面**（工厂按形态挑构造器、
@@ -23,7 +25,7 @@
       列表才能让这一条真有一条测试
 - [x] 启动期校验四件全在这无处躲：形态要求的凭证缺失（指名具体实例）、
       地址不符合形态后缀、同一 Service 下实例 id 重复、默认服务不存在
-- [x] **形态工厂**登记构造器（形态 → 构造器），由注册表按实例的形态创建 Provider；
+- [x] **形态工厂**登记构造器（形态 → 构造器），按实例的形态创建 Provider；
       调用路径上没有 `switch (shape)` / `if (shape == ...)`
 - [x] **每实例一个 Provider**：两个实例各有一个 Provider 与一个 `OutboundWire`；
       `core` 的端口签名与 `faces` 一行未动（ADR-0009 第 4 节的 B 路）
@@ -35,7 +37,11 @@
 ## Known gaps（本票不做，记下来免得假装做了）
 
 - 两个**不同形态**的实例的端到端：`ollama` 原生形态属阶段 12
-- 版本快照与回滚、热重载不重建上下文 → 票 08
+- **「引用了未声明的厂商」这条启动期校验尚未实现**（ADR-0010 第 4 节第 4 条）：
+  厂商声明的清单本身还没落地（ADR-0009 第 2 节的声明式厂商 + 阶段 6 的凭据管理），
+  校验一份不存在的清单只能恒过。`vendor` 现在只被搬运到 `RegisteredInstance`，不解释
+- 版本快照与回滚、热重载不重建上下文 → ADR-0010 第 5/6 节；**票还没建**，
+  建了之后把票号写在这里 —— 不写一个不存在的号
 - 实例上挂熔断状态 / 延迟样本 / 健康登记 → 它们各自的阶段，
   注册表只负责「有地方挂」而不是现在就把它们造出来
 - 多实例之间的选择（权重怎么被用）→ 阶段 4（ADR-0011）
@@ -85,3 +91,46 @@ SpotBugs 在四个持有类上报 `EI_EXPOSE_REP2`。用探针（一个同时含
 于是四个类各补一行封口；`ProviderInputs` 的那一项属于另一类 —— 存 `OutcomeObserver`
 （自定义接口）本身就会报，改成只存 `Consumer<Outcome>`（它需要的本来只是「把结论递出去」）。
 **没有加任何抑制。**
+
+## 补记：2026-10-27 code review（`baseline-5...HEAD`）
+
+两轴各跑一份：Standards（是否符合仓库自己写下的标准）与 Spec（是否做了票 / ADR 要的事）。
+修掉的记在下面；**新增的测试项记在本票，不另开文件。**
+
+### 已修
+
+1. **`InstanceDefinition` 的 `@param vendor` 是空头承诺**（两轴独立指向同一处）：
+   javadoc 写「引用了未声明的厂商在启动期判红（检查在 `ServicesProperties` 那一层）」，
+   而 `ServicesProperties` 只有三判、没有厂商校验，`vendor` 全仓无消费者。
+   → javadoc 改成明说「本阶段不校验」，指向 ADR-0010 第 4 节那一条与上面的 Known gaps；
+   ADR-0010 第 4 节第 4 条同步标注「尚未实现」。
+2. **「由注册表按实例的形态创建 Provider」这句话写错了**（本票 What to build + 验收 + ADR-0009 §2(c)）：
+   代码一直是 `config/UpstreamConfiguration.register()` 建 wire 与 Provider，注册表只持有。
+   → 三处措辞都改成「持有，不是创建」，并写明为什么（注册表调工厂 = 让它认识形态，
+   那是「transport 不认识 providers」那条方向约束要挡的同一类事）。
+3. **`UpstreamRegistry.service(String)`（Optional 版）全仓无调用者** → 删。
+   `describeSupportedShapes()` 原本也只被自己的测试用 → 不删，改成真有消费者：
+   `create()` 报「没有对应的构造器」时把它摆出来（与注册表列已注册服务名同一理由）。
+4. **`eachInstanceGetsItsOwnProvider` 证明的东西比它的名字少**：两条 wire 由测试自己 new，
+   绕开了 `UpstreamConfiguration.register()` → 补 javadoc 写明它证明什么、不证明什么。
+
+### 新增测试项（未做，留给下面这些时候）
+
+- **两个实例各有自己的 `OutboundWire`**：起两个录制器（两个地址即可，不必两个形态），
+  端到端断言两个实例各收到自己的请求 —— 把装配点改成共用一条 wire 时这条必须红。
+  现在只有 `eachInstanceGetsItsOwnProvider` 在守工厂那一层，装配点那一层是空的。
+- **「引用了未声明的厂商」→ 启动失败并指名那个厂商名**：随 ADR-0009 声明式厂商（阶段 6）落地时补。
+- **`RegisteredInstance` 上的挂载点（熔断 / 延迟样本 / 健康登记）**：随它们各自的阶段补，
+  本票只保证「有地方挂」，没造出任何一个。
+- **`UpstreamProviderFactory.create()` 报「没有对应的构造器」时列出已登记的形态**：
+  这条分支被构造期自检挡着走不到，等有多形态之后再看要不要为它单独造一条。
+
+### 未采纳（判断类，不动）
+
+- `ServiceDefinition` 与 `ServiceView` 那句重复报错、`ServicesProperties` 与 `UpstreamRegistry`
+  重复的 `String.join("、", keySet())`：它们分属配置层与注册表层，抽共用会造出一个谁都不属于的工具类
+- `Endpoint`（baseUrl / 凭证 / 超时）被摊平成三个字段：GLOSSARY 里有这个词，
+  但配置绑定要的就是扁平字段，包一层会让 `@ConfigurationProperties` 那一侧多一跳
+- `UpstreamProvider` 转发两个方法、`UpstreamConfiguration.register()` 读九个字段：
+  前者是为了「一个 bean 两个端口」，后者本来就是装配点的本分
+- 工厂构造期自检循环恒不触发（现在只有一种形态）：它是为第二种形态准备的，等形态多起来才生效

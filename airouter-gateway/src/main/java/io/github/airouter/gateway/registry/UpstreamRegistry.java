@@ -1,7 +1,6 @@
 package io.github.airouter.gateway.registry;
 
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -34,16 +33,6 @@ public final class UpstreamRegistry {
   /** 已注册的服务名。 */
   public Set<String> serviceIds() {
     return services.keySet();
-  }
-
-  /**
-   * 按名取一个服务。
-   *
-   * @param serviceId 服务名
-   * @return 有的那一个
-   */
-  public Optional<ServiceView> service(String serviceId) {
-    return Optional.ofNullable(services.get(serviceId));
   }
 
   /**

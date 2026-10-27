@@ -52,6 +52,11 @@ final class GoldenWireContractTest {
 
   private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+  /** 聚合读取上限与单帧上限。这一份只跑非流式，两个值只要在场且合法即可。 */
+  private static final int BUFFER_BYTES = 1 << 20;
+
+  private static final int MAX_FRAME_BYTES = 1 << 20;
+
   private static final String MODEL = "recorded-model";
 
   /** 回放出来的网关结果与下游：状态码与响应体一起。 */
@@ -114,7 +119,8 @@ final class GoldenWireContractTest {
 
   private static Actual run(CanonicalRequest request, RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
-        new OutboundWire(recorded.baseUrl(), TIMEOUT), "golden-key", MODEL);
+        new OutboundWire(recorded.baseUrl(), TIMEOUT, BUFFER_BYTES, MAX_FRAME_BYTES),
+        "golden-key", MODEL, TIMEOUT, 1 << 16);
     try {
       CanonicalResponse response = provider.complete(request).toCompletableFuture().join();
       return new Actual(200, OpenAiInboundCodec.encodeResponse(response));

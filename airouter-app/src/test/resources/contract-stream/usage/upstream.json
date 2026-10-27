@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "chunks": [
+    "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好的\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"recorded-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6,\"vendor_cache_hit\":true}}\n\n",
+    "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

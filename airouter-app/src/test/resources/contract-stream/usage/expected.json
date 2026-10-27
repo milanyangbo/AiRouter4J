@@ -1,0 +1,9 @@
+{
+  "frames": [
+    "{\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"created\":1700000001}",
+    "{\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好的\"},\"finish_reason\":null}],\"created\":1700000001}",
+    "{\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6,\"vendor_cache_hit\":true},\"created\":1700000001}",
+    "{\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}],\"created\":1700000001}",
+    "[DONE]"
+  ]
+}

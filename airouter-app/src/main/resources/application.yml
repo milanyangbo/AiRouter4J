@@ -1,7 +1,10 @@
 # 这里出现的只能是「指向环境变量的占位符」，不能有任何真实地址或密钥。
-# 变量名与 EndpointProperties 里的常量同名，改动一处就是改错一处 —— 不要在这里手写字符串。
+# 变量名与 EndpointProperties / StreamProperties 里的常量同名，改动一处就是改错一处 ——
+# 不要在这里手写字符串。
 #
-# 四个值都由环境变量给出，缺一个就起不来（EndpointProperties 的构造器判红，且指名变量名）。
+# 端点那四个值都由环境变量给出，缺一个就起不来（EndpointProperties 的构造器判红，且指名变量名）。
+# 流式那五个值有兜底数字，但它们是显式的 SLO：改它们就是在改「一条流最多能吃掉多少」，
+# 不是调参（StreamProperties 的构造器对非正数判红）。
 # 本地档位（local）随票 06 进来，那时这三个地址类变量都可以不设 ——
 # 切换档位只改 profile 或环境变量，不改代码。
 spring:
@@ -17,3 +20,14 @@ airouter:
     api-key: ${AIROUTER_ENDPOINT_API_KEY:}
     model: ${AIROUTER_ENDPOINT_MODEL:}
     request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
+  stream:
+    # 块间静默上限：不是总时长。一条想很久但一直在说话的流不会被误杀。
+    idle-timeout: ${AIROUTER_STREAM_IDLE_TIMEOUT:15s}
+    # 单条流累积内容的字符上限，超出之后截断展示（用量仍取上游回报）。
+    max-content-chars: ${AIROUTER_STREAM_MAX_CONTENT_CHARS:262144}
+    # 单帧上限：一个换行之前最多允许多少字节。
+    max-frame-bytes: ${AIROUTER_STREAM_MAX_FRAME_BYTES:1048576}
+    # 入站缓冲区：客户端请求体最多允许多少字节进内存。
+    inbound-buffer-bytes: ${AIROUTER_STREAM_INBOUND_BUFFER_BYTES:262144}
+    # 出站缓冲区：一次上游响应最多允许多少字节进内存（流式不聚合，不受它约束）。
+    outbound-buffer-bytes: ${AIROUTER_STREAM_OUTBOUND_BUFFER_BYTES:1048576}

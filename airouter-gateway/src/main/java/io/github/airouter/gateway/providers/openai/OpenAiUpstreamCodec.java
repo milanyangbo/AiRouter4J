@@ -6,10 +6,12 @@ import io.github.airouter.core.CanonicalMessage;
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
 import io.github.airouter.core.CanonicalRole;
+import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.CanonicalTool;
 import io.github.airouter.core.CanonicalUsage;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.UpstreamFailure;
+import io.github.airouter.gateway.transport.SseFrame;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,8 +34,9 @@ import tools.jackson.databind.node.ObjectNode;
  * {@link #CONSUMED_IN_CHOICE}、{@link #CONSUMED_IN_MESSAGE} 与 {@link #CONSUMED_IN_USAGE} 里，
  * 其余字段一律走 passthrough 原样搬运：网关不为自己不理解的字段做解释，也不把它们丢掉。
  *
- * <p>阶段 2 只有非流式这一半（请求编码与响应解码）。流式那一半 —— 一帧字节变成哪些事件 ——
- * 随票 03 进来，届时它同样只是纯函数，判断留给 Provider。
+ * <p>非流式那一半是纯函数集合（请求编码与响应解码）。流式那一半 —— 一帧字节变成哪些事件 ——
+ * 是一个按流创建的小对象（{@link StreamDecoder}）：哪些字段只在开场出现一次，
+ * 是这条流自己的事。判断（什么算结束、什么算失败）仍然留给 Provider，codec 只翻译。
  */
 public final class OpenAiUpstreamCodec {
 
@@ -58,6 +61,9 @@ public final class OpenAiUpstreamCodec {
   /** usage 里被显式建模的键；其余明细原样带回。 */
   private static final Set<String> CONSUMED_IN_USAGE =
       Set.of("prompt_tokens", "completion_tokens", "total_tokens");
+
+  /** 流式一帧里被显式建模的键；其余键（含 {@code created}）进开场的 passthrough。 */
+  private static final Set<String> CONSUMED_IN_CHUNK = Set.of("id", "object", "model", "choices", "usage");
 
   private static final String NO_DETAIL = "上游没有给出进一步的说明";
 
@@ -121,6 +127,82 @@ public final class OpenAiUpstreamCodec {
         List.copyOf(choices),
         decodeUsage(root.path("usage")),
         passthroughOf(root, CONSUMED_ON_READ));
+  }
+
+  /**
+   * 一帧字节变成哪些事件。
+   *
+   * <p>它是**有状态**的，因此是一个按流创建的对象而不是一个静态方法：
+   * 「哪一块是开场」只有这条流自己知道，而开场那一帧要带的东西（id、模型、以及
+   * {@code created} 这类每一帧都要重复的键）之后的帧里不再重复 ——
+   * 把它做成无状态函数，就只能每一帧都发一次开场，或者干脆不发。
+   *
+   * <p>{@code data: [DONE]} 在这里被认成终态：哨兵是**这一家 wire format** 的说法，
+   * 认它属于 codec 而不是传输层（ADR-0006 第 2 节）。
+   * 认到之后发 {@link CanonicalStreamEvent.Terminal}，且**不再解释后面的帧** ——
+   * 「终态之后的帧不出现在客户端」由调用方的截断保证，这里只负责不再产生事件。
+   *
+   * <p>空 {@code data:} 帧被忽略而不是被当成内容：上游用它做保活，
+   * 当成内容会在客户端的正文里冒出空行。
+   */
+  public static final class StreamDecoder {
+
+    /** 结束哨兵。它是不是「结束」由这一家 wire format 说了算，因此写在这里。 */
+    public static final String DONE_SENTINEL = "[DONE]";
+
+    private boolean opened;
+
+    /**
+     * 一帧 → 事件。
+     *
+     * @param frame 分帧器给出的帧
+     * @return 这一帧带来的事件，可能为空（保活、空帧、终态之后的帧）
+     * @throws IllegalArgumentException 载荷不是合法 JSON 时抛出
+     */
+    public List<CanonicalStreamEvent> decode(SseFrame frame) {
+      if (frame instanceof SseFrame.Comment comment) {
+        return List.of(new CanonicalStreamEvent.Ping(comment.text()));
+      }
+      String payload = ((SseFrame.Data) frame).payload();
+      if (payload.isBlank()) {
+        return List.of();
+      }
+      if (DONE_SENTINEL.equals(payload.strip())) {
+        return List.of(new CanonicalStreamEvent.Terminal(null));
+      }
+      return decodeChunk(payload);
+    }
+
+    private List<CanonicalStreamEvent> decodeChunk(String payload) {
+      JsonNode root = readTreeOrThrow(payload);
+      List<CanonicalStreamEvent> events = new ArrayList<>();
+      if (!opened) {
+        opened = true;
+        events.add(new CanonicalStreamEvent.Opening(
+            root.path("id").asString(""),
+            root.path("model").asString(""),
+            passthroughOf(root, CONSUMED_IN_CHUNK)));
+      }
+      JsonNode delta = root.path("choices").path(0).path("delta");
+      String content = delta.path("content").asString("");
+      if (!content.isEmpty()) {
+        events.add(new CanonicalStreamEvent.TextDelta(content));
+      }
+      CanonicalUsage usage = decodeUsage(root.path("usage"));
+      if (usage != null) {
+        events.add(new CanonicalStreamEvent.Usage(usage));
+      }
+      JsonNode finishReason = root.path("choices").path(0).path("finish_reason");
+      if (!finishReason.isMissingNode() && !finishReason.isNull()) {
+        events.add(new CanonicalStreamEvent.Terminal(CanonicalFinishReason.of(finishReason.asString(""))));
+      }
+      return List.copyOf(events);
+    }
+  }
+
+  /** 开始一条流的解码。 */
+  public static StreamDecoder newStreamDecoder() {
+    return new StreamDecoder();
   }
 
   /**
@@ -268,7 +350,7 @@ public final class OpenAiUpstreamCodec {
     try {
       return MAPPER.readTree(body);
     } catch (JacksonException failure) {
-      throw new IllegalArgumentException("上游响应不是合法 JSON", failure);
+      throw new IllegalArgumentException("上游给出的不是合法 JSON", failure);
     }
   }
 

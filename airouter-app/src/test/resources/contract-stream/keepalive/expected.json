@@ -1,0 +1,8 @@
+{
+  "frames": [
+    "{\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}",
+    "{\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"在\"},\"finish_reason\":null}]}",
+    "{\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+    "[DONE]"
+  ]
+}

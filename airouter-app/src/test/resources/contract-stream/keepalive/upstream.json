@@ -1,0 +1,12 @@
+{
+  "status": 200,
+  "chunks": [
+    ": 上游还在想\n\n",
+    "data:\n\n",
+    "data: {\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+    ": 又想了一会儿\n\n",
+    "data: {\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"在\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-3\",\"object\":\"chat.completion.chunk\",\"model\":\"recorded-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

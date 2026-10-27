@@ -85,6 +85,12 @@ spring-boot-starter-test / archunit / spring-web（R4 样例需要一个状态�
 `app` 加测试作用域的 `com.openai:openai-java`（让「标准客户端能否解析我们的响应」由第三方判定）。
 actuator 与 MyBatis 仍然随各自的阶段进来 —— 不按「将来可能用到」提前引入。
 
+票 03（流式打通）**没有**往清单里加任何依赖：分帧是自己的代码（`SseFramer`，纯字节处理），
+SSE 的写出由 WebFlux 自带的编解码器完成，JDK 的 `Flow.Publisher` 与 Reactor 之间的那一步
+用的是 reactor-core 自带的 `JdkFlowAdapter`。值得记一笔的是反过来那件事：
+流式一度看起来需要 `reactor-test`（为了 `StepVerifier`），而实际用到的断言
+（首帧在上游讲完之前到达、块间静默与总时长的区分）都能在 HTTP 入口上做，于是没有引它。
+
 ## 5. 后果
 
 - 升级 Boot 小版本前先跑契约测试（`contract/` 三目录）—— 序列化行为变了，最先红的是它们

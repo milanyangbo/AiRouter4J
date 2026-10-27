@@ -27,10 +27,15 @@ final class OutboundWireTest {
 
   private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
+  /** 聚合读取的上限。这里只是让它显式在场：这一份测试不打算撞它。 */
+  private static final int BUFFER_BYTES = 1 << 20;
+
+  private static final int MAX_FRAME_BYTES = 1 << 20;
+
   @Test
   @DisplayName("上游地址不可达：判定为 UPSTREAM_FAILURE，而不是成功也不是超时")
   void unreachableUpstreamIsAnUpstreamFailure() {
-    OutboundWire wire = new OutboundWire("http://127.0.0.1:" + closedPort() + "/v1", TIMEOUT);
+    OutboundWire wire = wire(closedPort());
 
     assertThatThrownBy(() -> wire.post("/chat/completions", Map.of(), "{}").block())
         .isInstanceOf(UpstreamFailure.class)
@@ -40,6 +45,31 @@ final class OutboundWireTest {
           assertThat(upstream.error().type()).isEqualTo("upstream_unreachable");
           assertThat(upstream.error().httpStatus()).isEqualTo(502);
         });
+  }
+
+  /**
+   * 流式那条路同样要得到「够不着上游」，而且要在**订阅时**就得到。
+   *
+   * <p>它容易被写成「流正常结束」（空流）：那样客户端收到一个 200 加一段空流，
+   * 看起来像「模型什么都没说」，而实际上一次请求都没发出去。
+   */
+  @Test
+  @DisplayName("上游地址不可达时，流式同样判定为 UPSTREAM_FAILURE，而不是一条空流")
+  void unreachableUpstreamFailsTheStreamToo() {
+    OutboundWire wire = wire(closedPort());
+
+    assertThatThrownBy(() -> wire.postStream("/chat/completions", Map.of(), "{}", TIMEOUT)
+        .collectList().block())
+        .isInstanceOf(UpstreamFailure.class)
+        .satisfies(failure -> {
+          UpstreamFailure upstream = (UpstreamFailure) failure;
+          assertThat(upstream.kind()).isEqualTo(OutcomeKind.UPSTREAM_FAILURE);
+          assertThat(upstream.error().type()).isEqualTo("upstream_unreachable");
+        });
+  }
+
+  private static OutboundWire wire(int port) {
+    return new OutboundWire("http://127.0.0.1:" + port + "/v1", TIMEOUT, BUFFER_BYTES, MAX_FRAME_BYTES);
   }
 
   /**

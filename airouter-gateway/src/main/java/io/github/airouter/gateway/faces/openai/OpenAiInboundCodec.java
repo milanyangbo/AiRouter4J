@@ -1,10 +1,12 @@
 package io.github.airouter.gateway.faces.openai;
 
 import io.github.airouter.core.CanonicalChoice;
+import io.github.airouter.core.CanonicalFinishReason;
 import io.github.airouter.core.CanonicalMessage;
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
 import io.github.airouter.core.CanonicalRole;
+import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.CanonicalTool;
 import io.github.airouter.core.CanonicalUsage;
 import io.github.airouter.core.GatewayError;
@@ -27,8 +29,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>与 Provider 侧的 codec 是一对生而成对的 Knowns：两边各自维护「自己这一侧认识哪些字段」，
  * 谁也不引用谁。这样新增一个 Provider 时，这一份不受影响；反之亦然。
  *
- * <p>阶段 2 只有非流式这一半。流式事件的编码随票 03 进来 —— 那时它同样只回答
- * 「一个事件变成哪一帧的载荷」，不参与终态的判断。
+ * <p>非流式那一半是静态方法；流式那一半（{@link StreamEncoder}）是一个按流创建的小对象：
+ * 每一帧都要重复的 id / model / {@code created} 只在开场那一帧出现一次，
+ * 之后要由编码器自己带着走。它同样只回答「一个事件变成哪一帧的载荷」，不参与终态的判断。
  */
 public final class OpenAiInboundCodec {
 
@@ -88,6 +91,109 @@ public final class OpenAiInboundCodec {
     }
     response.passthrough().forEach((key, rawJson) -> root.set(key, parseRaw(key, rawJson)));
     return root.toString();
+  }
+
+  /**
+   * 一条流上的事件 → SSE 的 {@code data:} 载荷。
+   *
+   * <p>它按流创建，因为每一帧都要重复的 id / model / {@code created} 只在开场那一帧里出现一次 ——
+   * 之后的帧要由它自己带着走。这是 wire format 的要求，不是网关的发明。
+   *
+   * <p>**哨兵是一个被断言的事实，不是一个默认动作**：{@link #DONE_SENTINEL} 只在
+   * {@link CanonicalStreamEvent.Terminal} 之后出现一次。失败之后**不补哨兵** ——
+   * 补了就等于把「这次调用失败了」说成「正常结束」，而客户端会照着哨兵去收尾。
+   *
+   * <p>{@link CanonicalStreamEvent.Ping} 不产生帧：保活是上游与网关之间的事，
+   * 客户端与网关之间是另一条连接。它在这里被认出来就够了 ——
+   * 认不出来时它会被当成内容或当成结束，那两种都是真的故障。
+   */
+  public static final class StreamEncoder {
+
+    /** 结束哨兵。它在客户端那里的含义是「这次生成结束了」，因此只在终态之后发出。 */
+    public static final String DONE_SENTINEL = "[DONE]";
+
+    private static final String CHUNK_OBJECT = "chat.completion.chunk";
+
+    private String id = "";
+
+    private String model = "";
+
+    private Map<String, String> carried = Map.of();
+
+    /**
+     * 一个事件 → 若干载荷。
+     *
+     * @param event Canonical 事件
+     * @return 载荷列表，可能为空（保活不产生帧）
+     */
+    public List<String> encode(CanonicalStreamEvent event) {
+      if (event instanceof CanonicalStreamEvent.Opening opening) {
+        id = opening.id();
+        model = opening.model();
+        carried = opening.passthrough();
+        return List.of(chunk(roleDelta(), null, null).toString());
+      }
+      if (event instanceof CanonicalStreamEvent.TextDelta delta) {
+        return List.of(chunk(contentDelta(delta.text()), null, null).toString());
+      }
+      if (event instanceof CanonicalStreamEvent.Usage usage) {
+        return List.of(chunk(null, null, usage.usage()).toString());
+      }
+      if (event instanceof CanonicalStreamEvent.Terminal terminal) {
+        CanonicalFinishReason reason = terminal.reason();
+        // delta 给一个空对象而不是省略：这一份 wire format 的最后一块是带着 delta 的，
+        // 少了一个键不会让客户端出错，但会让「这一块与前面那几块是同一种东西」变得需要额外判断。
+        return List.of(chunk(MAPPER.createObjectNode(), reason, null).toString(), DONE_SENTINEL);
+      }
+      if (event instanceof CanonicalStreamEvent.Failed failure) {
+        return List.of(encodeError(failure.error()));
+      }
+      return List.of();
+    }
+
+    private ObjectNode chunk(ObjectNode delta, CanonicalFinishReason reason, CanonicalUsage usage) {
+      ObjectNode root = MAPPER.createObjectNode();
+      root.put("id", id);
+      root.put("object", CHUNK_OBJECT);
+      root.put("model", model);
+      root.set("choices", encodeStreamChoices(delta, reason));
+      if (usage != null) {
+        root.set("usage", encodeUsage(usage));
+      }
+      carried.forEach((key, rawJson) -> root.set(key, parseRaw(key, rawJson)));
+      return root;
+    }
+
+    private ArrayNode encodeStreamChoices(ObjectNode delta, CanonicalFinishReason reason) {
+      ObjectNode choice = MAPPER.createObjectNode();
+      choice.put("index", 0);
+      if (delta != null) {
+        choice.set("delta", delta);
+      }
+      choice.put("finish_reason", reason == null ? null : reason.raw());
+      ArrayNode array = MAPPER.createArrayNode();
+      if (delta != null || reason != null) {
+        array.add(choice);
+      }
+      return array;
+    }
+
+    private static ObjectNode roleDelta() {
+      ObjectNode delta = MAPPER.createObjectNode();
+      delta.put("role", "assistant");
+      return delta;
+    }
+
+    private static ObjectNode contentDelta(String text) {
+      ObjectNode delta = MAPPER.createObjectNode();
+      delta.put("content", text);
+      return delta;
+    }
+  }
+
+  /** 开始一条流的编码。 */
+  public static StreamEncoder newStreamEncoder() {
+    return new StreamEncoder();
   }
 
   /**

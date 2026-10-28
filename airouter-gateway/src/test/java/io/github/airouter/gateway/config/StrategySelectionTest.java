@@ -12,6 +12,7 @@ import io.github.airouter.gateway.select.WeightedCandidates;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Function;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -34,12 +35,32 @@ final class StrategySelectionTest {
 
   private static final String RANDOM = "random";
 
+  /** 写错名字的那种写法：下划线代替短横。它是真实会遇到的一次手误，不是随手编的一个串。 */
+  private static final String MISSPELLED = "round_robin";
+
+  /** 两个 hash 策略要它：缺失标识时它们的行为是拒绝，而这里要看的是它们能不能选出一个实例。 */
+  private static final String CALLER = "caller-of-every-name";
+
+  /** 一致性哈希的虚拟节点数。这里要的是「能用」，它不是这一份测试要判的东西。 */
+  private static final int VIRTUAL_NODES = 16;
+
+  private static final double DEFAULT_ALPHA = 0.5d;
+
+  private static final double DEFAULT_PENALTY_MILLIS = 30_000d;
+
+  private static final long DEFAULT_RETENTION_MILLIS = 600_000L;
+
+  /** 六个策略里那两个依赖外部输入的：测试替它们备好输入。 */
+  private static final Function<String, Integer> NO_LOAD = instanceId -> 0;
+
+  private static final Function<String, Double> NO_SAMPLES = instanceId -> null;
+
   @Test
   @DisplayName("不认识的策略名：起不来，并列出当时登记的名字")
   void unknownStrategyNameFailsListingRegisteredOnes() {
-    assertThatThrownBy(() -> SelectionStrategy.of("least-connections"))
+    assertThatThrownBy(() -> SelectionStrategy.of(MISSPELLED))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("least-connections")
+        .hasMessageContaining(MISSPELLED)
         .hasMessageContaining(RANDOM)
         .hasMessageContaining(ROUND_ROBIN);
   }
@@ -55,10 +76,10 @@ final class StrategySelectionTest {
   @Test
   @DisplayName("配置里的未知策略名同样起不来：出错信息指名环境变量，运维改的是环境")
   void routingPropertiesRejectsUnknownNameNamingTheEnvironment() {
-    assertThatThrownBy(() -> properties("least-connections", false, 8))
+    assertThatThrownBy(() -> properties(MISSPELLED, false, 8))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining(RoutingProperties.STRATEGY_ENV)
-        .hasMessageContaining("least-connections")
+        .hasMessageContaining(MISSPELLED)
         .hasMessageContaining(RANDOM);
   }
 
@@ -81,13 +102,13 @@ final class StrategySelectionTest {
   @Test
   @DisplayName("已登记的每一个名字都造得出一个真能挑出实例的策略")
   void everyRegisteredNameYieldsAWorkingStrategy() {
-    SelectionStrategyFactory factory = new SelectionStrategyFactory();
+    SelectionStrategyFactory factory = factory();
 
     assertThat(Arrays.stream(SelectionStrategy.values())).isNotEmpty();
     for (SelectionStrategy strategy : SelectionStrategy.values()) {
       InstanceSelector selector = factory.create(strategy);
 
-      assertThat(selector.select(candidates(), SelectionContext.withoutCaller()))
+      assertThat(selector.select(candidates(), SelectionContext.of(CALLER)))
           .as("策略 %s 挑出的实例", strategy.id())
           .isIn("heavy", "light");
       assertThat(factory.describeSupportedStrategies()).contains(strategy.id());
@@ -97,8 +118,7 @@ final class StrategySelectionTest {
   @Test
   @DisplayName("round-robin 这个名字给的就是按权重轮转的那一个（不认这种行为的形状不算登记）")
   void roundRobinNameGivesRotation() {
-    InstanceSelector selector = new SelectionStrategyFactory()
-        .create(SelectionStrategy.of(ROUND_ROBIN));
+    InstanceSelector selector = factory().create(SelectionStrategy.of(ROUND_ROBIN));
 
     List<String> picked = new ArrayList<>();
     for (int i = 0; i < 4; i++) {
@@ -115,20 +135,26 @@ final class StrategySelectionTest {
   @Test
   @DisplayName("出错信息列的是**当时**登记的名字：这个清单随登记一起长")
   void listedNamesTrackRegistration() {
-    assertThat(new SelectionStrategyFactory().describeSupportedStrategies())
+    assertThat(factory().describeSupportedStrategies())
         .as("factory 报出来的清单")
         .isEqualTo(SelectionStrategy.describeAll())
         .as("factory 与名字清单是同一份")
         .contains(RANDOM, ROUND_ROBIN);
 
     assertThat(SelectionStrategy.describeAll())
-        .as("本阶段登记的两个；票 10 补四个之后这一条会跟着变")
-        .isEqualTo("random / round-robin");
+        .as("六个名字跟着实现走：票 08 登记两个，票 10 把剩下的四个登记进来")
+        .isEqualTo("random / round-robin / least-connections / ip-hash / consistent-hash / latency");
+  }
+
+  private static SelectionStrategyFactory factory() {
+    return new SelectionStrategyFactory(NO_LOAD, NO_SAMPLES, VIRTUAL_NODES);
   }
 
   private static RoutingProperties properties(String strategy, boolean stickyEnabled,
       int stickyMaxEntries) {
-    return new RoutingProperties(strategy, stickyEnabled, stickyMaxEntries);
+    return new RoutingProperties(strategy, stickyEnabled, stickyMaxEntries,
+        new RoutingProperties.Latency(DEFAULT_ALPHA, DEFAULT_PENALTY_MILLIS,
+            DEFAULT_RETENTION_MILLIS), VIRTUAL_NODES);
   }
 
   /** 1:1 的两个候选。 */

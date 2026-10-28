@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.airouter.gateway.routing.SelectionContext;
-import io.github.airouter.gateway.routing.StickyKeyMissingException;
+import io.github.airouter.gateway.routing.CallerIdentityMissingException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -102,7 +102,7 @@ final class StickySelectorTest {
     InstanceSelector sticky = sticky(new RoundRobinSelector(), 16);
 
     assertThatThrownBy(() -> sticky.select(candidates(), context(null)))
-        .isInstanceOf(StickyKeyMissingException.class)
+        .isInstanceOf(CallerIdentityMissingException.class)
         // 退化成「每次换一个实例」的后果是：粘滞开着，一部分会话却被拆着走，且没有任何一行日志说这件事。
         .hasMessageContaining("调用方标识");
   }
@@ -113,7 +113,7 @@ final class StickySelectorTest {
     InstanceSelector sticky = sticky(new RoundRobinSelector(), 16);
 
     assertThatThrownBy(() -> sticky.select(candidates(), context("   ")))
-        .isInstanceOf(StickyKeyMissingException.class);
+        .isInstanceOf(CallerIdentityMissingException.class);
   }
 
   @Test

@@ -14,7 +14,7 @@ import java.util.Set;
  * @param callerId 调用方标识，第 ① 步的产物。**可以为空**：来源用尽时就是空，
  *                 链**只取不校验** —— 认证与租户属阶段 6（ADR-0018），
  *                 接上之后来源换成认证结果，链不变。粘滞与两个 hash 策略读它，
- *                 缺失时它们的行为是显式的、被断言的（票 09）
+ *                 缺失时它们的行为是显式的、被断言的（票 09 / 票 10）
  * @param requiredTags 候选必须**同时**带齐的标签。为空表示不筛。
  *                     阶段 8 之前它来自服务级配置，不是规则匹配的结果（ADR-0012）
  */
@@ -31,6 +31,25 @@ public record SelectionContext(String callerId, Set<String> requiredTags) {
   @Override
   public Set<String> requiredTags() {
     return Set.copyOf(requiredTags);
+  }
+
+  /** 调用方标识**必须存在**时走这里：缺了就拒绝，不退回到「当它不存在」。
+   *
+   * <p>两种要用标识的东西（粘滞与两个 hash 策略）对缺标识的处置完全不同：
+   * 粘滞会说「带上标识，或者把粘滞关掉」，hash 会说「带上标识，或者换一个策略」。
+   * 因此**措辞由调用方给**（{@code consumer}），这里只负责判有没有、并把结论交给
+   * {@link CallerIdentityMissingException}。
+   *
+   * @param consumer 谁要这个标识：通常是策略在配置里的名字
+   * @return 调用方标识，非空白
+   * @throws CallerIdentityMissingException 标识缺失或全是空白时抛出。
+   *     这是**显式失败**，不是退化：退化会让本该稳定的东西静默地不再稳定
+   */
+  public String requireCallerId(String consumer) {
+    if (callerId == null || callerId.isBlank()) {
+      throw CallerIdentityMissingException.requiredBy(consumer);
+    }
+    return callerId;
   }
 
   /** 没有调用方标识、不要求标签的那一份。 */

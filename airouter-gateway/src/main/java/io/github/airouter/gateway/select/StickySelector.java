@@ -1,7 +1,7 @@
 package io.github.airouter.gateway.select;
 
 import io.github.airouter.gateway.routing.SelectionContext;
-import io.github.airouter.gateway.routing.StickyKeyMissingException;
+import io.github.airouter.gateway.routing.CallerIdentityMissingException;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -65,7 +65,7 @@ public final class StickySelector implements InstanceSelector {
    * @param candidates 第 ④ 步交出来的加权候选
    * @param context 第 ① ② 步的产物
    * @return 实例 id
-   * @throws StickyKeyMissingException 认不出这次调用算谁时抛出。**不退化** ——
+   * @throws CallerIdentityMissingException 认不出这次调用算谁时抛出。**不退化** ——
    *     退化会让粘滞在缺失标识的那一部分调用上静默失效
    */
   @Override
@@ -73,7 +73,7 @@ public final class StickySelector implements InstanceSelector {
     String key = keys.keyOf(context)
         .map(String::trim)
         .filter(id -> !id.isEmpty())
-        .orElseThrow(StickyKeyMissingException::new);
+        .orElseThrow(CallerIdentityMissingException::forStickySelection);
     synchronized (lock) {
       String remembered = bindings.get(key);
       if (remembered != null && candidates.contains(remembered)) {

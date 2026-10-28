@@ -2,6 +2,7 @@ package io.github.airouter.gateway.config;
 
 import io.github.airouter.core.Outcome;
 import io.github.airouter.core.OutcomeObserver;
+import io.github.airouter.gateway.observe.LatencySamples;
 import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.ProviderInputs;
 import io.github.airouter.gateway.providers.UpstreamProvider;
@@ -15,6 +16,7 @@ import io.github.airouter.gateway.select.InstanceSelector;
 import io.github.airouter.gateway.select.SelectionStrategyFactory;
 import io.github.airouter.gateway.select.StickyKeyResolver;
 import io.github.airouter.gateway.select.StickySelector;
+import io.github.airouter.gateway.transport.ActiveCallMeter;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,18 +66,37 @@ public final class UpstreamConfiguration {
    */
   @Bean
   public UpstreamRegistry upstreamRegistry(ServicesProperties services, StreamProperties stream,
-      UpstreamProviderFactory factory, OutcomeObserver observer) {
+      UpstreamProviderFactory factory, List<OutcomeObserver> observers, ActiveCallMeter active) {
     // 结算在这里被降成一个动作交给 Provider：它需要知道的只是「把结论递出去」——
     // 于是每一种形态的构造器也不必认识「结算器」这个角色。
-    Consumer<Outcome> settle = observer::settle;
+    //
+    // 收这个动作的人有若干个（票 04 的账本与票 10 的延迟样本），因此这里要的是**全体**观察者：
+    // 只接一个会让第二个观察者悄悄接不上 —— 那种失效没有错误，只是那张表永远是空的。
+    Consumer<Outcome> settle = outcome -> observers.forEach(observer -> observer.settle(outcome));
     Map<String, ServiceView> views = new LinkedHashMap<>();
     services.services().forEach((serviceId, definition) -> {
       List<RegisteredInstance> instances = definition.instances().stream()
-          .map(instance -> register(instance, stream, factory, settle))
+          .map(instance -> register(instance, stream, factory, settle, active))
           .toList();
       views.put(serviceId, new ServiceView(serviceId, instances));
     });
     return new UpstreamRegistry(views);
+  }
+
+  /**
+   * 在途计数：**每个实例当前压着几次调用**的唯一记录处。
+   *
+   * <p>它是一个 bean，而不是每个 {@link OutboundWire} 各有一个私有的计数器：
+   * {@code least-connections} 要问的是「这一批候选各自压着几个」，
+   * 一张只有每条出站口自己看得到的表回答不了这个问题 ——
+   * 而把它做成全局可变状态又会让「谁改了这个数」无处解释。共用这一张表，
+   * 键是实例标识，于是两个方向都对得上：写的人在自己的出站口上写，读的人按实例标识读。
+   *
+   * @return 在途计数
+   */
+  @Bean
+  public ActiveCallMeter activeCallMeter() {
+    return new ActiveCallMeter();
   }
 
   /**
@@ -144,14 +165,42 @@ public final class UpstreamConfiguration {
   /**
    * **策略工厂**：策略 → 构造器的登记处。
    *
-   * <p>它不依赖配置，因此可以在没有任何环境的情况下被构造与自检 ——
-   * 「有一种策略忘了登记构造器」是一条不需要容器的测试。
+   * <p>它不依赖任何环境，只依赖那两个**查表动作**：在途数与延迟样本的 EWMA。
+   * 因此「有一种策略忘了登记构造器」是一条不需要容器的测试，
+   * 而「策略自己去做了 IO」这件事在这里也当场不成立 ——
+   * 它拿到的不是 {@code transport} 或 {@code observe}，是两个 JDK 函数（ADR-0011 第 2 节 (e)）。
    *
+   * @param active 在途计数
+   * @param samples 延迟样本
+   * @param routing 虚拟节点数在这里
    * @return 策略工厂
    */
   @Bean
-  public SelectionStrategyFactory selectionStrategyFactory() {
-    return new SelectionStrategyFactory();
+  public SelectionStrategyFactory selectionStrategyFactory(ActiveCallMeter active,
+      LatencySamples samples, RoutingProperties routing) {
+    return new SelectionStrategyFactory(active::activeOf, samples::ewmaMillis,
+        routing.virtualNodesPerWeight());
+  }
+
+  /**
+   * **延迟样本**：由 {@code Outcome} 养出来的那张 EWMA 表。
+   *
+   * <p>它是 {@link OutcomeObserver} 的第二个消费者，与 {@link SettlementLog} 并列：
+   * 熔断、配额、调用历史随后接的仍然是同一个接口，不是这两个类。
+   * 「从 {@code Outcome} 学延迟」这件事只有这一处 ——
+   * 结算点在 providers，观测点在这里，策略只读数字。
+   *
+   * <p>返回类型写具体类：Diagnostics 与测试要按这个类取到它，
+   * 声明成接口的话那一侧要绕一圈。
+   *
+   * @param routing alpha / 惩罚值 / 保留窗口都在它身上
+   * @return 延迟样本表
+   */
+  @Bean
+  public LatencySamples latencySamples(RoutingProperties routing) {
+    RoutingProperties.Latency latency = routing.latency();
+    return new LatencySamples(latency.alpha(), latency.failurePenaltyMillis(),
+        latency.retentionMillis());
   }
 
   /**
@@ -234,9 +283,9 @@ public final class UpstreamConfiguration {
    * @return 注册表里的一项
    */
   private static RegisteredInstance register(InstanceDefinition instance, StreamProperties stream,
-      UpstreamProviderFactory factory, Consumer<Outcome> settle) {
-    OutboundWire wire = new OutboundWire(instance.baseUrl(), instance.requestTimeout(),
-        stream.outboundBufferBytes(), stream.maxFrameBytes());
+      UpstreamProviderFactory factory, Consumer<Outcome> settle, ActiveCallMeter active) {
+    OutboundWire wire = new OutboundWire(instance.id(), active, instance.baseUrl(),
+        instance.requestTimeout(), stream.outboundBufferBytes(), stream.maxFrameBytes());
     ProviderInputs inputs = new ProviderInputs(wire, instance.shape(), instance.apiKey(),
         instance.model(), instance.id(), stream.idleTimeout(), stream.maxContentChars(), settle);
     UpstreamProvider provider = factory.create(inputs);

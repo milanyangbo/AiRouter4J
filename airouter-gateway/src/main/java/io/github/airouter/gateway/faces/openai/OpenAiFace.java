@@ -4,10 +4,11 @@ import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.UpstreamFailure;
+import io.github.airouter.gateway.routing.CallerIdentityMissingException;
 import io.github.airouter.gateway.routing.NoUsableInstanceException;
 import io.github.airouter.gateway.routing.RoutedPort;
 import io.github.airouter.gateway.routing.SelectionContext;
-import io.github.airouter.gateway.routing.StickyKeyMissingException;
+import io.github.airouter.gateway.select.ActiveCountMissingException;
 import java.net.InetSocketAddress;
 import java.util.Locale;
 import java.util.UUID;
@@ -192,11 +193,17 @@ public final class OpenAiFace {
       return new GatewayError(rejected.rejection().name().toLowerCase(Locale.ROOT),
           rejected.getMessage(), 503);
     }
-    if (cause instanceof StickyKeyMissingException missing) {
-      // 粘滞开着而这一次调用认不出它算谁的：这是客户端能补的东西（带上调用方标识），
+    if (cause instanceof CallerIdentityMissingException missing) {
+      // 选择需要知道这一次调用算谁的，而它认不出来：这是客户端能补的东西（带上调用方标识），
       // 所以是 400 而不是 503 —— 503 说的是「我这边暂时不行，你过会儿重试」，重试不会带来身份。
+      // 粘滞与两个 hash 策略共用这一个形状，于是不存在「同样是缺标识，一个给 400 另一个给 503」。
       // 也不结算：这一次调用还没有发生过（ADR-0013 (e)）。
       return new GatewayError("caller_identity_required", missing.getMessage(), 400);
+    }
+    if (cause instanceof ActiveCountMissingException missing) {
+      // 选得出候选，却查不到它压着几个请求：装配把在途计数接丢了一半，
+      // 客户端做什么都改不了它。503 说的是「现在没处可去」—— 正是这里的情况。
+      return new GatewayError("instance_selection_unavailable", missing.getMessage(), 503);
     }
     if (cause instanceof IllegalArgumentException) {
       return new GatewayError("bad_request", "请求体无法被解析", 400);

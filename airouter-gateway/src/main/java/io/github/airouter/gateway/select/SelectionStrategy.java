@@ -28,7 +28,52 @@ public enum SelectionStrategy {
    * （理由写在 {@link SelectionStrategyFactory} 上）：轮转序列能被**严格**断言，
    * 于是「权重真的生效」这条性质有了一条不靠概率的证明。
    */
-  ROUND_ROBIN("round-robin");
+  /**
+   * 光标在加权区间上一步步往前走。它可预测，所以装配期默认它而不是随机
+   * （理由写在 {@link SelectionStrategyFactory} 上）：轮转序列能被**严格**断言，
+   * 于是「权重真的生效」这条性质有了一条不靠概率的证明。
+   */
+  ROUND_ROBIN("round-robin"),
+
+  /**
+   * 挑**当前压着的调用最少**的那一个（{@link LeastConnectionsSelector}）。
+   *
+   * <p>它需要 {@code transport} 的在途计数，而这个数是**装配递进来的一个查表动作**，
+   * 不是让它自己去问：整个 {@code select} 包是纯函数（ADR-0011 第 2 节 (e)）。
+   * 查不到某个候选的数时它报错，而不是把「不知道」当作 0 ——
+   * 那会让本策略静默退化成随机。
+   */
+  LEAST_CONNECTIONS("least-connections"),
+
+  /**
+   * 按调用方标识哈希：**同一个调用方落在同一个实例上**（{@link IpHashSelector}）。
+   *
+   * <p>它共用第 ④ 步的区间，不自建一套加权 ——
+   * 于是「权重在这个策略里也是真的」是一条能被断言的性质：
+   * 3:1 时足够多的调用方里约有 3/4 落在重的那一个上。
+   */
+  IP_HASH("ip-hash"),
+
+  /**
+   * 键环 + 虚拟节点：**同一个调用方落在同一个实例上，且实例的增减只搬动它必须搬动的那部分键**
+   * （{@link ConsistentHashSelector}）。
+   *
+   * <p>它是六个策略里唯一**把加权内建在自己里面**的那个：虚拟节点数与权重成正比，
+   * 那些虚拟节点本身就已经是加过权的样子，所以它**不再叠加**第 ④ 步的区间。
+   * 「换任意策略权重行为一致」这条验收因此只对另外五个成立 ——
+   * 它在本策略里的等价性质改由「键比例 ≈ 权重占比」承担。
+   */
+  CONSISTENT_HASH("consistent-hash"),
+
+  /**
+   * 挑最近答得最快的那一个：每实例 EWMA，{@code ewma = alpha * 样本 + (1 - alpha) * ewma}，
+   * 权重 ∝ {@code 1/(1+ewma)}（{@link LatencySelector}）。
+   *
+   * <p>样本由 {@code observe} 从 {@code Outcome} 养出来：成功用实际延迟、**失败用惩罚值**，
+   * 于是高失败率的实例被自然降权；进到这里的时候它是**一个查表动作**。
+   * 还没有样本的实例按 0 毫秒对待（不是「最差」）：一台没被量过的机器必须有机会被量到。
+   */
+  LATENCY("latency");
 
   private final String id;
 

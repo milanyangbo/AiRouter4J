@@ -13,6 +13,7 @@ import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
 import io.github.airouter.gateway.providers.UpstreamShape;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
+import io.github.airouter.gateway.transport.ActiveCallMeter;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -120,7 +121,8 @@ final class GoldenWireContractTest {
 
   private static Actual run(CanonicalRequest request, RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
-        new OutboundWire(recorded.baseUrl(), TIMEOUT, BUFFER_BYTES, MAX_FRAME_BYTES),
+        new OutboundWire("golden", new ActiveCallMeter(), recorded.baseUrl(), TIMEOUT, BUFFER_BYTES,
+            MAX_FRAME_BYTES),
         UpstreamShape.OPENAI.framerFactory(),
         "golden-key", MODEL, recorded.baseUrl(), TIMEOUT, 1 << 16, outcome -> { });
     try {

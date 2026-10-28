@@ -9,6 +9,7 @@ import io.github.airouter.gateway.config.InstanceDefinition;
 import io.github.airouter.gateway.registry.RegisteredInstance;
 import io.github.airouter.gateway.registry.ServiceView;
 import io.github.airouter.gateway.registry.UpstreamRegistry;
+import io.github.airouter.gateway.transport.ActiveCallMeter;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.time.Duration;
 import java.util.List;
@@ -124,7 +125,8 @@ final class UpstreamProviderFactoryTest {
   }
 
   private static ProviderInputs inputs(UpstreamShape shape, String baseUrl, String instanceId) {
-    OutboundWire wire = new OutboundWire(baseUrl, Duration.ofSeconds(30), 1 << 16, 1 << 20);
+    OutboundWire wire = new OutboundWire("shape-probe", new ActiveCallMeter(), baseUrl, Duration.ofSeconds(30),
+        1 << 16, 1 << 20);
     return new ProviderInputs(wire, shape, "key", "qwen2.5:0.5b", instanceId, IDLE,
         MAX_CONTENT_CHARS, NO_SETTLEMENT);
   }

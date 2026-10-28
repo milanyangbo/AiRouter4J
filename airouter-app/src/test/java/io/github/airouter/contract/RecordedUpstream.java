@@ -207,6 +207,10 @@ public final class RecordedUpstream implements AutoCloseable {
    *
    * <p>所以「一个多字节字符被切在两个 TCP 段之间」只有这一条入口造得出来。
    *
+   * <p>**静默只发生在块与块之间**：块数只有一块时，给多大的 {@code nextBetween} 都不会慢下来。
+   * 想造出一个「慢的实例」，必须先把它拆成若干块 ——
+   * 否则两个实例一样快，而依赖快慢的断言会静默退化成「按权重轮询」那一类与它无关的断言。
+   *
    * @param nextChunks 要写出的字节块。块内会被复制一份，回放过程中不受调用方后续改动影响
    * @param nextBetween 块间静默
    */

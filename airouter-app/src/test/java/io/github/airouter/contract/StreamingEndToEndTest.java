@@ -12,6 +12,7 @@ import io.github.airouter.gateway.faces.openai.OpenAiInboundCodec;
 import io.github.airouter.gateway.observe.SettlementLog;
 import io.github.airouter.gateway.providers.UpstreamShape;
 import io.github.airouter.gateway.providers.openai.OpenAiCompatibleProvider;
+import io.github.airouter.gateway.transport.ActiveCallMeter;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -649,7 +650,8 @@ final class StreamingEndToEndTest {
   /** 一次流式调用产出哪些客户端帧（走 Provider，不走 HTTP 入口）。 */
   private static List<String> framesFrom(RecordedUpstream recorded) {
     OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider(
-        new OutboundWire(recorded.baseUrl(), Duration.ofSeconds(10), BUFFER_BYTES, MAX_FRAME_BYTES),
+        new OutboundWire("streaming", new ActiveCallMeter(), recorded.baseUrl(),
+            Duration.ofSeconds(10), BUFFER_BYTES, MAX_FRAME_BYTES),
         UpstreamShape.OPENAI.framerFactory(),
         "golden-key", MODEL, recorded.baseUrl(), IDLE_TIMEOUT, 1 << 16, outcome -> { });
     OpenAiInboundCodec.StreamEncoder encoder = OpenAiInboundCodec.newStreamEncoder();

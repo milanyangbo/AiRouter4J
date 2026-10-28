@@ -50,6 +50,17 @@ airouter:
     sticky-enabled: ${AIROUTER_ROUTING_STICKY_ENABLED:false}
     # 粘滞表最多记住多少个调用方：它是「最多记多少人」，不是「最多允许多少并发」。
     sticky-max-entries: ${AIROUTER_ROUTING_STICKY_MAX_ENTRIES:4096}
+    # 以下四个是**两个信息型策略**（least-connections 除外：它读的是 transport 的在途数）的调节旋钮。
+    # 它们藏起来的话，「为什么这台机器过了这么久才被降权」只能靠读代码回答，
+    # 所以是可配的，而且非法值同样起不来（RoutingProperties）。
+    virtual-nodes-per-weight: ${AIROUTER_ROUTING_VIRTUAL_NODES_PER_WEIGHT:160}
+    latency:
+      # EWMA 的平滑系数：越接近 1 越只看最新的一次样本。
+      alpha: ${AIROUTER_ROUTING_LATENCY_ALPHA:0.5}
+      # 一次上游失败当作多少毫秒记进样本（成功则记实际延迟，到终态为止）。
+      failure-penalty-millis: ${AIROUTER_ROUTING_LATENCY_FAILURE_PENALTY_MILLIS:30000}
+      # 一个实例没有新样本之后，它学到的 EWMA 还能活多久。
+      retention-millis: ${AIROUTER_ROUTING_LATENCY_RETENTION_MILLIS:600000}
   stream:
     # 块间静默上限：不是总时长。一条想很久但一直在说话的流不会被误杀。
     idle-timeout: ${AIROUTER_STREAM_IDLE_TIMEOUT:15s}

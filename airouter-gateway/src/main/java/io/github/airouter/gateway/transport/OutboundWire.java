@@ -33,6 +33,10 @@ import reactor.core.publisher.Mono;
  *
  * <p>给流式的出站套上非流式那个总时长上限，等于替调用方决定「模型最多想多久」：
  * 一条想了四十秒才答完的流会被掐断，客户端拿到的是一条没有终态的半截响应。
+ *
+ * <p>它还负责一件事：**每一次调用在区间意义上占用了多少**。每一次订阅加一、每一次终态减一
+ * （取消也算），这个数是 {@code least-connections} 的输入（ADR-0011 第 2 节 (e)）。
+ * 计数放在这里而不是放在某个治理组件里，是因为「一次调用什么时候算走完」只有这一层答得出来。
  */
 public final class OutboundWire {
 
@@ -43,11 +47,19 @@ public final class OutboundWire {
 
   private final WebClient client;
 
+  private final String instanceId;
+
+  private final ActiveCallMeter active;
+
   private final Duration responseTimeout;
 
   private final int maxFrameBytes;
 
   /**
+   * @param instanceId 这一条出站口属于哪个实例。它只用在在途计数上 ——
+   *                   「哪个实例上压着几个请求」这个问题的键是这样的标识，不是地址
+   * @param active 在途计数。每条出站口都把自己登记进去，于是「这个实例当前在忙什么」有唯一一处可问
+   *                （它是 {@code least-connections} 的输入来源，见 ADR-0011 第 2 节 (e)）
    * @param baseUrl 上游基地址，含 {@code /v1} 之类的前缀
    * @param responseTimeout 非流式调用的总上限
    * @param bufferBytes 聚合读取的缓冲区上限：一次非流式响应最多允许多少字节进内存。
@@ -56,7 +68,11 @@ public final class OutboundWire {
    *                      它是流式这一侧真正会吃内存的地方：一个永远不发换行的上游会让缓存无限增长，
    *                      而累积内容上限管不到它 —— 后者作用在解码之后，这个上限作用在解码之前
    */
-  public OutboundWire(String baseUrl, Duration responseTimeout, int bufferBytes, int maxFrameBytes) {
+  public OutboundWire(String instanceId, ActiveCallMeter active, String baseUrl,
+      Duration responseTimeout, int bufferBytes, int maxFrameBytes) {
+    this.instanceId = instanceId;
+    this.active = active;
+    this.active.register(instanceId);
     this.client = WebClient.builder()
         .baseUrl(baseUrl)
         .exchangeStrategies(ExchangeStrategies.builder()
@@ -79,7 +95,7 @@ public final class OutboundWire {
    * @return 原始结果
    */
   public Mono<UpstreamReply> post(String path, Map<String, String> headers, String jsonBody) {
-    return client.post()
+    return counted(client.post()
         .uri(path)
         .headers(httpHeaders -> headers.forEach(httpHeaders::add))
         .contentType(MediaType.APPLICATION_JSON)
@@ -92,7 +108,7 @@ public final class OutboundWire {
             OutcomeKind.UPSTREAM_TIMEOUT,
             new GatewayError(TIMEOUT, "上游在 " + responseTimeout + " 内没有完成响应", 504), cause))
         .onErrorMap(cause -> !isAttributed(cause), cause -> new UpstreamFailure(
-            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause));
+            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause)));
   }
 
   /**
@@ -122,7 +138,7 @@ public final class OutboundWire {
    */
   public Flux<UpstreamFrame> postStream(String path, Map<String, String> headers, String jsonBody,
       Duration idleTimeout, IntFunction<UpstreamFramer> framerFactory) {
-    return client.post()
+    return counted(client.post()
         .uri(path)
         .headers(httpHeaders -> headers.forEach(httpHeaders::add))
         .contentType(MediaType.APPLICATION_JSON)
@@ -146,7 +162,35 @@ public final class OutboundWire {
             OutcomeKind.UPSTREAM_TIMEOUT,
             new GatewayError(TIMEOUT, "上游静默超过 " + idleTimeout + " 没有给出下一块", 504), cause))
         .onErrorMap(cause -> !isAttributed(cause), cause -> new UpstreamFailure(
-            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause));
+            new GatewayError(UNREACHABLE, "无法连上上游：" + cause.getMessage(), 502), cause)));
+  }
+
+  /**
+   * 把一次调用放进在途计数里：订阅时加一，**任何结束方式**都减一。
+   *
+   * <p>加一发生在**订阅**而不是在这一对 Mono / Flux 被造出来的时候：
+   * 构造与订阅之间可以隔很久，中间甚至可以一次都不订阅。
+   * 减一挂在 {@code doFinally} 上而不是挂在正常完成的回调上，
+   * 因为取消与失败同样是「这一次调用不再压着这个实例」——
+   * 漏掉它们的计数会一路只增不减，而那个数喂给 {@code least-connections}
+   * 之后的表现是「某台机器永远不会再被选中」。
+   *
+   * @param call 一次非流式调用
+   * @return 同一次调用，进出都经过计数
+   */
+  private Mono<UpstreamReply> counted(Mono<UpstreamReply> call) {
+    return Mono.defer(() -> {
+      active.enter(instanceId);
+      return call.doFinally(signal -> active.exit(instanceId));
+    });
+  }
+
+  /** 同上，流式那一侧。它在第一次订阅时加一，取消 / 超时 / 写完都以减一收尾。 */
+  private Flux<UpstreamFrame> counted(Flux<UpstreamFrame> call) {
+    return Flux.defer(() -> {
+      active.enter(instanceId);
+      return call.doFinally(signal -> active.exit(instanceId));
+    });
   }
 
   /**

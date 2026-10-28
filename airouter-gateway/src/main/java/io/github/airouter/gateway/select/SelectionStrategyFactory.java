@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -25,18 +26,41 @@ import java.util.stream.Collectors;
  */
 public final class SelectionStrategyFactory {
 
-  /** 策略 → 构造器。缺一个就起不来，见 {@link #SelectionStrategyFactory()}。 */
+  /** 策略 → 构造器。缺一个就起不来，见 {@link #SelectionStrategyFactory}。 */
   private final Map<SelectionStrategy, Supplier<InstanceSelector>> constructors;
 
   /**
+   * @param activeCalls 实例标识 → 在途数，查不到时返回 null。它是 {@code least-connections} 的输入，
+   *                    来源在 {@code transport}；**工厂不认识那边**，它拿到的只是一个查表动作
+   * @param latencyMillis 实例标识 → EWMA（毫秒），没有样本时返回 null。它是 {@code latency} 的输入，
+   *                      来源在 {@code observe}
+   * @param virtualNodesPerWeight {@code consistent-hash} 的每个单位权重要占多少个虚拟节点
    * @throws IllegalStateException 有策略没有登记构造器时抛出。
    *     宁肯起不来，也不要让人配到一种策略之后才发现它根本不存在
+   * @throws NullPointerException 两个外部输入里有 null 时抛出：
+   *     它们为 null 的表现是「配到那个策略的瞬间才炸」，而那个时候已经不好归因了
    */
-  public SelectionStrategyFactory() {
+  public SelectionStrategyFactory(Function<String, Integer> activeCalls,
+      Function<String, Double> latencyMillis, int virtualNodesPerWeight) {
+    Objects.requireNonNull(activeCalls, "activeCalls");
+    Objects.requireNonNull(latencyMillis, "latencyMillis");
+    if (virtualNodesPerWeight <= 0) {
+      throw new IllegalArgumentException("每个单位权重的虚拟节点数必须是正整数，收到的是 "
+          + virtualNodesPerWeight);
+    }
     Map<SelectionStrategy, Supplier<InstanceSelector>> registered =
         new LinkedHashMap<>();
+    // 登记顺序与 SelectionStrategy 的声明顺序一致：
+    // 两处报出来的清单（名字那一侧与工厂这一侧）于是永远是同一串，
+    // 而不是「报错说有六种、实际上按另一种顺序登记」这种要看两处才知道的差别。
     registered.put(SelectionStrategy.RANDOM, RandomSelector::usingSharedRandom);
     registered.put(SelectionStrategy.ROUND_ROBIN, RoundRobinSelector::new);
+    registered.put(SelectionStrategy.LEAST_CONNECTIONS,
+        () -> new LeastConnectionsSelector(activeCalls));
+    registered.put(SelectionStrategy.IP_HASH, IpHashSelector::new);
+    registered.put(SelectionStrategy.CONSISTENT_HASH,
+        () -> new ConsistentHashSelector(virtualNodesPerWeight));
+    registered.put(SelectionStrategy.LATENCY, () -> new LatencySelector(latencyMillis));
     for (SelectionStrategy strategy : SelectionStrategy.values()) {
       if (!registered.containsKey(strategy)) {
         throw new IllegalStateException("策略 " + strategy.id() + " 没有登记构造器：请在本类补一行");

@@ -41,6 +41,15 @@ airouter:
           weight: 1
           enabled: true
           tags: []
+  routing:
+    # 第 ⑥ 步用哪个策略。写错名字**起不来**并列出当时登记的策略 ——
+    # 退化成一个没点的策略会让「为什么流量这么走」变成一个查不出来的问题（RoutingProperties）。
+    strategy: ${AIROUTER_ROUTING_STRATEGY:round-robin}
+    # 第 ⑤ 步的粘滞：**默认关**。开了之后每一次调用都必须认得出它算谁的，
+    # 认不出的调用会被拒掉，而不是退化成每次换一个实例（StickySelector）。
+    sticky-enabled: ${AIROUTER_ROUTING_STICKY_ENABLED:false}
+    # 粘滞表最多记住多少个调用方：它是「最多记多少人」，不是「最多允许多少并发」。
+    sticky-max-entries: ${AIROUTER_ROUTING_STICKY_MAX_ENTRIES:4096}
   stream:
     # 块间静默上限：不是总时长。一条想很久但一直在说话的流不会被误杀。
     idle-timeout: ${AIROUTER_STREAM_IDLE_TIMEOUT:15s}

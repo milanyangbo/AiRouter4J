@@ -7,6 +7,7 @@ import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.routing.NoUsableInstanceException;
 import io.github.airouter.gateway.routing.RoutedPort;
 import io.github.airouter.gateway.routing.SelectionContext;
+import io.github.airouter.gateway.routing.StickyKeyMissingException;
 import java.net.InetSocketAddress;
 import java.util.Locale;
 import java.util.UUID;
@@ -190,6 +191,12 @@ public final class OpenAiFace {
       // 所以对客户端说的是 503（现在没处可去，过会儿再来），而不是 500（网关自己坏了）。
       return new GatewayError(rejected.rejection().name().toLowerCase(Locale.ROOT),
           rejected.getMessage(), 503);
+    }
+    if (cause instanceof StickyKeyMissingException missing) {
+      // 粘滞开着而这一次调用认不出它算谁的：这是客户端能补的东西（带上调用方标识），
+      // 所以是 400 而不是 503 —— 503 说的是「我这边暂时不行，你过会儿重试」，重试不会带来身份。
+      // 也不结算：这一次调用还没有发生过（ADR-0013 (e)）。
+      return new GatewayError("caller_identity_required", missing.getMessage(), 400);
     }
     if (cause instanceof IllegalArgumentException) {
       return new GatewayError("bad_request", "请求体无法被解析", 400);

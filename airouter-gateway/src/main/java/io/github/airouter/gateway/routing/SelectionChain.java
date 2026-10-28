@@ -20,8 +20,10 @@ import java.util.Set;
  * 这一句同时也是拒绝措辞的根据：候选为空的含义是「一个启用着的都没有」，
  * 不是「筛掉了所有」—— 后者有它自己的原因。
  *
- * <p>⑤ 本票**直通**：粘滞是包在策略之外的包装器，它来的时候这里不用改 ——
- * 装配层把包装好的那一份交进来即可（票 09）。
+ * <p>⑤ 不在这里：**粘滞是包在第 ⑥ 步之外的包装器**（ADR-0011 第 2 节 (c)），
+ * 由装配层决定要不要包上去（{@code airouter.routing.sticky-enabled}）。
+ * 链因此不需要知道拿到的那个 id 是这次抽出来的、还是上次记住的那一个 ——
+ * 它只知道「第 ⑥ 步交给它一个实例 id」。
  */
 public final class SelectionChain {
 
@@ -31,7 +33,7 @@ public final class SelectionChain {
 
   /**
    * @param gate 第 ③ 步的闸门。本票注入的是恒开的那一份
-   * @param selector 第 ⑥ 步的策略；第 ⑤ 步的粘滞包装器包在它外面（票 09）
+   * @param selector 第 ⑥ 步的策略；开了粘滞时它是被第 ⑤ 步包起来的那一份
    */
   public SelectionChain(AvailabilityGate gate, InstanceSelector selector) {
     this.gate = Objects.requireNonNull(gate, "gate");
@@ -71,7 +73,8 @@ public final class SelectionChain {
       throw new NoUsableInstanceException(serviceId, Rejection.GATE_EXHAUSTED);
     }
 
-    // ④ 加权展开（独立一步，不在策略里）→ ⑤ 粘滞（本票直通）→ ⑥ 策略。
+    // ④ 加权展开（独立一步，不在策略里）→ ⑤ 粘滞（包在外面，这里看不见）
+    //   → ⑥ 策略。
     return selector.select(WeightedCandidates.of(usable), context);
   }
 

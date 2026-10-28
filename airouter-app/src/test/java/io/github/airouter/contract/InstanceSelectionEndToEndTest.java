@@ -37,6 +37,11 @@ import org.springframework.test.web.reactive.server.WebTestClient;
  *   <li>选中的实例 id 进了结算记录
  * </ol>
  *
+ * <p>**粘滞在这个上下文里是开着的**（它是配置，不是一个默认行为），
+ * 于是前面那几条每次都要**换一个调用方**：同一个调用方会让它们全部落在同一个实例上，
+ * 那时「权重有没有生效」反而看不出来了。第五条断言反过来看着同一件事的另一面 ——
+ * 同一个调用方一路粘住不换。
+ *
  * <p>权重生效那条断言写成「取八次 = 两整轮」，是为了与光标起点无关：
  * 轮询光标是进程级共享状态，它的起点随执行顺序而变，
  * 「第一次一定打给第一个实例」是一条换个执行顺序就红的断言。
@@ -53,6 +58,9 @@ final class InstanceSelectionEndToEndTest {
   private static final String LIGHT = "light";
 
   private static final String OFF = "off";
+
+  /** 粘滞那一条用的调用方标识。它在多条请求之间保持不变，粘滞才有东西可粘。 */
+  private static final String TENANT = "tenant-sticky";
 
   private static final RecordedUpstream HEAVY_UPSTREAM = start();
 
@@ -87,6 +95,9 @@ final class InstanceSelectionEndToEndTest {
     declare(registry, 0, HEAVY, 3, true, HEAVY_UPSTREAM::baseUrl);
     declare(registry, 1, LIGHT, 1, true, LIGHT_UPSTREAM::baseUrl);
     declare(registry, 2, OFF, 1, false, OFF_UPSTREAM::baseUrl);
+    // 粘滞开着：第 ⑤ 步挂在策略外面这件事只能从这一层看出来 ——
+    // 单测验的是包装器自己，验不到「装配把它包上去了没有」。
+    registry.add("airouter.routing.sticky-enabled", () -> "true");
     registry.add("airouter.stream.idle-timeout", () -> "15s");
     registry.add("airouter.stream.max-content-chars", () -> "262144");
     registry.add("airouter.stream.max-frame-bytes", () -> "1048576");
@@ -122,6 +133,9 @@ final class InstanceSelectionEndToEndTest {
    * <p>这条断言的价值在于它抓得住「流式绕过选择」那一种接线错误：
    * 若流式那条路自己挑实例（比如固定打第一个），八次里 heavy 的占比会偏离 6/8，
    * 而单测看不见这种错 —— 它判的是链，不是谁在调链。
+   *
+   * <p>八次**各用一个新调用方**：粘滞会把同一个调用方钉在同一个实例上，
+   * 那时这一条验的就不是权重了。
    */
   @Test
   @DisplayName("流式与非流式共用同一条序列：八次交替请求仍按 3:1 轮转，关着的那个一次都没有")
@@ -132,7 +146,7 @@ final class InstanceSelectionEndToEndTest {
 
     List<String> targets = new ArrayList<>();
     for (int i = 0; i < 8; i++) {
-      targets.add(targetOf(i % 2 == 0));
+      targets.add(targetOf("sequence-caller-" + i, i % 2 == 0));
     }
 
     // 权重 3:1 → 两整轮恰好 6:2，与光标起点无关。
@@ -156,7 +170,7 @@ final class InstanceSelectionEndToEndTest {
 
     List<String> settled = new ArrayList<>();
     for (int i = 0; i < 4; i++) {
-      settled.add(instanceOf(callNonStreaming()));
+      settled.add(instanceOf(callNonStreaming("settlement-caller-" + i)));
     }
 
     assertThat(settled).as("结算里的实例 id").containsOnly(HEAVY, LIGHT);
@@ -164,8 +178,32 @@ final class InstanceSelectionEndToEndTest {
     assertThat(settled).filteredOn(LIGHT::equals).hasSize(1);
   }
 
+  /**
+   * 粘滞真的挂在进程上：**同一个调用方一路粘在同一个实例上**，流式与非流式共用同一份记忆。
+   *
+   * <p>它会红的形状是「默认策略（轮询）没被粘滞包住」：那种情况下六次请求按 3:1 轮转，
+   * 六次里必然出现两个不同的实例。这一份因此只回答「包上去了没有」——
+   * 包装器自己的性质（换个实例、表有界、缺键拒绝）在 {@code gateway} 的单测里判。
+   */
+  @Test
+  @DisplayName("粘滞开着时同一个调用方的六次请求落在同一个实例上（流式与非流式共用同一份记忆）")
+  void stickyCallerStaysOnOneInstanceAcrossBothPaths() {
+    HEAVY_UPSTREAM.resetRequests();
+    LIGHT_UPSTREAM.resetRequests();
+    OFF_UPSTREAM.resetRequests();
+
+    List<String> targets = new ArrayList<>();
+    for (int i = 0; i < 6; i++) {
+      targets.add(targetOf(TENANT, i % 2 == 0));
+    }
+
+    assertThat(targets).as("同一个调用方的六次请求").containsOnly(targets.get(0));
+    // 粘住的那个也不能是关着的那个：第 ② 步之前的筛选仍然生效。
+    assertThat(targets.get(0)).isIn(HEAVY, LIGHT);
+  }
+
   /** 打一次非流式请求，返回「请求标识 → 响应」这一对。 */
-  private String callNonStreaming() {
+  private String callNonStreaming(String callerId) {
     HEAVY_UPSTREAM.replay(200, completionWith("H"));
     LIGHT_UPSTREAM.replay(200, completionWith("L"));
     OFF_UPSTREAM.replay(200, completionWith("OFF"));
@@ -173,6 +211,7 @@ final class InstanceSelectionEndToEndTest {
     String requestId = client.post()
         .uri(OpenAiFace.PATH)
         .header("Content-Type", "application/json")
+        .header(OpenAiFace.CALLER_ID_HEADER, callerId)
         .bodyValue(requestBody(false))
         .exchange()
         .expectStatus().isOk()
@@ -186,7 +225,7 @@ final class InstanceSelectionEndToEndTest {
   }
 
   /** 打一次流式请求；两个录制器给出各自的标识，用来看请求落在谁身上。 */
-  private void callStreaming() {
+  private void callStreaming(String callerId) {
     HEAVY_UPSTREAM.replayBytes(chunksWith("H"), Duration.ZERO);
     LIGHT_UPSTREAM.replayBytes(chunksWith("L"), Duration.ZERO);
     OFF_UPSTREAM.replayBytes(chunksWith("OFF"), Duration.ZERO);
@@ -194,6 +233,7 @@ final class InstanceSelectionEndToEndTest {
     client.post()
         .uri(OpenAiFace.PATH)
         .header("Content-Type", "application/json")
+        .header(OpenAiFace.CALLER_ID_HEADER, callerId)
         .bodyValue(requestBody(true))
         .exchange()
         .returnResult(String.class)
@@ -203,15 +243,15 @@ final class InstanceSelectionEndToEndTest {
   }
 
   /** 这一次的请求落在哪个实例上：看哪个录制器的计数动了。 */
-  private String targetOf(boolean stream) {
+  private String targetOf(String callerId, boolean stream) {
     int beforeHeavy = HEAVY_UPSTREAM.requests();
     int beforeLight = LIGHT_UPSTREAM.requests();
     int beforeOff = OFF_UPSTREAM.requests();
 
     if (stream) {
-      callStreaming();
+      callStreaming(callerId);
     } else {
-      callNonStreaming();
+      callNonStreaming(callerId);
     }
 
     int heavyDelta = HEAVY_UPSTREAM.requests() - beforeHeavy;

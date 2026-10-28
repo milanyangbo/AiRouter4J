@@ -72,6 +72,20 @@ public final class WeightedCandidates {
   }
 
   /**
+   * 这个 id 还在不在候选里。
+   *
+   * <p>第 ⑤ 步（粘滞）拿它判「上次粘的那个实例还在不在」：
+   * 它会被关掉、被标签筛掉、被第 ③ 步排空 —— 三种情况对这个询问的回答都一样，
+   * 而粘滞不需要区分它们，只要在答案变成「不在」的时候按缺席处置。
+   *
+   * @param instanceId 实例 id
+   * @return 在这一批候选里就是 true
+   */
+  public boolean contains(String instanceId) {
+    return candidates.stream().anyMatch(candidate -> candidate.id().equals(instanceId));
+  }
+
+  /**
    * 取落点：{@code [0, total)} 里的一个值落在哪个候选的区间里。
    *
    * @param draw 任意 long，内部会归一化

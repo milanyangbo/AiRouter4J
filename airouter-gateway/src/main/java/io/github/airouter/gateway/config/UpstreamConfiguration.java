@@ -12,7 +12,9 @@ import io.github.airouter.gateway.registry.UpstreamRegistry;
 import io.github.airouter.gateway.routing.AvailabilityGate;
 import io.github.airouter.gateway.routing.SelectionChain;
 import io.github.airouter.gateway.select.InstanceSelector;
-import io.github.airouter.gateway.select.RoundRobinSelector;
+import io.github.airouter.gateway.select.SelectionStrategyFactory;
+import io.github.airouter.gateway.select.StickyKeyResolver;
+import io.github.airouter.gateway.select.StickySelector;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -140,17 +142,46 @@ public final class UpstreamConfiguration {
   }
 
   /**
-   * 第 ⑥ 步的策略：**默认是轮询，不是随机**。
+   * **策略工厂**：策略 → 构造器的登记处。
    *
-   * <p>理由是验证而不是偏好：轮询可预测，于是「权重真的生效」能被**严格**断言
-   * （3:1 → 八次里恰好 6:2）；随机只能断言比例，而比例对的实现
-   * 也可能压根没看权重。其余五个策略与按名取策略的工厂随票 09 / 票 10 进来。
+   * <p>它不依赖配置，因此可以在没有任何环境的情况下被构造与自检 ——
+   * 「有一种策略忘了登记构造器」是一条不需要容器的测试。
    *
-   * @return 轮询
+   * @return 策略工厂
    */
   @Bean
-  public InstanceSelector instanceSelector() {
-    return new RoundRobinSelector();
+  public SelectionStrategyFactory selectionStrategyFactory() {
+    return new SelectionStrategyFactory();
+  }
+
+  /**
+   * 第 ⑥ 步的策略，**外加包在它外面的第 ⑤ 步粘滞**：两者都由 {@code airouter.routing} 决定。
+   *
+   * <p>策略**按配置里的名字取**，名字的主人首先是 {@link RoutingProperties}（错名字起不来），
+   * 其次是这里 —— 工厂报错时会列出当时登记的名字。
+ * 配起来的结果是：**换一个策略不用改一行 Java** —— 这件事的粒度从「发一次版」回到了「改一个值」。
+ *
+ * <p>默认值取**轮询而不是随机**，理由是验证而不是偏好：轮询可预测，
+ * 于是「权重真的生效」能被**严格**断言（3:1 → 八次里恰好 6:2）；
+ * 随机只能断言比例，而比例对的实现也可能压根没看权重。
+   *
+   * <p>粘滞**在这里包上去，不在链里**：链看的是「第 ⑥ 步交给它哪一个实例 id」，
+   * 它不需要知道那个 id 是抽出来的还是上一次记住的。包在链外面同时也保持了
+   * 包装器这个形状 —— 它可与任意策略组合，六个策略不必各实现一遍。
+   *
+   * @param routing 策略名与粘滞开关
+   * @param factory 策略工厂
+   * @return 第 ⑥ 步；开了粘滞时外面还包着一层第 ⑤ 步
+   */
+  @Bean
+  public InstanceSelector instanceSelector(RoutingProperties routing,
+      SelectionStrategyFactory factory) {
+    InstanceSelector strategy = factory.create(routing.strategyKind());
+    if (!routing.stickyEnabled()) {
+      return strategy;
+    }
+    return new StickySelector(strategy, StickyKeyResolver.callerIdentity(),
+        routing.stickyMaxEntries());
   }
 
   /**

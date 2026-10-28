@@ -36,8 +36,8 @@ airouter:
           api-key: ${AIROUTER_ENDPOINT_API_KEY:}
           model: ${AIROUTER_ENDPOINT_MODEL:}
           request-timeout: ${AIROUTER_ENDPOINT_TIMEOUT:30s}
-          # 权重与启用标志目前还没有消费者：挑实例的选择链属阶段 4（ADR-0011）。
-          # 它们先在这里存在，是因为「能不能单独停掉一个实例」是配置模型的一部分。
+          # 权重、启用标志、标签的消费者是选择链（ADR-0011 第 5 节的 ④ 与 ②）：
+          # 权重决定候选在区间上占多长，标签决定谁能进候选，启用标志决定谁干脆不被登记进选择。
           weight: 1
           enabled: true
           tags: []

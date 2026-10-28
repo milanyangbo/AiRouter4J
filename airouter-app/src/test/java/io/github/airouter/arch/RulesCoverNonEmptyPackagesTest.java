@@ -41,7 +41,7 @@ class RulesCoverNonEmptyPackagesTest {
    */
   private static final List<String> PACKAGES_WITH_CLASSES =
       List.of("config", "faces", "faces.openai", "providers", "providers.openai", "registry",
-          "transport", "observe");
+          "routing", "select", "transport", "observe");
 
   private static final JavaClasses PRODUCTION = new ClassFileImporter()
       .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)

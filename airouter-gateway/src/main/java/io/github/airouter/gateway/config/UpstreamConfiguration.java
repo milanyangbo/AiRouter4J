@@ -9,6 +9,10 @@ import io.github.airouter.gateway.providers.UpstreamProviderFactory;
 import io.github.airouter.gateway.registry.RegisteredInstance;
 import io.github.airouter.gateway.registry.ServiceView;
 import io.github.airouter.gateway.registry.UpstreamRegistry;
+import io.github.airouter.gateway.routing.AvailabilityGate;
+import io.github.airouter.gateway.routing.SelectionChain;
+import io.github.airouter.gateway.select.InstanceSelector;
+import io.github.airouter.gateway.select.RoundRobinSelector;
 import io.github.airouter.gateway.transport.OutboundWire;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,7 +28,8 @@ import org.springframework.web.reactive.config.WebFluxConfigurer;
  * 把「谁来完成一次调用」这件事定下来。
  *
  * <p>这是 Face 与 Provider 唯一发生关系的地方，而且关系是**单向的、写在配置里的** ——
- * Face 侧只认识 core 的两个端口接口，它拿到的是哪一个实现由这里决定。
+ * Face 侧认识的是 core 那两个端口（准确说是 {@link RoutedPort}：core 两端口加上
+ * 「这一次的调用方是谁」），它拿到的是哪一个实现由这里决定。
  * 之所以把它做成显式的方法而不是让 Face 自己去 new：那样会把「用哪个 Provider」
  * 从一个配置问题变成一个需要读代码才能回答的问题。
  *
@@ -85,37 +90,67 @@ public final class UpstreamConfiguration {
   }
 
   /**
-   * Face 的两个端口：**默认服务的第一个启用着的实例**的那一份出站能力。
+   * Face 的两个端口：**每次请求都重新解析一次**的那一份出站能力。
    *
-   * <p>「第一个」这一句是一个**阶段性的东西**：选择链与规则路由（ADR-0011 / 0012）进来之后，
-   * 挑实例不再由这里决定，这个方法要么消失、要么换成真正的入口。
-   * 现阶段没有那一层，所以把它写成一个显式的方法而不是藏在一句
-   * {@code registry.requireService(...)} 里 —— 后者会让「网关把请求打给谁」
-   * 变成一件要读 registry 才知道的事。
+   * <p>「每次请求」是这一版的要点。上一版在装配期就把实例定下来了（取默认服务的
+   * 第一个启用着的实例），于是票 07 加进配置模型的权重 / 标签 / 启用标志
+   * 全是有配置、无消费者的字段。现在每一次调用都跑一遍六步链
+   * （{@link SelectionChain}），挑的是**实例 id**，再由这里按 id 取回能出网的对象。
    *
    * <p>这里只声明**一个** bean，而它自己就是两个端口：
    * 容器按运行期类型匹配候选，同一个对象实现两个端口时，
    * 拆成两个 bean 会让注入任何一侧都同时匹配两个候选。
+   * 两个端口调的是同一个解析入口 —— 形状上不存在「流式挑另一条路」的可能。
    *
    * @param registry 注册表
    * @param services 默认服务名在这里
-   * @return 默认服务的出站能力，同时是 {@link CompletionPort} 与 {@link StreamingCompletionPort}
+   * @param chain 六步链
+   * @return 出网入口，同时是 {@link CompletionPort} 与 {@link StreamingCompletionPort}
    */
   @Bean
-  public UpstreamProvider upstreamProvider(UpstreamRegistry registry, ServicesProperties services) {
-    return defaultProvider(registry, services);
+  public RoutedUpstream routedUpstream(UpstreamRegistry registry, ServicesProperties services,
+      SelectionChain chain) {
+    return new RoutedUpstream(registry::requireService, services.defaultService(), chain);
   }
 
-  /** 默认服务的第一个启用着的实例所提供的出站能力。 */
-  private static UpstreamProvider defaultProvider(UpstreamRegistry registry,
-      ServicesProperties services) {
-    return registry.requireService(services.defaultService())
-        .enabledInstances()
-        .stream()
-        .findFirst()
-        .orElseThrow(() -> new IllegalStateException(
-            "服务 " + services.defaultService() + " 没有任何启用着的实例：它的请求无处可去"))
-        .provider();
+  /**
+   * 六步链：①②③ 由它编排，④⑤⑥ 由 {@link InstanceSelector} 承担。
+   *
+   * @param gate 第 ③ 步的闸门
+   * @param selector 第 ⑥ 步的策略
+   * @return 链
+   */
+  @Bean
+  public SelectionChain selectionChain(AvailabilityGate gate, InstanceSelector selector) {
+    return new SelectionChain(gate, selector);
+  }
+
+  /**
+   * 第 ③ 步的闸门：**本阶段恒开**。
+   *
+   * <p>熔断与限流属阶段 7（ADR-0013），那时才有真正会排空它的东西。
+   * 这个 bean 先在这里，是为了让「闸门排空 → 拒绝」这条路径现在就有断言，
+   * 而不是等到有人接熔断时才第一次被想起来。
+   *
+   * @return 恒开的闸门
+   */
+  @Bean
+  public AvailabilityGate availabilityGate() {
+    return AvailabilityGate.OPEN;
+  }
+
+  /**
+   * 第 ⑥ 步的策略：**默认是轮询，不是随机**。
+   *
+   * <p>理由是验证而不是偏好：轮询可预测，于是「权重真的生效」能被**严格**断言
+   * （3:1 → 八次里恰好 6:2）；随机只能断言比例，而比例对的实现
+   * 也可能压根没看权重。其余五个策略与按名取策略的工厂随票 09 / 票 10 进来。
+   *
+   * @return 轮询
+   */
+  @Bean
+  public InstanceSelector instanceSelector() {
+    return new RoundRobinSelector();
   }
 
   /**

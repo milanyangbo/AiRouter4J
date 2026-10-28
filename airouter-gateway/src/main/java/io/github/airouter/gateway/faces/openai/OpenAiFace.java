@@ -2,17 +2,23 @@ package io.github.airouter.gateway.faces.openai;
 
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
-import io.github.airouter.core.CompletionPort;
 import io.github.airouter.core.GatewayError;
-import io.github.airouter.core.StreamingCompletionPort;
 import io.github.airouter.core.UpstreamFailure;
+import io.github.airouter.gateway.routing.NoUsableInstanceException;
+import io.github.airouter.gateway.routing.RoutedPort;
+import io.github.airouter.gateway.routing.SelectionContext;
+import java.net.InetSocketAddress;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
@@ -45,21 +51,31 @@ public final class OpenAiFace {
   /** 每次响应都会带的请求标识头，成功与失败两条路径都一样。 */
   public static final String REQUEST_ID_HEADER = "X-Airouter-Request-Id";
 
+  /**
+   * 调用方显式给出标识时用的头。没有它才退回远端地址（ADR-0011 第 5 节的 ①）。
+   */
+  public static final String CALLER_ID_HEADER = "X-Airouter-Caller-Id";
+
   private static final System.Logger LOG = System.getLogger(OpenAiFace.class.getName());
 
-  private final CompletionPort port;
+  private final RoutedPort completion;
 
-  private final StreamingCompletionPort streamingPort;
+  private final RoutedPort streaming;
 
   /**
-   * @param port 非流式的完成能力，具体实现由 {@code config} 装配进来
-   * @param streamingPort 流式能力。它与非流式是同一个实现的两个端口 ——
-   *                      两条路的存在正是「流式绕过治理」的温床，因此它们必须在这里并列出现，
-   *                      而不是其中一个从别处拿到一条捷径
+   * @param routed 出网入口，**它自己同时是那两个 core 端口**（{@link RoutedPort} 继承它们）。
+   *               两个字段取自同一个对象而不是各收一个参数，正是为了不给分岔留门：
+   *               装配上不存在「非流式走这个、流式走那个」的写法，
+   *               而「流式绕过治理」就是从那条缝里长出来的（ADR-0011 第 5 节末尾两条）。
+   *
+   *               这里的类型是 {@code RoutedPort} 而不是 core 那两个接口，
+   *               唯一的原因是第 ① 步要把调用方标识交给链 ——
+   *               core 端口的签名里只有 {@link CanonicalRequest}，装不下它。
+   *               它仍然不认识 {@code providers}
    */
-  public OpenAiFace(CompletionPort port, StreamingCompletionPort streamingPort) {
-    this.port = port;
-    this.streamingPort = streamingPort;
+  public OpenAiFace(RoutedPort routed) {
+    this.completion = routed;
+    this.streaming = routed;
   }
 
   /**
@@ -67,16 +83,22 @@ public final class OpenAiFace {
    *
    * @param requestBody 入站请求体原文。这里取原文而不是绑定到一个 DTO：
    *                    未被建模的字段要能原样出境，而绑定会先把它们丢弃
+   * @param explicitCallerId 调用方显式给出的标识头，可以为 null
+   * @param inbound 入站请求，只在没有显式标识时用来取远端地址
    * @return JSON 响应体（非流式）或 SSE 帧流（流式）；出错时是同一形状的错误体
    */
   @PostMapping(path = PATH, consumes = MediaType.APPLICATION_JSON_VALUE)
-  public Mono<ResponseEntity<Object>> complete(@RequestBody Mono<String> requestBody) {
+  public Mono<ResponseEntity<Object>> complete(@RequestBody Mono<String> requestBody,
+      @RequestHeader(value = CALLER_ID_HEADER, required = false) String explicitCallerId,
+      ServerHttpRequest inbound) {
     String requestId = UUID.randomUUID().toString();
+    // 第 ① 步：这次调用算谁的 —— 显式请求头 → 远端地址 → 空。链只取不校验。
+    SelectionContext context = SelectionContext.of(callerIdOf(explicitCallerId, inbound));
     return requestBody.defaultIfEmpty("")
         .map(body -> OpenAiInboundCodec.decodeRequest(body, requestId))
         .flatMap(request -> request.stream()
-            ? Mono.just(stream(requestId, request))
-            : Mono.fromCompletionStage(port.complete(request)).map(response -> ok(requestId, response)))
+            ? Mono.just(stream(requestId, request, context))
+            : fromCompletion(completion.complete(request, context), requestId))
         .onErrorResume(failure -> Mono.just(failed(requestId, failure)));
   }
 
@@ -87,14 +109,19 @@ public final class OpenAiFace {
    * 因此上游之后的失败只能作为帧流上的一个错误载荷出现，改不了状态码 ——
    * 这不是妥协，而是流式协议本身的性质：一旦开始说话，就说不了「刚才那句不算」。
    *
+   * <p>它与非流式调的是**同一个**解析入口（{@code RoutedUpstream.resolve}），
+   * 只是出口形态不同：这里没有第二条选择路径。
+   *
    * @param requestId 这一次请求的标识
    * @param request Canonical 请求
+   * @param context 选择链的输入
    * @return SSE 响应
    */
-  private ResponseEntity<Object> stream(String requestId, CanonicalRequest request) {
+  private ResponseEntity<Object> stream(String requestId, CanonicalRequest request,
+      SelectionContext context) {
     Flux<ServerSentEvent<String>> frames = Flux.defer(() -> {
       OpenAiInboundCodec.StreamEncoder encoder = OpenAiInboundCodec.newStreamEncoder();
-      return JdkFlowAdapter.flowPublisherToFlux(streamingPort.stream(request))
+      return JdkFlowAdapter.flowPublisherToFlux(streaming.stream(request, context))
           .concatMapIterable(encoder::encode)
           .map(payload -> ServerSentEvent.builder(payload).build());
     });
@@ -102,6 +129,28 @@ public final class OpenAiFace {
         .header(REQUEST_ID_HEADER, requestId)
         .contentType(MediaType.TEXT_EVENT_STREAM)
         .body(frames);
+  }
+
+  private static Mono<ResponseEntity<Object>> fromCompletion(
+      CompletionStage<CanonicalResponse> completion, String requestId) {
+    return Mono.fromCompletionStage(completion).map(response -> ok(requestId, response));
+  }
+
+  /**
+   * 调用方标识的来源：**显式请求头 → 远端地址 → 空**。
+   *
+   * <p>空是这一版的合法结果，不是兜底：认证（阶段 6 / ADR-0018）接上之后来源换成认证结果，
+   * 而这里的顺序不变。链不校验它 —— 校验是认证的事。
+   */
+  private static String callerIdOf(String explicitCallerId, ServerHttpRequest inbound) {
+    if (explicitCallerId != null && !explicitCallerId.isBlank()) {
+      return explicitCallerId;
+    }
+    InetSocketAddress remote = inbound.getRemoteAddress();
+    if (remote == null || remote.getAddress() == null) {
+      return null;
+    }
+    return remote.getAddress().getHostAddress();
   }
 
   private static ResponseEntity<Object> ok(String requestId, CanonicalResponse response) {
@@ -135,6 +184,12 @@ public final class OpenAiFace {
         return error;
       }
       return new GatewayError(error.type(), error.message(), 502);
+    }
+    if (cause instanceof NoUsableInstanceException rejected) {
+      // 选不出实例：这一次调用根本没发生过（不出网、也不结算，ADR-0013 (e)），
+      // 所以对客户端说的是 503（现在没处可去，过会儿再来），而不是 500（网关自己坏了）。
+      return new GatewayError(rejected.rejection().name().toLowerCase(Locale.ROOT),
+          rejected.getMessage(), 503);
     }
     if (cause instanceof IllegalArgumentException) {
       return new GatewayError("bad_request", "请求体无法被解析", 400);

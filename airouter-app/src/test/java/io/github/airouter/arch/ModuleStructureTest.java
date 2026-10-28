@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
  * 它们「真的会红」由 {@link GuardsActuallyFireTest} 在样例包上断言，
  * 生产侧的内容随各阶段开放（ADR-0003 第 2 节）。
  *
- * <p>九条里唯一缺一条生产侧断言的是 **R4**：它面向的 `routing` 与 `governance` 两个包
- * 阶段 0 不存在（属阶段 3 / 7），ArchUnit 对「一条规则没有判定对象」是报错而不是放过，
- * 所以这里没有为它留一个空跑的方法。**包一开放，就要在这里补上它的生产侧断言** ——
- * 那之前它由 GuardsActuallyFireTest 的两条（做 IO、读状态码）守着。
+ * <p>九条里曾经唯一缺一条生产侧断言的是 **R4**：它面向的 `routing` 与 `governance` 两个包
+ * 阶段 0 不存在（属阶段 4 / 7），ArchUnit 对「一条规则没有判定对象」是报错而不是放过，
+ * 所以那时没有为它留一个空跑的方法。`routing` 随阶段 4 开放之后，
+ * 这里补上了它的生产侧断言；`governance` 到阶段 7 再补。
  */
 @Tag("architecture")
 final class ModuleStructureTest {
@@ -60,7 +60,18 @@ final class ModuleStructureTest {
     StructuralRules.providersDoNotDependOnFaces(GATEWAY).check(CLASSES);
   }
 
-  // R4 的生产侧断言随 routing / governance 包开放时补在这里（见本类 javadoc）。
+  /**
+   * R4 —— 保护「routing 与 governance 是纯函数」。
+   *
+   * <p>阶段 4 之前这里没有留方法：`routing` 包还不存在，而 ArchUnit 对
+   * 「一条规则没有判定对象」是报错而不是放过。包开放之后，它开始在生产代码上生效 ——
+   * 之前这一条只在 {@link GuardsActuallyFireTest} 的样例包上被验证过。
+   */
+  @Test
+  @DisplayName("routing 不做 IO，也看不到 HTTP 状态码：它是纯函数")
+  void routingDoesNoIo() {
+    StructuralRules.routingAndGovernanceDoNoIo(GATEWAY).check(CLASSES);
+  }
 
   @Test
   @DisplayName("transport 不认识业务：分帧只认字节")

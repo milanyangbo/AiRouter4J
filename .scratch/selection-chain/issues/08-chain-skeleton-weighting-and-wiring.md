@@ -22,30 +22,30 @@
 
 **Blocked by:** 07
 
-**Status:** pending
+**Status:** done
 
 ## Acceptance criteria
 
-- [ ] `routing` 与 `select` 两个生产包落地，各带 `package-info.java`
+- [x] `routing` 与 `select` 两个生产包落地，各带 `package-info.java`
       （写清它知道什么、不该知道什么；`select` 那一份要写「纯函数，不做 IO、不读健康」）
-- [ ] `SelectionChain` 六步落在**一处**：① 调用方标识 → ② 目标与标签 → ③ 可用性闸门 →
+- [x] `SelectionChain` 六步落在**一处**：① 调用方标识 → ② 目标与标签 → ③ 可用性闸门 →
       ④ 加权展开 → ⑤ 粘滞（本票直通）→ ⑥ 策略
-- [ ] 候选是 `Candidate`（id / 权重 / 标签），**不是** `RegisteredInstance`
-- [ ] `SelectionContext` 含 `callerId`（可空）与 `requiredTags`；**不含「是否流式」** ——
+- [x] 候选是 `Candidate`（id / 权重 / 标签），**不是** `RegisteredInstance`
+- [x] `SelectionContext` 含 `callerId`（可空）与 `requiredTags`；**不含「是否流式」** ——
       不给分岔留入口
-- [ ] ④ 是独立一步，不在策略里：权重之和是区间总长，取值一次二分查找
+- [x] ④ 是独立一步，不在策略里：权重之和是区间总长，取值一次二分查找
       （`Arrays.binarySearch` 命中上界要取 `found + 1`：区间不含上界。这一处曾经写错过）
-- [ ] 本票只落地两个策略：`random`（随机源**从外面注入**）与 `round-robin`（进程级共享光标）。
+- [x] 本票只落地两个策略：`random`（随机源**从外面注入**）与 `round-robin`（进程级共享光标）。
       装配期默认**轮询**而不是随机 —— 轮询可预测，于是权重能被严格断言
-- [ ] 三种拒绝各有措辞与断言：服务没有启用着的实例 / 标签无匹配 / 闸门排空。
+- [x] 三种拒绝各有措辞与断言：服务没有启用着的实例 / 标签无匹配 / 闸门排空。
       **三种都拒绝**：不退回不筛、不退回全部候选、不静默挑第一个
-- [ ] 「选不出实例」**不出网、也不结算**（ADR-0013 (e)），由 Face 在边界上收口成一个错误
-- [ ] `RoutedUpstream` 取代 `upstreamProvider` bean：只声明**一个** bean 而它自己是两个端口
+- [x] 「选不出实例」**不出网、也不结算**（ADR-0013 (e)），由 Face 在边界上收口成一个错误
+- [x] `RoutedUpstream` 取代 `upstreamProvider` bean：只声明**一个** bean 而它自己是两个端口
       （容器按运行期类型匹配候选，拆成两个会让注入任何一侧都匹配到两个候选 —— 票 02 踩过），
       两个端口调**同一个**解析入口，**每次请求解析一次**
-- [ ] 「启用」由装配层筛，不在链里：链不知道实例有没有被关掉，那是配置的事
-- [ ] 选中的实例 id 进入 `Outcome.instanceId`（后面所有作用域类能力的挂点）
-- [ ] 结构：`routing` / `select` 登记进 `RulesCoverNonEmptyPackagesTest`；
+- [x] 「启用」由装配层筛，不在链里：链不知道实例有没有被关掉，那是配置的事
+- [x] 选中的实例 id 进入 `Outcome.instanceId`（后面所有作用域类能力的挂点）
+- [x] 结构：`routing` / `select` 登记进 `RulesCoverNonEmptyPackagesTest`；
       R4 的**生产侧**断言随 `routing` 开放接管（ADR-0003 第 2 节已写明这条交接）
 
 ## Known gaps（本票不做，记下来免得假装做了）
@@ -69,8 +69,13 @@
 | `select/package-info.java` + `Candidate` + `WeightedCandidates` + `InstanceSelector` + `RandomSelector` + `RoundRobinSelector` | ④⑥，纯函数 |
 | `config/RoutedUpstream` | 两个端口调同一个解析入口，每次请求解析 |
 | `config/UpstreamConfiguration` | 装配：链、默认策略（轮询）、随机源、光标 |
-| `airouter-app` 契约测试 | 端到端：两个录制器当两个实例（接缝二） |
+| `airouter-app` 契约测试 | 端到端：三个录制器当三个实例（接缝二） |
 | `airouter-app` 结构测试 | `routing` / `select` 登记进「规则已覆盖」；R4 生产侧断言 |
+
+实际落地的文件（与表里的差别见「实测」第 1、5 条）：
+
+- `routing/`：新增 `RoutedPort`（表外，因 callerId 无处安放）
+- `config/RoutedUpstream` 存的是 `Function<String, ServiceView>`，不是 `UpstreamRegistry`
 
 删掉：`UpstreamConfiguration.upstreamProvider` bean 与它的 `defaultProvider` 私有方法。
 
@@ -97,3 +102,49 @@
   见 `.workbuddy/memory/MEMORY.md`「已回退的两块」：加权二分的上界、轮询光标是进程级共享状态、
   `RoutedUpstream` 存注册表会撞 SpotBugs `EI_EXPOSE_REP2`（收窄成 JDK 的
   `Function<String, ServiceView>` 即可）、两个录制器的写法
+
+---
+
+## 实测出来的几件事（2026-10-28，实现票 08 时记）
+
+**1. callerId 交不出去 —— 这是本票唯一一处偏离既有约定。**
+
+`AGENTS.md` 写着「Face 侧只认识 core 的两个端口接口」，而 core 那两个端口的签名是
+`complete(CanonicalRequest)`。第 ① 步的产物没有合法去处。剩下的选项只有线程局部量，
+而流式路径上线程是会换的 —— 写进去的那一次与读出来的那一次未必在同一个线程上，
+于是粘滞会静默失效。
+
+取法是新增 `routing.RoutedPort`：**继承** core 两个端口，外加带 `SelectionContext` 的两个入口。
+Face 注入它，两个端口字段取自**同一个对象**，于是「非流式走这个、流式走那个」在形状上写不出来。
+偏离已就地写进 `AGENTS.md`（「实例维度与治理顺序」一节）与 `RoutedPort` 的 javadoc。
+
+**2. 权重溢出在 int 权重下不可达。**
+
+第一版在 `WeightedCandidates.of` 里用 `Math.addExact` 兜溢出，并写了一条断言。
+探红时那条**不红** —— 因为权重是 `int`（上限约 21 亿），前缀和是 `long`，
+要约 43 亿个实例才可能溢出，那个数量级下先出问题的一定不是这一行。
+于是删掉 catch，把「这条性质是怎么被满足的」写进 javadoc，断言改成可达的
+「两个 int 上限相加仍然是准的那个数」。
+
+**3. 轮询的断言必须写成与光标起点无关。**
+
+光标是 bean 的字段，也就是进程级共享状态，起点随执行顺序而变。
+1:1 看相邻两次不同，3:1 取八次（= 两整轮）看计数恰好 6:2 且序列周期为 4。
+「第一次一定打给第一个实例」换个执行顺序就红。
+
+**4. SpotBugs 的 `EI_EXPOSE_REP` 与 `EI_EXPOSE_REP2` 是两件事。**
+
+前者针对 **accessor 返回**可变类型（record 的 `requiredTags()` 也照样报），
+后者针对**构造器把可变参数存进字段**。后者只要在 compact constructor 里 `copyOf` 就不报，
+前者要在 accessor 里再 `copyOf` 一次。按 ADR-0008 第 7 节一律改代码，没有加抑制。
+
+**5. 测试文件预算：先腾名额，再新增。**
+
+app 原本 11 个（已顶破软上限一个）。新增端到端那份会到 12，
+于是先把 arch 侧成对的两份门禁测试合到一处（「规则真的会红」与「普通写法不被误伤」看的是同一组规则，
+分开写会让「规则改了、只改了一边」没人发现）。合并后 10，加回端到端那份是 11。
+
+**6. 端到端那条断言真的抓得住「流式绕过选择」。**
+
+故意让 `stream(...)` 直接取第一个启用着的实例（不走链），八次交替请求里 heavy 的占比偏离 6/8。
+单测看不见这种错 —— 它判的是链，不是谁在调链。这一条是它存在的理由。

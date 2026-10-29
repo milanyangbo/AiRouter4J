@@ -37,6 +37,13 @@ public interface RoutedPort extends CompletionPort, StreamingCompletionPort {
   /**
    * 开始一次流式调用。
    *
+   * <p>**六步链的解析发生在本方法被调用时，不在订阅时**（票 12 的设计决定）：
+   * 实现不得把解析推迟进返回的 Publisher —— {@code defer} 的边界在选择之后，
+   * 只包住真正会读上游字节的那一段。于是本方法同步抛出的拒绝意味着
+   * **响应尚未提交，状态码还定得下来**：Face 在边界上把它收口成错误体
+   * （与非流式同一份），而不是 200 + {@code text/event-stream} 之后的断流。
+   * 第一帧写出之后的上游失败不受这条契约管辖 —— 那时只能作为帧上的错误载荷。
+   *
    * @param request Canonical 请求
    * @param context 选择链的输入：调用方标识与要求的标签
    * @return 事件流

@@ -2,6 +2,7 @@ package io.github.airouter.gateway.faces.openai;
 
 import io.github.airouter.core.CanonicalRequest;
 import io.github.airouter.core.CanonicalResponse;
+import io.github.airouter.core.CanonicalStreamEvent;
 import io.github.airouter.core.GatewayError;
 import io.github.airouter.core.UpstreamFailure;
 import io.github.airouter.gateway.routing.CallerIdentityMissingException;
@@ -14,6 +15,7 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow.Publisher;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -107,12 +109,16 @@ public final class OpenAiFace {
   /**
    * 流式那一条路。
    *
-   * <p>响应头在**第一帧写出之前**就已经定下来了：200 与 {@code text/event-stream}。
-   * 因此上游之后的失败只能作为帧流上的一个错误载荷出现，改不了状态码 ——
-   * 这不是妥协，而是流式协议本身的性质：一旦开始说话，就说不了「刚才那句不算」。
+   * <p>**六步链在方法被调用的那一刻跑完，不是订阅时**（{@link RoutedPort#stream} 的契约，
+   * 票 12 的设计决定：不新增「只解析不调用」的入口，把 defer 的边界挪到选择之后）。
+   * 于是「选不出实例」「缺调用方标识」「在途计数查不到」这三类拒绝从这里同步抛出，
+   * 落在 {@link #complete} 的 {@code onErrorResume} 里，客户端拿到的是
+   * 与非流式**同一份**错误体（400/503），而不是 200 + {@code text/event-stream} 之后的断流。
+   * 拒绝发生在状态码还定得下来的时候 —— 第一帧写出之后的失败才轮到
+   * 「只能作为帧上的错误载荷」那条规矩。
    *
-   * <p>它与非流式调的是**同一个**解析入口（{@code RoutedUpstream.resolve}），
-   * 只是出口形态不同：这里没有第二条选择路径。
+   * <p>{@code defer} 只包**编码与订阅**这一段：上游的字节在订阅时才被读，
+   * 这与拒绝无关 —— 选择已经做完了，defer 里没有任何会再抛拒绝的东西。
    *
    * @param requestId 这一次请求的标识
    * @param request Canonical 请求
@@ -121,9 +127,10 @@ public final class OpenAiFace {
    */
   private ResponseEntity<Object> stream(String requestId, CanonicalRequest request,
       SelectionContext context) {
+    Publisher<CanonicalStreamEvent> events = streaming.stream(request, context);
     Flux<ServerSentEvent<String>> frames = Flux.defer(() -> {
       OpenAiInboundCodec.StreamEncoder encoder = OpenAiInboundCodec.newStreamEncoder();
-      return JdkFlowAdapter.flowPublisherToFlux(streaming.stream(request, context))
+      return JdkFlowAdapter.flowPublisherToFlux(events)
           .concatMapIterable(encoder::encode)
           .map(payload -> ServerSentEvent.builder(payload).build());
     });

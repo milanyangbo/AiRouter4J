@@ -37,6 +37,10 @@ import java.util.function.Function;
  *
  * <p>存的是「按名取服务」这个**动作**（{@link Function}）而不是注册表本身：
  * 动作绑定在实例上，将来热重载换掉注册表里的内容，这里读到的仍然是新的那一份。
+ *
+ * <p>它是 public 的：app 的测试要在不起容器时**真实装配**它 ——
+ * 三类选择拒绝在容器的装配里造不出来（启动闸保证候选非空、标签恒空、闸门恒开），
+ * 而「客户端收到什么」只能拿真链与真端口来回答。
  */
 public final class RoutedUpstream implements RoutedPort {
 

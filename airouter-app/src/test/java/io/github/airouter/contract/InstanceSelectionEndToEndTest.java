@@ -3,13 +3,28 @@ package io.github.airouter.contract;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.airouter.core.Outcome;
+import io.github.airouter.gateway.config.InstanceDefinition;
+import io.github.airouter.gateway.config.RoutedUpstream;
 import io.github.airouter.gateway.faces.openai.OpenAiFace;
 import io.github.airouter.gateway.observe.SettlementLog;
+import io.github.airouter.gateway.providers.ProviderInputs;
+import io.github.airouter.gateway.providers.UpstreamProvider;
+import io.github.airouter.gateway.providers.UpstreamProviderFactory;
+import io.github.airouter.gateway.providers.UpstreamShape;
+import io.github.airouter.gateway.registry.RegisteredInstance;
+import io.github.airouter.gateway.registry.ServiceView;
+import io.github.airouter.gateway.routing.AvailabilityGate;
+import io.github.airouter.gateway.routing.SelectionChain;
+import io.github.airouter.gateway.select.LeastConnectionsSelector;
+import io.github.airouter.gateway.select.RoundRobinSelector;
+import io.github.airouter.gateway.transport.ActiveCallMeter;
+import io.github.airouter.gateway.transport.OutboundWire;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -21,12 +36,15 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.ResponseEntity;
+import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.NestedTestConfiguration;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.FluxExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Mono;
 
 /**
  * 选择链**接到进程上**的端到端断言：三个录制器当三个实例，从入站 HTTP 打进去。
@@ -83,6 +101,13 @@ final class InstanceSelectionEndToEndTest {
   @Autowired
   private SettlementLog settlementLog;
 
+  /**
+   * 真实的 Face bean。400 那一条断言打在它身上（见 {@code
+   * streamingRejectionWithoutCallerIdentityReachesTheClientAsAnErrorBody} 的说明）。
+   */
+  @Autowired
+  private OpenAiFace face;
+
   private static RecordedUpstream start() {
     try {
       return new RecordedUpstream(0, 200, "{}");
@@ -116,6 +141,11 @@ final class InstanceSelectionEndToEndTest {
     declare(registry, 0, HEAVY, 3, true, HEAVY_UPSTREAM::baseUrl);
     declare(registry, 1, LIGHT, 1, true, LIGHT_UPSTREAM::baseUrl);
     declare(registry, 2, OFF, 1, false, OFF_UPSTREAM::baseUrl);
+    declareStreamLimits(registry);
+  }
+
+  /** 流式的那五个值。散值（非列表元素）本可由 {@code application.yml} 补齐，显式给全更稳。 */
+  private static void declareStreamLimits(DynamicPropertyRegistry registry) {
     registry.add("airouter.stream.idle-timeout", () -> "15s");
     registry.add("airouter.stream.max-content-chars", () -> "262144");
     registry.add("airouter.stream.max-frame-bytes", () -> "1048576");
@@ -218,6 +248,118 @@ final class InstanceSelectionEndToEndTest {
     assertThat(targets).as("同一个调用方的六次请求").containsOnly(targets.get(0));
     // 粘住的那个也不能是关着的那个：第 ② 步之前的筛选仍然生效。
     assertThat(targets.get(0)).isIn(HEAVY, LIGHT);
+  }
+
+  /**
+   * 流式请求缺调用方标识：客户端拿到 400 的错误体，而不是 200 之后的断流。
+   *
+   * <p>打在**真实的 Face bean** 上（真链、真注册表、真粘滞 —— 这个上下文里粘滞开着，
+   * 它正是要求标识的那一方），只是不起那条 TCP 连接：真实 HTTP 连接永远带远端地址，
+   * 而远端地址正是缺显式标识时的最后一条来源 —— 「缺标识」在 HTTP 接缝上造不出来，
+   * 于是这一条落在 Face 的入口方法上（票 12 的单元接缝）。
+   *
+   * <p>断言的是**客户端收到什么**：状态码、错误体里的 type、不出网、不结算。
+   * 只断言状态码不够 —— 200 + 断流与 200 + 空流会让它绿，而那正是本票要消灭的形状。
+   */
+  @Test
+  @DisplayName("流式缺调用方标识：400 错误体，不出网也不结算，不是 200 之后的断流")
+  void streamingRejectionWithoutCallerIdentityReachesTheClientAsAnErrorBody() {
+    int beforeHeavy = HEAVY_UPSTREAM.requests();
+    int beforeLight = LIGHT_UPSTREAM.requests();
+    int beforeOff = OFF_UPSTREAM.requests();
+
+    ResponseEntity<Object> response = face.complete(Mono.just(requestBody(true)), null,
+        MockServerHttpRequest.post(OpenAiFace.PATH).build())
+        .block(Duration.ofSeconds(5));
+
+    assertThat(response).as("拒绝要收口成一个响应，而不是断流").isNotNull();
+    assertThat(response.getStatusCode().value())
+        .as("缺标识是客户端能补的东西，所以是 400 而不是 503")
+        .isEqualTo(400);
+    assertThat((String) response.getBody()).contains("caller_identity_required");
+    String requestId = response.getHeaders().getFirst(OpenAiFace.REQUEST_ID_HEADER);
+    assertThat(requestId).as("错误响应同样带请求标识").isNotBlank();
+    assertThat(settlementLog.ofRequest(requestId)).as("拒绝的那一次不结算").isEmpty();
+    assertThat(HEAVY_UPSTREAM.requests()).as("拒绝的那一次不出网").isEqualTo(beforeHeavy);
+    assertThat(LIGHT_UPSTREAM.requests()).isEqualTo(beforeLight);
+    assertThat(OFF_UPSTREAM.requests()).isEqualTo(beforeOff);
+  }
+
+  /**
+   * 流式请求选不出实例：客户端拿到 503 与同一份错误体，而不是 200 之后的断流。
+   *
+   * <p>**为什么打在不起容器的真实装配上**：启动期的配置闸（票 07）保证每个服务
+   * 至少有一个启用着的实例，于是「候选为空」在容器装配里造不出来 ——
+   * 它的真实来路是**运行时视图**：注册表里的实例被关掉之后（热重载，阶段 3），
+   * 这一次请求看到的就是空候选。这里全是真实对象：真链、真 {@link RoutedUpstream}、
+   * 真 Face，唯一的差别是注册表里那个实例是关闭着的。
+   * 「不结算」在这条装配上是结构性的：结算只发生在上游事件之后，而这里没有上游。
+   */
+  @Test
+  @DisplayName("流式选不出实例：503 与同一份错误体，不是 200 之后的断流")
+  void streamingRejectionForNoUsableInstanceReachesTheClientAsAnErrorBody() {
+    OpenAiFace isolated = new OpenAiFace(new RoutedUpstream(
+        serviceId -> new ServiceView("chat", List.of(registered("closed", false))),
+        "chat", new SelectionChain(AvailabilityGate.OPEN, new RoundRobinSelector())));
+
+    ResponseEntity<Object> response = isolated.complete(Mono.just(requestBody(true)),
+        "selection-rejection-caller", MockServerHttpRequest.post(OpenAiFace.PATH).build())
+        .block(Duration.ofSeconds(5));
+
+    assertThat(response).as("拒绝要收口成一个响应，而不是断流").isNotNull();
+    assertThat(response.getStatusCode().value()).isEqualTo(503);
+    assertThat((String) response.getBody())
+        .as("错误体与非流式是同一份（OpenAiInboundCodec.encodeError）")
+        .contains("no_enabled_instances");
+    assertThat(response.getHeaders().getFirst(OpenAiFace.REQUEST_ID_HEADER))
+        .as("错误响应同样带请求标识")
+        .isNotBlank();
+  }
+
+  /**
+   * 流式请求查不到在途计数：503 {@code instance_selection_unavailable}，同一份错误体。
+   *
+   * <p>这一条的真实来路是**装配错误**（把在途计数接丢了一半），容器装配里造不出来；
+   * 策略那一侧的显式失败已在 {@code InputDrivenStrategiesTest} 判过，
+   * 这里判的是它经过 Face 之后客户端收到什么。在途计数是构造期注入的输入，
+   * 给它一个「什么都不知道」的函数（真实签名下的退化值，不是 stub）——
+   * 与 {@code least-connections} 的单测用的是同一把钥匙。
+   */
+  @Test
+  @DisplayName("流式在途计数查不到：503 instance_selection_unavailable，同一份错误体")
+  void streamingRejectionForUnknownActiveCountReachesTheClientAsAnErrorBody() {
+    OpenAiFace isolated = new OpenAiFace(new RoutedUpstream(
+        serviceId -> new ServiceView("chat", List.of(registered("lonely", true))),
+        "chat", new SelectionChain(AvailabilityGate.OPEN,
+            new LeastConnectionsSelector(instanceId -> null))));
+
+    ResponseEntity<Object> response = isolated.complete(Mono.just(requestBody(true)),
+        "active-count-caller", MockServerHttpRequest.post(OpenAiFace.PATH).build())
+        .block(Duration.ofSeconds(5));
+
+    assertThat(response).as("拒绝要收口成一个响应，而不是断流").isNotNull();
+    assertThat(response.getStatusCode().value()).isEqualTo(503);
+    assertThat((String) response.getBody()).contains("instance_selection_unavailable");
+    assertThat(response.getHeaders().getFirst(OpenAiFace.REQUEST_ID_HEADER))
+        .as("错误响应同样带请求标识")
+        .isNotBlank();
+  }
+
+  /**
+   * 一只注册好的实例：真实 Provider，地址指向一个必然关着的端口。
+   * 选择在这两条断言里抛出，Provider 永远不会被用到 —— 它在参数表里只是因为构造器要求它。
+   */
+  private static RegisteredInstance registered(String id, boolean enabled) {
+    OutboundWire wire = new OutboundWire(id, new ActiveCallMeter(),
+        "http://127.0.0.1:1/v1", Duration.ofSeconds(30), 1 << 16, 1 << 20);
+    UpstreamProvider provider = new UpstreamProviderFactory().create(new ProviderInputs(wire,
+        UpstreamShape.OPENAI, "not-a-real-key", MODEL, id,
+        Duration.ofSeconds(15), 1 << 16, outcome -> { }));
+    InstanceDefinition definition = new InstanceDefinition(id, UpstreamShape.OPENAI, null,
+        "http://127.0.0.1:1/v1", "not-a-real-key", MODEL, Duration.ofSeconds(30), 1, enabled,
+        List.of());
+    return new RegisteredInstance(definition.id(), definition.shape(), definition.vendor(),
+        definition.weight(), definition.enabled(), Set.copyOf(definition.tags()), provider);
   }
 
   /** 打一次非流式请求，返回「请求标识 → 响应」这一对。 */

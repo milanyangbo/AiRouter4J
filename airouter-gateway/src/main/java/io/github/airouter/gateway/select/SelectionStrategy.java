@@ -66,12 +66,17 @@ public enum SelectionStrategy {
   CONSISTENT_HASH("consistent-hash"),
 
   /**
-   * 挑最近答得最快的那一个：每实例 EWMA，{@code ewma = alpha * 样本 + (1 - alpha) * ewma}，
-   * 权重 ∝ {@code 1/(1+ewma)}（{@link LatencySelector}）。
+   * 按延迟反比加权：每实例 EWMA，{@code ewma = alpha * 样本 + (1 - alpha) * ewma}，
+   * 有效权重 = 声明权重 / {@code (1 + ewma)}（{@link LatencySelector}）。
    *
    * <p>样本由 {@code observe} 从 {@code Outcome} 养出来：成功用实际延迟、**失败用惩罚值**，
    * 于是高失败率的实例被自然降权；进到这里的时候它是**一个查表动作**。
-   * 还没有样本的实例按 0 毫秒对待（不是「最差」）：一台没被量过的机器必须有机会被量到。
+   * 「降权」说的是**份额下降**，不是不再选中它 —— 一次也拿不到流量的实例
+   * 没有机会证明自己恢复了，而 ADR-0011 第 4 节要的正是「概率下降」。
+   *
+   * <p>还没有样本的实例与**已知最快的那一个同档**：不优于任何被量过的实例
+   * （那等于宣布「没量过 = 最快」），也不被当成最差的一档（那样它永远得不到第一次抽样）。
+   * 两处不一致过一次，裁决写回了 ADR-0011 第 2 节 (d)。
    */
   LATENCY("latency");
 

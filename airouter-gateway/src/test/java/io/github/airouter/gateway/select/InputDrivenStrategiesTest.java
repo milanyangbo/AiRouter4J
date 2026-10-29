@@ -9,7 +9,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.function.Function;
+import java.util.function.LongUnaryOperator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -78,15 +80,21 @@ final class InputDrivenStrategiesTest {
   }
 
   /**
-   * 「换任意策略，权重行为一致」这一条覆盖三个**可以被确定性断言**的策略。
+   * 「换任意策略，权重行为一致」这一条覆盖一致性哈希之外**全部五个**策略，分两种写法。
    *
-   * <p>三个策略各自的输入在这条断言里都「说不出区别」（都一样闲、都没有历史）：
-   * 于是它们该退化成同一个东西 —— 第 ④ 步的加权轮转。
-   * 一致性哈希不在这条断言里：它的加权内建在虚拟节点数上，
-   * 退不出一个共同形状（那个性质改由「键比例 ≈ 权重占比」承担）。
+   * <p>三个**能被严格断言**的：它们各自的输入在这条断言里都「说不出区别」
+   * （都一样闲、都没有历史），于是它们该退化成同一个东西 —— 第 ④ 步的加权轮转，八次恰好 6:2。
+   *
+   * <p>另外两个只能断言**比例**：抽签抽到什么值、哈希算出什么值，本来就该由取值决定，
+   * 把某一次落在谁身上写死是抄实现 —— 权重有没有被忽略只能由一大批取值的统计说出来。
+   * 两个的区间写法不同（一个是区间映射、一个是平滑轮转），但**权重占比**是同一个数，
+   * 于是这条断言抓得住「某个策略悄悄不看权重」。
+   *
+   * <p>一致性哈希不在这条断言里：它的加权内建在虚拟节点数上，退不出一个共同形状
+   * （那个性质改由「键比例 ≈ 权重占比」承担，见下面那两条）。
    */
   @Test
-  @DisplayName("输入不起作用的三个策略都退化成按权重轮转：它们的权重行为是一致的")
+  @DisplayName("输入不起作用的三个策略严格退化成按权重轮转，另两个按权重占比：五个策略的权重行为一致")
   void strategiesWithoutUsefulInputShareOneWeighting() {
     WeightedCandidates candidates = weighted();
 
@@ -100,34 +108,77 @@ final class InputDrivenStrategiesTest {
           .filteredOn(HEAVY::equals).hasSize(6);
       assertThat(picks).filteredOn(LIGHT::equals).hasSize(2);
     }
-  }
 
-  @Test
-  @DisplayName("latency 挑答得最快的那一个，慢的那个不再拿到流量")
-  void latencyPrefersTheFasterInstance() {
-    InstanceSelector selector = new LatencySelector(ewma(Map.of(HEAVY, 900d, LIGHT, 20d)));
-    WeightedCandidates candidates = weighted();
-
-    for (int attempt = 0; attempt < 4; attempt++) {
-      assertThat(selector.select(candidates, withoutCaller())).isEqualTo(LIGHT);
-    }
+    assertThat(shareOfHeavy(new RandomSelector(seededDraw()))).as("random 的落点占比")
+        .isBetween(0.70d, 0.80d);
+    assertThat(shareOfHeavy(new IpHashSelector())).as("ip-hash 的键占比")
+        .isBetween(0.70d, 0.80d);
   }
 
   /**
-   * 还没有样本的实例**不是最差的一档**，而是最好的一档。
+   * 延迟反比**乘进第 ④ 步的权重**，不是「挑最快的那一个」。
    *
-   * <p>反过来的写法会让一台新机器永远得不到第一次抽样：
-   * 没有历史 → 不被选中 → 还是没有历史。这里给 HEAVY 一个极大的权重，
-   * 于是「被选中」这件事只能来自「它没有历史」而不是来自权重。
+   * <p>要守的性质是**份额随延迟下降**：900 毫秒对 20 毫秒（45 倍）在 3:1 的声明权重之下
+   * 约合 6.5%，而「挑最快的那一个」给出的是 **0** —— 下降与归零是两种性质，
+   * 不是同一个数的两端。写成比例而不是写成某个具体落点，是因为落点取决于累积值走到哪一步，
+   * 抄下来就是把实现抄进断言（testing.md 判据三）。
    */
   @Test
-  @DisplayName("latency 把没有样本的实例当作最好的一档：一台新机器不会因为没被量过就永远不被量到")
-  void instanceWithoutHistoryIsProbingRatherThanLast() {
+  @DisplayName("latency 按延迟反比加权：慢的那个份额显著下降")
+  void latencyWeightsByInverseLatency() {
+    assertThat(shareOfHeavy(new LatencySelector(instanceId -> null)))
+        .as("都还没有样本时退化为按声明权重轮转").isBetween(0.73d, 0.77d);
+    assertThat(shareOfHeavy(new LatencySelector(ewma(Map.of(HEAVY, 900d, LIGHT, 20d)))))
+        .as("慢 45 倍之后的份额").isBetween(0.02d, 0.12d);
+  }
+
+  /**
+   * 本票存在的理由：**注入失败样本之后，那个实例被选中的份额下降但仍然大于零**。
+   *
+   * <p>惩罚值 30 秒意味着它的份额从 3/4 掉到千分之二 —— 那是**下降**，不是**归零**：
+   * 四千次里它还会被选中若干次。「挑最快的那一个」在这里给出的是零，
+   * 于是它永远不会再被量一次，也就永远不会从惩罚里出来 ——
+   * 熔断器的半开状态为的正是同一件事（ADR-0013）。
+   */
+  @Test
+  @DisplayName("注入失败样本后：那个实例的份额下降但仍然大于零（argmin 会把它压成零）")
+  void aPenalisedInstanceLosesShareButKeepsSome() {
+    double before = shareOfHeavy(new LatencySelector(ewma(Map.of(HEAVY, 20d, LIGHT, 20d))));
+    double after = shareOfHeavy(new LatencySelector(ewma(Map.of(HEAVY, 30_000d, LIGHT, 20d))));
+
+    assertThat(before).as("两边一样快时份额就是权重占比").isBetween(0.73d, 0.77d);
+    assertThat(after).as("惩罚之后的份额").isLessThan(before / 10d).isPositive();
+  }
+
+  /**
+   * 还没有样本的实例与**已知最快的那一个同档**：既不是最好的一档，也不是最差的一档。
+   *
+   * <p>这一条把一个裁决压成一句可观测的话 —— 权重相等时八次里恰好各四次。
+   * 当成最快（0 毫秒）的话它会吃掉几乎全部流量（八次里七次以上）；
+   * 当成最差的话它一次也拿不到。前者是这一处第一次落地的形状，
+   * 后者是 spec 故事 47 那句话的另一半（「不是把未知实例当成最快」）。
+   * 裁决写回了 ADR-0011 第 2 节 (d)。
+   */
+  @Test
+  @DisplayName("latency 里没有样本的实例与已知最快的那一个同档：既不是最好，也不是最差")
+  void instanceWithoutHistorySharesTheBestKnownTier() {
     InstanceSelector selector = new LatencySelector(instanceId -> HEAVY.equals(instanceId) ? 500d : null);
 
-    WeightedCandidates candidates = candidates(Candidate.of(HEAVY, 1_000), Candidate.of(LIGHT, 1));
+    WeightedCandidates candidates = candidates(Candidate.of(HEAVY, 1), Candidate.of(LIGHT, 1));
 
-    assertThat(selector.select(candidates, withoutCaller())).isEqualTo(LIGHT);
+    assertThat(eightPicks(selector, candidates)).filteredOn(LIGHT::equals).hasSize(4);
+  }
+
+  /** 有效权重全为零说的是「这一轮谁都不该被选中」，退回第一个候选会把它变成静默放行。 */
+  @Test
+  @DisplayName("有效权重全为零时报错，而不是退回第一个候选")
+  void rotationRejectsAnAllZeroRound() {
+    WeightedRotation rotation = new WeightedRotation();
+
+    assertThatThrownBy(() -> rotation.next(List.of(Candidate.of(HEAVY, 3), Candidate.of(LIGHT, 1)),
+        new double[] {0d, 0d}))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("大于零");
   }
 
   @Test
@@ -269,6 +320,17 @@ final class InputDrivenStrategiesTest {
       }
     }
     return (double) heavy / total;
+  }
+
+  /**
+   * 固定种子的抽签源。
+   *
+   * <p>比例断言要能复现：用进程级随机源的话，同一条断言这次绿、下次红，
+   * 而没人看得懂那一红到底说的是「权重没生效」还是「这一轮手气不好」。
+   */
+  private static LongUnaryOperator seededDraw() {
+    Random random = new Random(20261029L);
+    return bound -> random.nextLong(bound);
   }
 
   private static List<InstanceSelector> hashStrategies() {

@@ -1,10 +1,8 @@
 package io.github.airouter.gateway.select;
 
 import io.github.airouter.gateway.routing.SelectionContext;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -21,18 +19,21 @@ import java.util.function.Function;
  * 那正是来源项目「配了最少连接，实际表现与随机无异」那类失效的形状。
  * 「不知道」与「知道是零」两者的差别由 {@code null} 承担，而不是由 0 承担。
  *
- * <p>并列的时候（好几个实例一样闲）交给第 ④ 步的加权在这一批里裁决，
+ * <p>并列的时候（好几个实例一样闲）由第 ④ 步的加权在这一批里裁决，
  * 而不是赢者通吃、也不是把权重乘进分数：后者会让「这个实例到底排第几」无人答得出来。
- * {@code latency} 用的是同一套形状 —— 先按自己的输入排名，并列时由权重裁决。
+ * 有效权重因此只有两种取值：最闲的那批拿自己的声明权重，其余的是 0 ——
+ * 「更忙的那个不参与」是这个策略的定义，不是降权（降权是 {@code latency} 的事）。
  *
- * <p>光标是本类的一个字段，因此它是**进程级共享状态**：
+ * <p>取值与 {@code latency} 共用 {@link WeightedRotation}：
+ * 两个策略都是「先按自己的输入给每个候选一个有效权重，再由权重裁决」，
+ * 差别只在权重怎么算。累积值是**进程级共享状态**：
  * 断言必须写成与起点无关（3:1 → 八次恰好 6:2），不能写「第一次一定挑第一个」。
  */
 public final class LeastConnectionsSelector implements InstanceSelector {
 
   private final Function<String, Integer> activeCalls;
 
-  private final AtomicLong cursor = new AtomicLong();
+  private final WeightedRotation rotation = new WeightedRotation();
 
   /**
    * @param activeCalls 实例标识 → 在途数。**查不到时返回 null**，不要返回 0
@@ -58,15 +59,13 @@ public final class LeastConnectionsSelector implements InstanceSelector {
       counts[index] = countOf(all.get(index).id());
       least = Math.min(least, counts[index]);
     }
-    List<Candidate> leastLoaded = new ArrayList<>();
+    double[] weights = new double[all.size()];
     for (int index = 0; index < all.size(); index++) {
-      if (counts[index] == least) {
-        leastLoaded.add(all.get(index));
-      }
+      // 并列的那批仍然由第 ④ 步裁决：权重在这两个信息型策略里有着同一个表现，
+      // 于是「换一个策略权重还生效」是一条能被断言的事，不是一句承诺。
+      weights[index] = counts[index] == least ? all.get(index).weight() : 0d;
     }
-    // 并列的那批仍然走第 ④ 步：权重在这两个信息型策略里有着同一个表现，
-    // 于是「换一个策略权重还生效」是一条能被断言的事，不是一句承诺。
-    return WeightedCandidates.of(leastLoaded).pick(cursor.getAndIncrement()).id();
+    return rotation.next(all, weights);
   }
 
   private int countOf(String instanceId) {

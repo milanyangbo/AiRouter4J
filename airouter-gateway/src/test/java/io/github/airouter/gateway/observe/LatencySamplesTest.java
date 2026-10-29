@@ -114,6 +114,27 @@ final class LatencySamplesTest {
     assertThat(samples.ewmaMillis(SLOW)).as("过期的条目").isNull();
   }
 
+  /**
+   * 时机被钉住的另一半：**保留窗口之内**条目活着，哪怕清理被别的结算触发了。
+   *
+   * <p>只有上一条的话，「每一次记账都全表清空」的实现也能绿 ——
+   * 它同样满足「下线的机器最终不占档」，但把还在线的实例学到的东西也一并丢了。
+   * 两条合成一对：窗口之内活着、窗口之外（下一次记账时）消失 ——
+   * 这正是票 13 的裁决里「按保留窗口走、不是像粘滞那样当场除名」的那条分界线。
+   */
+  @Test
+  @DisplayName("保留窗口之内条目不丢：清理按窗口走，不是当场除名")
+  void entriesSurviveWithinTheRetentionWindow() {
+    samples.settle(outcome(SLOW, OutcomeKind.SUCCESS, Duration.ofMillis(500L)));
+
+    clock.addAndGet(RETENTION_MILLIS - LONG_ENOUGH);
+    samples.settle(outcome(FAST, OutcomeKind.SUCCESS, Duration.ofMillis(20L)));
+
+    assertThat(samples.instances()).as("窗口内的条目活着，哪怕清理被触发了")
+        .containsExactlyInAnyOrder(FAST, SLOW);
+    assertThat(samples.ewmaMillis(SLOW)).as("学到的值没有被动过").isEqualTo(500d);
+  }
+
   @Test
   @DisplayName("三个参数都是显式的：非法值起不来，而不是悄悄用一个默认值")
   void illegalKnobsFailLoudly() {

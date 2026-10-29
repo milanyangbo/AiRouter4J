@@ -25,6 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>登记是一次性的，发生在装配期（{@code OutboundWire} 的构造器里，
  * 于是「有一条出站口」与「表里有这一项」不可能对不上）；
  * 运行期发生的是加一与减一，两者都不做 IO。
+ *
+ * <p>归属（票 13 裁决，2026-10-30）：它是**观测到的**每实例状态，住产生它的
+ * {@code transport}，不挂注册表 —— ADR-0010 第 2 节的修订写了这条分界线。
  */
 public final class ActiveCallMeter {
 

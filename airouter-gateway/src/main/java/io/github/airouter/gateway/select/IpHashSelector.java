@@ -20,9 +20,6 @@ import io.github.airouter.gateway.routing.SelectionContext;
  */
 public final class IpHashSelector implements InstanceSelector {
 
-  /** 策略在配置里的名字。出错信息要说得出「是谁在要标识」，于是它不是一个匿名字符串。 */
-  public static final String STRATEGY_ID = "ip-hash";
-
   /**
    * @param candidates 第 ④ 步交出来的加权候选
    * @param context 第 ① ② 步的产物；只有第 ① 步的调用方标识进去了
@@ -30,7 +27,8 @@ public final class IpHashSelector implements InstanceSelector {
    */
   @Override
   public String select(WeightedCandidates candidates, SelectionContext context) {
-    String callerId = context.requireCallerId(STRATEGY_ID);
+    // 名字取自唯一的定义处（SelectionStrategy）：第二个字符串来源会让「改了名字只改一边」无人发现。
+    String callerId = context.requireCallerId(SelectionStrategy.IP_HASH.id());
     return candidates.pick(StableHash.of(callerId)).id();
   }
 }

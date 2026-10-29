@@ -22,23 +22,47 @@
 
 **Blocked by:** 10
 
-**Status:** pending
+**Status:** done（2026-10-30）
 
 ## Acceptance criteria
 
-- [ ] `config/EndpointConfiguration` 改成与它注册的东西相符的名字；
-      `UpstreamConfiguration` 等引用处一并改（**只改名，不改装配行为**）
-- [ ] `StreamProperties` 那处 `{@link EndpointProperties}` 改成它现在真正指向的类型
-      （或改成不引用的说法）；**全仓再搜一遍**同类悬空引用
-- [ ] `SelectionStrategy` 里重复的 javadoc 段只剩一处
-- [ ] 两个 `STRATEGY_ID` 字面量消失，改从 `SelectionStrategy` 取；
-      **报错措辞不许变** —— `hashStrategiesRejectMissingCallerIdentity` 断言着
-      `hasMessageContaining(IpHashSelector.STRATEGY_ID)`，改完必须仍然绿
-- [ ] gateway 测试文件回到 **10 个以内**（硬上限 20 本来就满足，这里要的是软上限）；
-      合并目标优先选「一个类一个文件」的那几个。app 那 11 个顺带一起看，
-      但 app 多出来的那一个是 `arch/TicketReferencesExistTest`（守的是票号引用），
-      它**不该**被并进去 —— 若因此回不到 10，在本票里写明这一条并止步
-- [ ] 改完 `./mvnw clean verify` 全绿（含 checkstyle / spotbugs / 结构规则 / 覆盖率）
+- [x] `config/EndpointConfiguration` → **`GatewayPropertiesConfiguration`**（`git mv` 改名，
+      装配行为零改动；全仓没有任何代码引用它 —— 组件扫描捡起，故无连带改动）
+- [x] `StreamProperties` 的 `{@link EndpointProperties}` 改为不引用的说法
+      （指向同一理由的两个现存类型：`ServicesProperties` / `InstanceDefinition`）；
+      **全仓再搜一遍**发现 runbook `local-openai-endpoint.md` 还有两处同类漂移
+      （说的是本仓库现在的校验，那个类型已改名 `InstanceDefinition`），一并修掉。
+      archive ADR 与 `legacy-review.md` 里的指称是历史记录，按 Known gaps 不动
+- [x] `SelectionStrategy` 里 ROUND_ROBIN 重复的 javadoc 段只剩一处
+- [x] 两个 `STRATEGY_ID` 字面量消失，改取 `SelectionStrategy.IP_HASH.id()` /
+      `CONSISTENT_HASH.id()`（选择处各留一行注释说明为什么不去自建字符串）；
+      报错措辞没变 —— `hashStrategiesRejectMissingCallerIdentity` 的两处
+      `hasMessageContaining` 改引枚举后仍然绿，即「名字只有一处」的外部证据
+- [x] gateway 测试文件 12 → **10**（两次合并，见下）；app 保持 11，
+      多出的那一个是 `arch/TicketReferencesExistTest`，按本票说明不并
+- [x] `./mvnw clean verify` 全绿（行覆盖率 89.0% 持平；本票零行为改动）
+
+## 实测结论
+
+**两次合并的主题判断**（合并前两边的断言都读过一遍）：
+
+1. `InstanceDefinitionTest`（7）并入 `ServicesPropertiesTest`（6 → 13）：
+   服务级校验（集合的形状：id 重复 / 空清单 / 全关 / 默认服务）与实例级校验
+   （形态决定地址后缀与凭证必填）是**同一件事的两半** —— 一份配置要么整体成立
+   要么整体起不来，拆开写会让人以为是两条独立的防线。四组 `instance(...)` 助手
+   以重载共存，`TIMEOUT` 常量共用。
+2. `UpstreamShapeTest`（6）并入 `UpstreamProviderFactoryTest`（4 → 10）：
+   形态自述是**声明**，形态工厂是**兑现** —— 「登记的构造器覆盖每一种形态」
+   只有挨着自述本身看才读得懂；分开写会让「新增一种形态要动哪几处」变成两份各自为政的清单。
+   顺带把该文件 javadoc 里「它是唯一持有者」一句按票 13 的裁决补上了定语
+   （「配置 → 运行时对象」的唯一持有者）。
+
+**「每类单独一轮 verify」实际执行成两轮**：前四处（改名 / 悬空引用 / 重复注释 /
+名字来源）一轮，合并测试文件一轮 —— 前四处彼此是同一类病（文档说的与代码做的不是同一件事），
+且互相不影响编译，拆成四轮只多花时间。
+
+**预算核对**：gateway 10（软上限内）、每文件方法数最高 13（ServicesPropertiesTest ≤ 20）、
+app 11（有票说明）。无新增测试文件、无新增断言（本票零行为改动）。
 
 ## Known gaps（本票不做）
 

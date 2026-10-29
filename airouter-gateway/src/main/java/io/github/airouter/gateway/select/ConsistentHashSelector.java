@@ -33,9 +33,6 @@ import java.util.TreeMap;
  */
 public final class ConsistentHashSelector implements InstanceSelector {
 
-  /** 策略在配置里的名字。 */
-  public static final String STRATEGY_ID = "consistent-hash";
-
   /**
    * 单个候选在环上最多占多少个虚拟节点。
    *
@@ -73,7 +70,8 @@ public final class ConsistentHashSelector implements InstanceSelector {
    */
   @Override
   public String select(WeightedCandidates candidates, SelectionContext context) {
-    String callerId = context.requireCallerId(STRATEGY_ID);
+    // 名字取自唯一的定义处（SelectionStrategy）：第二个字符串来源会让「改了名字只改一边」无人发现。
+    String callerId = context.requireCallerId(SelectionStrategy.CONSISTENT_HASH.id());
     Ring ring = ringFor(candidates);
     return ring.pointFor(callerId);
   }

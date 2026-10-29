@@ -151,8 +151,8 @@ data: {"id":"chatcmpl-30","object":"chat.completion.chunk",...,"choices":[],"usa
 三个写法各自的理由：
 
 - **base-url 写 `127.0.0.1` 而不是 `localhost`**：Ollama 只监听 IPv4，而 `localhost` 在本机同时解析出 `127.0.0.1` 与 `::1`；`curl` 会自动退回到能通的那一侧，Java 客户端不一定。少一步解析就少一处抖动。这条是装完才发现的，配置里的默认值是跟着实测结果改的。
-- **base-url 带 `/v1`**：Spring AI 2.x 不补这个后缀，缺了不报错、只会变成一次运行期 404。`EndpointProperties` 在启动期就校验它。
-- **密钥给占位串而不是空**：`EndpointProperties` 的 `@NotBlank` 对两个档位一视同仁，本机端点虽不校验凭证，也不该在本档位里开一个「可以不给」的口子——那样 `local` 与 `cloud` 就要走不同的校验分支。
+- **base-url 带 `/v1`**：Spring AI 2.x 不补这个后缀，缺了不报错、只会变成一次运行期 404。`InstanceDefinition`（实例配置）在启动期就校验它。
+- **密钥给占位串而不是空**：实例配置对「形态要求凭证」的校验对两个档位一视同仁，本机端点虽不校验凭证，也不该在本档位里开一个「可以不给」的口子——那样 `local` 与 `cloud` 就要走不同的校验分支。
 
 **从 JVM 侧也验证过一次**（不能只用 curl 下结论）：用 `java --source 21` 跑一段单文件程序，走 `java.net.http.HttpClient` 打 `/v1/models`，返回 200。
 

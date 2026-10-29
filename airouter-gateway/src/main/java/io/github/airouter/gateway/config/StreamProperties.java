@@ -17,7 +17,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *
  * <p>三者**全部显式配置**，一个都不掉进默认值：留空让它掉进某个默认值，
  * 等于把「一条失控的流最多能吃掉多少」变成一件只有看过实现才知道的事。
- * 校验放在构造器里（理由与 {@link EndpointProperties} 相同），报错指名环境变量 ——
+ * 校验放在构造器里 —— 与配置模型其余各处（{@link ServicesProperties}、
+ * {@link io.github.airouter.gateway.config.InstanceDefinition InstanceDefinition}）同一理由：
+ * 配错属于「能不能起来」的问题，等第一次调用才炸就太晚了；报错指名环境变量，
  * 运维看的是环境，不是属性树。
  *
  * @param idleTimeout **块间**时长，不是总时长。一条想很久但一直在说话的流不该被误杀，

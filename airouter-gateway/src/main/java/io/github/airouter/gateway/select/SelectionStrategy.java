@@ -28,11 +28,6 @@ public enum SelectionStrategy {
    * （理由写在 {@link SelectionStrategyFactory} 上）：轮转序列能被**严格**断言，
    * 于是「权重真的生效」这条性质有了一条不靠概率的证明。
    */
-  /**
-   * 光标在加权区间上一步步往前走。它可预测，所以装配期默认它而不是随机
-   * （理由写在 {@link SelectionStrategyFactory} 上）：轮转序列能被**严格**断言，
-   * 于是「权重真的生效」这条性质有了一条不靠概率的证明。
-   */
   ROUND_ROBIN("round-robin"),
 
   /**

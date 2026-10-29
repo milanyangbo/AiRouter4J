@@ -208,11 +208,11 @@ final class InputDrivenStrategiesTest {
     assertThatThrownBy(() -> new IpHashSelector().select(weighted(), withoutCaller()))
         .isInstanceOf(CallerIdentityMissingException.class)
         // 出错信息要说出「是谁在要这个标识」，而不是一句通用的检查失败。
-        .hasMessageContaining(IpHashSelector.STRATEGY_ID);
+        .hasMessageContaining(SelectionStrategy.IP_HASH.id());
     assertThatThrownBy(() -> new ConsistentHashSelector(VIRTUAL_NODES).select(weighted(),
         withoutCaller()))
         .isInstanceOf(CallerIdentityMissingException.class)
-        .hasMessageContaining(ConsistentHashSelector.STRATEGY_ID);
+        .hasMessageContaining(SelectionStrategy.CONSISTENT_HASH.id());
   }
 
   /**

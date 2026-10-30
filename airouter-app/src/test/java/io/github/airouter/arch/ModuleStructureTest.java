@@ -102,4 +102,29 @@ final class ModuleStructureTest {
   void settlementHasOneExit() {
     StructuralRules.settlementHasOneExit(GATEWAY).check(CLASSES);
   }
+
+  /**
+   * R10 —— 保护「MyBatis 不裸奔在事件循环上」。
+   *
+   * <p>它是这套栈里唯一的阻塞 API（ADR-0002 第 5 节）。挡住类型之后，
+   * 「谁在做库操作」重新变成一句看得懂的话 —— 否则那件事取决于调用者的线程，
+   * 而线程在 WebFlux 下既不由签名表达，也不由类型表达。
+   */
+  @Test
+  @DisplayName("MyBatis 不越出 store 包：阻塞 API 不许裸奔在事件循环上")
+  void mybatisStaysInStore() {
+    StructuralRules.mybatisStaysInStore(GATEWAY).check(CLASSES);
+  }
+
+  /**
+   * R11 —— 保护「store 的调用方拿不到同步返回值」。
+   *
+   * <p>R10 挡的是类型；包内老实用 MyBatis、对外返回一个 {@code List} 是它的漏法，
+   * 阻塞调用照样发生在调用方线程上。这一条查返回值。
+   */
+  @Test
+  @DisplayName("store 对外只暴露 Mono / Flux：同步返回值把阻塞留在调用方线程上")
+  void storeExposesOnlyReactiveResults() {
+    StructuralRules.storeExposesOnlyReactiveResults(GATEWAY).check(CLASSES);
+  }
 }

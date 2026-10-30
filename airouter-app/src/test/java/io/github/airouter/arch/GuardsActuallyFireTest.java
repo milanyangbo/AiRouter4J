@@ -101,6 +101,16 @@ class GuardsActuallyFireTest {
     assertFires(StructuralRules.settlementHasOneExit(SETTLEMENT_ROOT), SETTLEMENT);
   }
 
+  @Test
+  void mybatisLeakingOutOfStoreIsRejected() {
+    assertFires(StructuralRules.mybatisStaysInStore(LAYOUT_ROOT), LAYOUT);
+  }
+
+  @Test
+  void storeReturningBlockingValuesIsRejected() {
+    assertFires(StructuralRules.storeExposesOnlyReactiveResults(LAYOUT_ROOT), LAYOUT);
+  }
+
   /**
    * R1 是九条里唯一由 Maven enforcer 判红的：它的判据是依赖树，而依赖树只在构建里存在，
    * 单测里复现一次真实构建既慢又不诚实。这里断言的是那条禁令**确实写在 core 的 pom 里** ——
@@ -148,6 +158,9 @@ class GuardsActuallyFireTest {
     assertPasses(StructuralRules.transportKnowsNoBusiness(ORDINARY_LAYOUT_ROOT), ORDINARY_LAYOUT);
     assertPasses(StructuralRules.nothingDependsOnApp(ORDINARY_LAYOUT_ROOT), ORDINARY_LAYOUT);
     assertPasses(StructuralRules.settlementHasOneExit(ORDINARY_LAYOUT_ROOT), ORDINARY_LAYOUT);
+    assertPasses(StructuralRules.mybatisStaysInStore(ORDINARY_LAYOUT_ROOT), ORDINARY_LAYOUT);
+    assertPasses(
+        StructuralRules.storeExposesOnlyReactiveResults(ORDINARY_LAYOUT_ROOT), ORDINARY_LAYOUT);
   }
 
   private static void assertFires(ArchRule rule, JavaClasses classes) {

@@ -14,7 +14,20 @@
 | JSON | Jackson | **3**（随 Boot 4，不单独指定） |
 | 构建 | Maven（Wrapper） | **3.9.16** |
 | 响应式 | Reactor（仅 gateway / app） | 随 Boot |
-| 关系存储 | MyBatis + mybatis-spring-boot-starter | 大版本与 Boot 4 对齐（starter 4.x 线），**具体版本在阶段 5 锁定后写回本表** |
+| 关系存储 | MyBatis + mybatis-spring-boot-starter | **4.0.1**（starter 4.x 线与 Boot 4 对齐） |
+| Schema 迁移 | Flyway | **12.4.0**（由 Boot 4.1.2 管理） |
+| 默认库 / 生产库 | H2 / PostgreSQL 驱动 | **2.4.240** / **42.7.14**（两者均由 Boot 4.1.2 管理） |
+
+关系存储那一行原本空着（写着「阶段 5 锁定后写回」），阶段 5（票 15）实测后填上了。
+三件事值得记一笔，它们都不是版本号而是**为什么这几个号只有一处**：
+
+- MyBatis 不在 Boot 的依赖管理里，所以它的号只能自己给，写在根 pom 的 `<properties>`；
+  Flyway / H2 / PostgreSQL 反过来由 Boot 管理，于是**不再写第二遍** ——
+  同一件事留两个答案，等于给「到底跑的是哪个版本」留一个要靠猜的问题
+- Flyway 12 把各库的适配拆成了独立坐标：PG 要单独引 `flyway-database-postgresql`，
+  而 H2 仍在 `flyway-core` 里（实测：`flyway-database-h2` 在中央仓库是 404）
+- starter 4.0.1 带的是 `mybatis-spring:4.0.0`，与 Boot 4.1.2 的 JDBC 自动配置同处一条线，
+  enforcer 的 `requireUpperBoundDeps` 实测通过
 
 **版本锁定的理由不是「新就是好」，而是这个组合是唯一同时满足三条的**：Boot 4 带来 Jackson 3；
 Spring AI 2.0.1 是与 Boot 4 对齐的那条线；Java 21 是 Boot 4 的底线。

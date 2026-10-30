@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  配置快照的 SQL。与 db/migration/{h2,postgres}/V1__config_snapshot.sql 一起评审：
+  这里引用了哪一列，那边就要有哪一次的迁移（ADR-0017 第 4 节）。
+  先改这里的 SQL、后补迁移，等于换了个写法的 ddl-auto。
+
+  这个文件放在与接口相同的包路径下（resources/io/github/airouter/gateway/store/），
+  MyBatis 会按「接口同包同名」自动加载它 —— 于是不需要 mapper-locations 那条配置，
+  「SQL 在哪」这件事只有一个答案。
+
+  方言纪律（0017 第 2 节第 8 条）：只写两边都认的 SQL。
+  `limit 1` 在 H2 与 PostgreSQL 上同为「取第一行」，因此这里没有分支。
+-->
+<mapper namespace="io.github.airouter.gateway.store.ConfigSnapshotMapper">
+
+  <!-- record 没有默认构造器，映射必须走 <constructor>：按列顺序对齐组件声明的顺序。
+       javaType 写 `_long` 而不是 `long`：MyBatis 的别名表里 `long` 是包装类型 java.lang.Long，
+       原始类型是 `_long`。写错的话反射去找 <init>(Long, ...) 而规范构造器收的是 long，
+       报的是 NoSuchMethodException —— 一条只在读的时候才会出现的错。 -->
+  <resultMap id="snapshot" type="io.github.airouter.gateway.store.ConfigSnapshot">
+    <constructor>
+      <idArg column="version" javaType="_long"/>
+      <arg column="content" javaType="java.lang.String"/>
+      <arg column="created_at" javaType="java.time.Instant"/>
+      <arg column="actor" javaType="java.lang.String"/>
+    </constructor>
+  </resultMap>
+
+  <insert id="insert">
+    insert into config_snapshot (version, content, created_at, actor)
+    values (#{version}, #{content}, #{createdAt}, #{actor})
+  </insert>
+
+  <select id="selectLatest" resultMap="snapshot">
+    select version, content, created_at, actor
+    from config_snapshot
+    order by version desc
+    limit 1
+  </select>
+
+</mapper>

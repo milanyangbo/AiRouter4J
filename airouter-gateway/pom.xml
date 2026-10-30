@@ -31,8 +31,54 @@
       <artifactId>spring-boot-starter-webflux</artifactId>
     </dependency>
 
-    <!-- MyBatis / validation 等运行时依赖随各自的阶段进来，不按「将来可能用到」提前引入
-         （ADR-0002 第 3 节）。 -->
+    <!-- 关系存储随阶段 5（ADR-0020）进来，此前一直刻意空着（ADR-0002 第 3 节：
+         不按「将来可能用到」提前引入）。四个坐标各管一段：
+
+         mybatis-spring-boot-starter —— 唯一自己给版本号的那个（Boot 不管理 MyBatis，
+         号在根 pom 的 properties 里）。
+         flyway-core + flyway-database-postgresql —— schema 的唯一变更路径（0017 第 4 节）。
+         Flyway 12 把各库的适配拆成了独立坐标，PG 要单独引；H2 仍在 core 里
+         （实测：`flyway-database-h2` 在中央仓库是 404）。
+         h2 / postgresql —— 两个方言的驱动。都是 runtime：编译期不出现任何 JDBC 类型。
+
+         八条用法纪律（0017 第 2 节）不是靠这里声明出来的，其中两条由结构规则 R10 / R11 判红。 -->
+    <dependency>
+      <groupId>org.mybatis.spring.boot</groupId>
+      <artifactId>mybatis-spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Testcontainers：让「每个 mapper 语句在 PG 上真的跑一次」不需要一台常驻的 PG。
+         只在测试作用域；镜像 postgres:16-alpine 本机已有。 -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

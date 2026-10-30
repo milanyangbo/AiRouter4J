@@ -54,6 +54,13 @@
     <!-- 与 maven-checkstyle-plugin 3.6.0 配对的版本（ADR-0002）。 -->
     <checkstyle.version>10.21.2</checkstyle.version>
 
+    <!-- 关系存储。Boot 的依赖管理里没有 MyBatis，所以这个号必须自己给 ——
+         它是全仓库唯一一处写它的地方（ADR-0002 第 1 节：关系存储版本在阶段 5 锁定后写回）。
+         4.x 线与 Boot 4 对齐：starter 4.0.1 带的是 mybatis-spring 4.0.0（本机仓库实测）。
+         Flyway / H2 / PostgreSQL 反过来由 Boot 4.1.2 管理（12.4.0 / 2.4.240 / 42.7.14），
+         因此下面不再为它们写号 —— 写了就是给同一件事留两个答案。 -->
+    <mybatis-spring-boot-starter.version>4.0.1</mybatis-spring-boot-starter.version>
+
     <!-- 厂商自己的 Java 客户端。它只出现在测试作用域：让「标准客户端能否解析我们的响应」
          由第三方判定，而不是由我们自己写的断言判定。 -->
     <openai-java.version>4.91.0</openai-java.version>
@@ -102,6 +109,12 @@
       </dependency>
       <!-- 注意：这里刻意没有 airouter-app。它是装配终点，任何模块都不该依赖它
            （由 airouter-app 里的结构规则 R2 判红）。 -->
+
+      <dependency>
+        <groupId>org.mybatis.spring.boot</groupId>
+        <artifactId>mybatis-spring-boot-starter</artifactId>
+        <version>${mybatis-spring-boot-starter.version}</version>
+      </dependency>
 
       <dependency>
         <groupId>com.tngtech.archunit</groupId>

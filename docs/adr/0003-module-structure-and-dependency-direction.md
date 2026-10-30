@@ -73,7 +73,8 @@
 - 禁止 `@Lazy`、字段注入 / setter 注入、按类型 `getBean`
 - 只有 `providers` 可以构造 `Outcome`
 
-规则在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`（九条，编号 R1–R9）。
+规则在 `airouter-app/src/test/java/io/github/airouter/arch/StructuralRules.java`
+（十一条，编号 R1–R11；前九条一次落地，R10 / R11 随阶段 5 补进来）。
 该文件已随票 01 按下面的编号表复原，**编号未重排**（其余 ADR 与 AGENTS.md 里引用的是 R4 / R9 这些编号，
 不是它们的内容）。
 
@@ -99,7 +100,13 @@
 | R7 | 禁止字段注入与 setter 注入 | 对象不会以半成品状态被发布 |
 | R8 | 禁止按类型 `getBean` | 依赖关系写在类型签名里 |
 | R9 | 成败的结论只有一个出口 | 结算点唯一 |
+| R10 | MyBatis 的类型不越出 `store` 包 | 阻塞 API 不得裸奔在事件循环上（[0017](./0017-persistence-migrations-and-multi-replica.md) 第 2 节纪律 5） |
+| R11 | `store` 对外只暴露 `Mono` / `Flux` | 同步返回值把阻塞留在调用方线程上（0017 第 2 节纪律 6） |
 **新增规则前先读那里的表格**：规则越多，越容易走到「加个例外算了」那条路上。
+
+R10 / R11 是阶段 5（引入 MyBatis）补进来的：在那之前没有 `store` 包，
+而「规则守的必须是真有的东西」（第 2 节）—— 为一块还不存在的区域写规则，
+只会得到两条永远不红的规则。编号续在 R9 之后，前九条不重排。
 每条规则旁边必须写清它保护什么；「规则真的会红」由 `GuardsActuallyFireTest` 断言。
 
 ### 守门的机制：规则以包根为参数

@@ -12,6 +12,20 @@
 spring:
   application:
     name: airouter
+  datasource:
+    # 数据库地址只有一个来源：DATABASE_URL。不设就是 H2 内存库 ——
+    # `local` 档位不需要任何外部服务就能起来（ADR-0017 第 1 节）。
+    # DB_CLOSE_DELAY=-1 是必须的：内存库在最后一个连接关掉时会被清掉，
+    # 而连接池在空闲时确实会把连接还回去 —— 没有它，「重启之前的快照还在吗」要看运气。
+    url: ${DATABASE_URL:jdbc:h2:mem:airouter;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    username: ${DATABASE_USERNAME:sa}
+    password: ${DATABASE_PASSWORD:}
+  flyway:
+    # 关掉 Boot 的自动迁移。它没有「库不在」这一档：库不可达时自动迁移会让整个上下文起不来，
+    # 而 ADR-0017 第 7 节要的恰恰是「内存档运行、启动时不失败」。
+    # 迁移本身仍然百分之百是 Flyway 的，只是触发点换成了 store 里的 SchemaMigration ——
+    # 它排在启动期可用性探测之后，于是「不迁移」与「迁移失败」是两种可以分别断言的结果。
+    enabled: false
 
 server:
   port: 8080

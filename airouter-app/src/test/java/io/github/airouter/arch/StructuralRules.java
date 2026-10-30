@@ -5,12 +5,14 @@ import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaConstructorCall;
 import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaMethod;
+import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Set;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -20,12 +22,14 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
- * 结构约束的唯一定义处。九条，编号不重排，刻意不再增加 ——
+ * 结构约束的唯一定义处。十一条，编号不重排 ——
  * 规则越多，越容易走到「加个例外算了」那条路上，
  * 而来源项目那份 186 行抑制文件就是那条路的终点（ADR-0003 第 3 节）。
+ * 前九条是阶段 0 一次落地的；R10 / R11 随阶段 5（引入 MyBatis）补进来，
+ * 因为那两件东西在此之前并不存在 —— 规则守的必须是真有的东西（ADR-0003 第 2 节）。
  *
  * <p>表格里的 R1 由 Maven enforcer 判红（`airouter-core` 的依赖树里没有框架），
- * 其余八条由 ArchUnit 判红。
+ * 其余十条由 ArchUnit 判红。
  *
  * <table>
  *   <caption>九条规则与它们各自保护的东西</caption>
@@ -40,6 +44,10 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  *   <tr><td>R7</td><td>禁止字段注入与 setter 注入</td><td>{@link #noFieldOrSetterInjection}</td></tr>
  *   <tr><td>R8</td><td>禁止按类型 getBean</td><td>{@link #noBeanLookupByType}</td></tr>
  *   <tr><td>R9</td><td>成败的结论只有一个出口</td><td>{@link #settlementHasOneExit}</td></tr>
+ *   <tr><td>R10</td><td>MyBatis 的类型不越出 <code>store</code> 包</td>
+ *       <td>{@link #mybatisStaysInStore}</td></tr>
+ *   <tr><td>R11</td><td><code>store</code> 对外只暴露 Mono / Flux</td>
+ *       <td>{@link #storeExposesOnlyReactiveResults}</td></tr>
  * </table>
  *
  * <p>R2 到 R5 与 R9 以**包根为参数**：同一组规则既作用在真实模块上，也作用在测试样例上，
@@ -212,6 +220,94 @@ public final class StructuralRules {
   private static final DescribedPredicate<JavaConstructorCall> CONSTRUCTS_OUTCOME =
       DescribedPredicate.describe("构造 " + OUTCOME,
           call -> OUTCOME.equals(call.getTarget().getOwner().getSimpleName()));
+
+  /**
+   * R10 —— 保护「MyBatis 不裸奔在事件循环上」。
+   *
+   * <p>MyBatis 是这套栈里**唯一**的阻塞 API（ADR-0002 第 5 节）。它一旦越过 {@code store} 包，
+   * 「这一行会不会阻塞事件循环」就取决于调用者的线程，而那件事在 WebFlux 下
+   * 既不由签名表达，也不由类型表达 —— 只能靠读实现。
+   * 所以挡的是**类型族**而不只是 mapper 接口：{@code SqlSession}、{@code @Param}、
+   * 任何 {@code org.apache.ibatis.*} 都算。挡住类型之后，「谁在做库操作」重新变成一句看得懂的话。
+   *
+   * <p>与 R4 / R5 同形（按包根取参数），因此它在测试样例上也能证明自己会红。
+   */
+  public static ArchRule mybatisStaysInStore(String root) {
+    return noClasses()
+        .that(resideInAPackage(root + "..")
+            .and(DescribedPredicate.not(resideInAPackage(root + ".store.."))))
+        .should().dependOnClassesThat(resideInAPackage("org.apache.ibatis.."))
+        .because("MyBatis 是阻塞 API：它的类型出 store 包就等于把同步 IO 放上事件循环，"
+            + "而「这一行会不会阻塞」从此只能靠读实现（ADR-0017 第 2 节纪律 5 / 6）");
+  }
+
+  /**
+   * R11 —— 保护「store 的调用方拿不到同步返回值」。
+   *
+   * <p>挡住类型（R10）之后还有一个漏法：{@code store} 完全可以在包内乖乖用 MyBatis，
+   * 然后对外返回一个 {@code List<Snapshot>} —— 阻塞调用照样发生在调用方的线程上。
+   * 所以这一条查的是**返回值**：public 类的 public 方法只能返回 {@code Mono} / {@code Flux}，
+   * 或者一个标量（基本类型、{@code java.lang.*}、{@code java.time.*}）。
+   *
+   * <p>标量那一档是为值类型留的：{@code record} 的组件访问器返回 {@code String} / {@code long}
+   * 与「做了一次同步查询」不是一回事，把它们一起禁掉只会逼着把快照改成一堆 {@code Mono<String>}。
+   * 真正要挡的三种形状是 **集合**、**实体**、**{@code Optional}** ——
+   * 它们的共同点是「里面装着一次已经完成的查询」。
+   *
+   * <p>只查 public 类的 public 方法：装配类（{@code @Configuration}）的 {@code @Bean} 方法
+   * 与包私有的 mapper 接口都是包内的事，把它们拉进来只会让规则开始管命名与可见性的细枝末节。
+   */
+  public static ArchRule storeExposesOnlyReactiveResults(String root) {
+    return classes().that(resideInAPackage(root + ".store..").and(PUBLIC_CLASS))
+        .should(RETURNS_ONLY_REACTIVE_OR_SCALAR)
+        .as("store 对外只暴露 Mono / Flux：同步返回值把阻塞调用留在调用方的线程上，"
+            + "与包内老实用 MyBatis 是两回事（ADR-0017 第 2 节纪律 6）");
+  }
+
+  private static final DescribedPredicate<JavaClass> PUBLIC_CLASS =
+      DescribedPredicate.describe("public 的类",
+          clazz -> clazz.getModifiers().contains(JavaModifier.PUBLIC));
+
+  private static final ArchCondition<JavaClass> RETURNS_ONLY_REACTIVE_OR_SCALAR =
+      new ArchCondition<>("public 方法只返回 Mono / Flux 或一个标量") {
+        @Override
+        public void check(JavaClass item, ConditionEvents events) {
+          for (JavaMethod method : item.getMethods()) {
+            if (!method.getModifiers().contains(JavaModifier.PUBLIC)) {
+              continue;
+            }
+            String returned = method.getReturnType().getName();
+            if (isAllowed(returned)) {
+              continue;
+            }
+            events.add(SimpleConditionEvent.violated(item,
+                item.getName() + " 的 " + method.getName() + " 返回 " + returned
+                    + "：那就是一次已经完成的查询"));
+          }
+        }
+      };
+
+  /** 基本类型与 void 按名字认：{@code JavaType} 没有给出「是不是基本类型」这一问。 */
+  private static final Set<String> PRIMITIVES_AND_VOID =
+      Set.of("void", "boolean", "byte", "short", "int", "long", "float", "double", "char");
+
+  /**
+   * 返回类型的名字**带着泛型参数**（{@code reactor.core.publisher.Mono<...>}），
+   * 所以按前缀认；但只认到 {@code Mono} / {@code Flux} 这两个名字本身与它们的参数化形式，
+   * 不认 {@code MonoProcessor} 这种同前缀的邻居。
+   */
+  private static boolean isAllowed(String returned) {
+    return PRIMITIVES_AND_VOID.contains(returned)
+        || isReactive(returned, "Mono")
+        || isReactive(returned, "Flux")
+        || returned.startsWith("java.lang.")
+        || returned.startsWith("java.time.");
+  }
+
+  private static boolean isReactive(String returned, String simpleName) {
+    String name = "reactor.core.publisher." + simpleName;
+    return returned.equals(name) || returned.startsWith(name + "<");
+  }
 
   /**
    * 类自己、它的字段与它的方法都不带这些注解。
